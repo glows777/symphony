@@ -162,11 +162,33 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 
 | Elixir module | LOC | → TS | Test source | Status |
 |---|---:|---|---|---|
-| `symphony_elixir/cli.ex` | 191 | `src/cli.ts` | cli_test | todo |
-| `mix/tasks/specs.check.ex` | 53 | `src/tasks/specs-check.ts` | specs_check_task_test | todo |
+| `symphony_elixir/cli.ex` | 191 | `src/cli.ts` | cli_test | green |
+| `mix/tasks/specs.check.ex` | 53 | `src/tasks/specs-check.ts` | specs_check_task_test | n/a (Elixir-only) |
 | `mix/tasks/pr_body.check.ex` | 216 | `src/tasks/pr-body-check.ts` | pr_body_check_test | todo |
 | `mix/tasks/workspace.before_remove.ex` | 140 | `src/tasks/workspace-before-remove.ts` | workspace_before_remove_test | todo |
-| `symphony_elixir.ex` (Application/Supervisor) | 47 | `src/app.ts` | — | todo |
+| `symphony_elixir.ex` (Application/Supervisor) | 47 | `src/app.ts` | — | ported |
+
+> **CLI + app supervisor:** `cli.ex` ports literally with the same dependency-
+> injection seam (`evaluate(args, deps)`), so `cli_test` translates 1:1. The OTP
+> `:one_for_one` supervisor (`symphony_elixir.ex`) becomes `src/app.ts`'s
+> `startApp()` async wiring (log file → live Orchestrator → HttpServer + dashboard
+> SSR/SSE), with `StatusDashboard.notify_update` bridged to an observability
+> broadcast. `startApp` has no dedicated ExUnit counterpart (marked `ported`).
+>
+> **Next steps (remaining Phase 6 + Phase 7):**
+> - `mix/tasks/specs.check.ex` enforces adjacent Elixir `@spec`s on `lib/` and has
+>   no TypeScript analog — marked `n/a`. (`bun run check`'s typecheck is the TS gate.)
+> - `pr_body.check.ex` → `src/tasks/pr-body-check.ts`: port the PR-body validation
+>   (framework-agnostic string/section checks) + translate `pr_body_check_test`.
+> - `workspace.before_remove.ex` → `src/tasks/workspace-before-remove.ts`: port the
+>   before-remove hook + translate `workspace_before_remove_test`.
+> - `StatusDashboard.render_offline_status/0` is still unported; wire it into
+>   `stopApp` once translated.
+> - **Phase 7 (live e2e):** port `test/symphony_elixir/live_e2e_test.exs` +
+>   `test/support/live_e2e_docker/` to `test/live-e2e.test.ts` + a Bun harness
+>   (real fake-codex subprocess + bound HttpServer + memory tracker, asserting an
+>   issue flows dispatch→running→completion end-to-end). Heaviest item; depends on
+>   the Docker/SSH support harness being reframed for Bun.
 
 ### Phase 7 — Live e2e
 
