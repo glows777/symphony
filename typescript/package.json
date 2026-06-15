@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "check": "bun run typecheck && bun run lint && bun run test"
+    "check": "bun run typecheck && bun run lint && bun run test",
+    "oracle:record-api": "bun harness/record-api.ts",
+    "oracle:assert": "bun harness/assert-parity.ts"
   },
   "dependencies": {
     "liquidjs": "^10.21.1",

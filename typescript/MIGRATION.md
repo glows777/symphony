@@ -49,8 +49,14 @@ recorded Elixir fixtures / golden snapshots).
 | Item | Status |
 |---|---|
 | `package.json`, `tsconfig`, `biome`, dir layout | ✅ done |
-| `bun install` verified | todo |
-| Verification harness (fixture recorder + differ) | todo |
+| `bun install` verified | ✅ done |
+| Verification harness (fixture recorder + differ) | ✅ done |
+
+**Harness (`harness/`):** `normalize.ts` (volatile-value redaction), `diff.ts` (structural
+deep-diff), `codex-tee.ts` (records Codex stdio), `record-api.ts` (captures JSON-API fixtures),
+`assert-parity.ts` (replays fixtures against the TS build, PASS/FAIL/SKIP). Utilities are unit
+tested; `codex-tee` has an end-to-end integration test. See [`harness/README.md`](./harness/README.md).
+Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 
 ### Phase 1 — Leaf / pure modules
 
