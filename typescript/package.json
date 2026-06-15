@@ -1,0 +1,29 @@
+{
+  "name": "symphony",
+  "version": "0.1.0",
+  "description": "TypeScript/Bun port of the Symphony agent-orchestration service (literal port of the Elixir reference implementation).",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "symphony": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check": "bun run typecheck && bun run lint && bun run test"
+  },
+  "dependencies": {
+    "liquidjs": "^10.21.1",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "^1.1.14",
+    "typescript": "^5.7.2"
+  }
+}
