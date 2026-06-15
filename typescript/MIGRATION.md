@@ -143,7 +143,20 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 | `web/controllers/observability_api_controller.ex` | 63 | `web/server.ts` (router) | server_test (from extensions_test) | green |
 | `web/static_assets.ex` + `web/controllers/static_asset_controller.ex` | 87 | `web/static-assets.ts` | static_assets_test (from extensions_test) | green |
 | `web/presenter.ex` | 242 | `web/presenter.ts` | presenter_test (from extensions_test) | green |
-| `web/live/dashboard_live.ex` + `web/components/layouts.ex` | 507 | `web/live/dashboard.ts` (SSR+SSE) | — | todo |
+| `web/live/dashboard_live.ex` + `web/components/layouts.ex` | 507 | `web/dashboard.ts` (SSR+SSE) | dashboard_test (from extensions_test) | green |
+
+> **Web layer (`web/`):** Phoenix endpoint/router/Bandit → `Bun.serve` + a small
+> router (`web/server.ts`); the JSON `/api/v1/*` API ports literally (status codes,
+> 405/404, timeout/unavailable). `Phoenix.PubSub` → a typed in-process emitter.
+> Per the locked decision, Phoenix LiveView → **server-rendered HTML + SSE**:
+> `GET /` renders the dashboard from the Presenter payload and `GET /events`
+> streams a re-rendered section on each `ObservabilityPubSub` broadcast (a tiny
+> inline `EventSource` client swaps it in). The vendored Phoenix JS assets
+> (`phoenix.js`/`phoenix_live_view.js`/`phoenix_html.js`) are intentionally
+> dropped — the SSE design needs none — so only `dashboard.css` + `favicon.png`
+> are embedded. The Elixir tests' LiveView-specific assertions (phx-connected,
+> vendored JS, `live/3` mounting) are re-expressed as SSR-output + SSE-stream
+> assertions; everything else is translated literally.
 
 ### Phase 6 — CLI & tooling
 

@@ -24,6 +24,8 @@ export type RequestHandler = (req: Request) => Response | Promise<Response>;
 export type RouterHandlers = {
   // `GET /` — the SSR dashboard (wired by the dashboard module).
   dashboard?: RequestHandler;
+  // `GET /events` — the dashboard's Server-Sent-Events stream.
+  events?: RequestHandler;
   // Static assets (`/dashboard.css`, `/favicon.png`, vendored JS).
   staticAsset?: RequestHandler;
 };
@@ -63,6 +65,10 @@ export function createRouter(
         return notFound();
       }
       return methodNotAllowed();
+    }
+
+    if (path === "/events" && method === "GET" && handlers.events) {
+      return handlers.events(req);
     }
 
     if (path === "/api/v1/state") {
