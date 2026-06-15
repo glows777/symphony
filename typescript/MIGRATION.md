@@ -164,7 +164,7 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 |---|---:|---|---|---|
 | `symphony_elixir/cli.ex` | 191 | `src/cli.ts` | cli_test | green |
 | `mix/tasks/specs.check.ex` | 53 | `src/tasks/specs-check.ts` | specs_check_task_test | n/a (Elixir-only) |
-| `mix/tasks/pr_body.check.ex` | 216 | `src/tasks/pr-body-check.ts` | pr_body_check_test | todo |
+| `mix/tasks/pr_body.check.ex` | 216 | `src/tasks/pr-body-check.ts` | pr_body_check_test | green |
 | `mix/tasks/workspace.before_remove.ex` | 140 | `src/tasks/workspace-before-remove.ts` | workspace_before_remove_test | green |
 | `symphony_elixir.ex` (Application/Supervisor) | 47 | `src/app.ts` | — | ported |
 
