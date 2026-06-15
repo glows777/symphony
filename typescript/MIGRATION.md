@@ -65,7 +65,7 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 |---|---:|---|---|---|
 | `symphony_elixir/path_safety.ex` | 50 | `symphony/path-safety.ts` | (workspace_and_config_test) | green |
 | `symphony_elixir/linear/issue.ex` | 58 | `symphony/linear/issue.ts` | core_test | green |
-| `symphony_elixir/prompt_builder.ex` | 64 | `symphony/prompt-builder.ts` | core_test | todo |
+| `symphony_elixir/prompt_builder.ex` | 64 | `symphony/prompt-builder.ts` | core_test | green |
 | `symphony_elixir/log_file.ex` | 80 | `symphony/log-file.ts` | log_file_test | green |
 | `symphony_elixir/tracker.ex` | 46 | `symphony/tracker/tracker.ts` | core_test | todo |
 | `symphony_elixir/tracker/memory.ex` | 72 | `symphony/tracker/memory.ts` | core_test | todo |
