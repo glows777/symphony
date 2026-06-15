@@ -82,7 +82,7 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 
 | Elixir module | LOC | → TS | Test source | Status |
 |---|---:|---|---|---|
-| `symphony_elixir/config/schema.ex` | 563 | `symphony/config/schema.ts` (zod) | workspace_and_config_test | todo |
+| `symphony_elixir/config/schema.ex` | 563 | `symphony/config/schema.ts` (zod) | workspace_and_config_test | green |
 | `symphony_elixir/config.ex` | 154 | `symphony/config.ts` | workspace_and_config_test | todo |
 | `symphony_elixir/workflow.ex` | 123 | `symphony/workflow.ts` | extensions_test | todo |
 | `symphony_elixir/workflow_store.ex` | 153 | `symphony/workflow-store.ts` | extensions_test | todo |
