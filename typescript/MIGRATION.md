@@ -194,24 +194,22 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 
 | Elixir | → TS | Status |
 |---|---|---|
-| `test/symphony_elixir/live_e2e_test.exs` + `test/support/live_e2e_docker/` | `test/live-e2e.test.ts` + harness | todo (env-gated) |
+| (in-process e2e — sandbox-runnable slice) | `test/live-e2e.test.ts` | green |
+| `test/symphony_elixir/live_e2e_test.exs` + `test/support/live_e2e_docker/` | `test/live-e2e.test.ts` + Docker harness | todo (env-gated) |
 
-> **Phase 7 is environment-gated.** The Elixir `live_e2e_test` is tagged
-> `:live_e2e` and skipped unless `SYMPHONY_RUN_LIVE_E2E=1`; it requires Docker
-> Compose worker containers, SSH, a real Linear team/project + API token, and a
-> real Codex `auth.json`. None of those are available in CI / this sandbox, so a
-> port cannot be verified green here. Recommended split when tackling it:
-> 1. **In-process e2e (sandbox-runnable, the verifiable slice):** drive
->    `startApp()` with the memory tracker (`tracker_kind: memory`, a candidate
->    issue), `worker.ssh_hosts: []` (local dispatch), and `codex.command` pointed
->    at `test/harness/fake-codex.ts`; assert the issue flows
->    dispatch → running (via `Orchestrator.snapshot`) → completion, and that the
->    bound HttpServer's `/api/v1/state` reflects it. This reuses the existing
->    fake-codex harness and needs no Docker/Linear/Codex creds.
-> 2. **Real Docker/Linear/Codex e2e:** translate `live_e2e_test.exs` to
->    `test/live-e2e.test.ts`, skipped unless `SYMPHONY_RUN_LIVE_E2E=1`, and reframe
->    `test/support/live_e2e_docker/` (Dockerfile/compose/entrypoint) for the Bun
->    worker image. Verified only in an environment with Docker + credentials.
+> **Phase 7 is split.** The sandbox-runnable **in-process e2e is green**:
+> `test/live-e2e.test.ts` drives the real `startApp()` wiring (Orchestrator +
+> AgentRunner + Codex AppServer + HttpServer) against the memory tracker and a
+> fake-codex subprocess with local dispatch, asserting a candidate issue flows
+> dispatch → codex turn → completion, that the agent created the workspace, and
+> that the bound `/api/v1/state` answers. The **real Docker/Linear/Codex e2e**
+> remains environment-gated: the Elixir `live_e2e_test` is tagged `:live_e2e` and
+> skipped unless `SYMPHONY_RUN_LIVE_E2E=1`; it needs Docker Compose workers, SSH,
+> a real Linear team/project + API token, and a Codex `auth.json` — none
+> available in CI / this sandbox. Remaining work: translate `live_e2e_test.exs`
+> to a `SYMPHONY_RUN_LIVE_E2E`-gated `bun test` and reframe
+> `test/support/live_e2e_docker/` (Dockerfile/compose/entrypoint) for the Bun
+> worker image, verifiable only where Docker + credentials exist.
 
 ## Verification harness (Phase 0 deliverable)
 
