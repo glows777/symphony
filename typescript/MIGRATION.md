@@ -115,7 +115,7 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 |---|---:|---|---|---|
 | `symphony_elixir/agent_runner.ex` | 215 | `symphony/agent-runner.ts` | core_test | green |
 | `symphony_elixir/orchestrator.ex` | 1951 | `symphony/orchestrator.ts` | orchestrator_status_test, core_test | todo |
-| `symphony_elixir/status_dashboard.ex` | 1952 | `symphony/status-dashboard.ts` | status_dashboard_snapshot_test | todo |
+| `symphony_elixir/status_dashboard.ex` | 1952 | `symphony/status-dashboard.ts` | status_dashboard_snapshot_test | green |
 
 > Dashboard reuses `../elixir/test/fixtures/status_dashboard_snapshots/*` golden files unchanged.
 
