@@ -5,6 +5,12 @@
 // shape is reconstructed at serialization boundaries (Liquid template vars,
 // JSON-API) to preserve parity. See MIGRATION.md.
 
+export type Blocker = {
+  id: string | null;
+  identifier: string | null;
+  state: string | null;
+};
+
 export type Issue = {
   id: string | null;
   identifier: string | null;
@@ -15,16 +21,21 @@ export type Issue = {
   branchName: string | null;
   url: string | null;
   assigneeId: string | null;
-  blockedBy: string[];
+  blockedBy: Blocker[];
   labels: string[];
   assignedToWorker: boolean;
   createdAt: Date | null;
   updatedAt: Date | null;
 };
 
+// Brands objects created via `newIssue` so the memory tracker can distinguish
+// real issues from arbitrary maps (mirrors Elixir's nominal `%Issue{}` match).
+// A WeakSet keeps the brand out of the serialized data shape.
+const issueRegistry = new WeakSet<object>();
+
 // Mirrors the Elixir `defstruct` defaults.
 export function newIssue(attrs: Partial<Issue> = {}): Issue {
-  return {
+  const issue: Issue = {
     id: null,
     identifier: null,
     title: null,
@@ -41,6 +52,12 @@ export function newIssue(attrs: Partial<Issue> = {}): Issue {
     updatedAt: null,
     ...attrs,
   };
+  issueRegistry.add(issue);
+  return issue;
+}
+
+export function isIssue(value: unknown): value is Issue {
+  return typeof value === "object" && value !== null && issueRegistry.has(value);
 }
 
 export function labelNames(issue: Issue): string[] {
