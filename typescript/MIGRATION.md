@@ -142,7 +142,7 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 | `symphony_elixir/http_server.ex` + `web/endpoint.ex` + `web/router.ex` | 162 | `web/server.ts` | app_server_test | todo |
 | `web/controllers/observability_api_controller.ex` | 63 | `web/controllers/observability-api.ts` | app_server_test | todo |
 | `web/static_assets.ex` + `web/controllers/static_asset_controller.ex` | 87 | `web/static-assets.ts` | — | todo |
-| `web/presenter.ex` | 242 | `web/presenter.ts` | — | todo |
+| `web/presenter.ex` | 242 | `web/presenter.ts` | presenter_test (from extensions_test) | green |
 | `web/live/dashboard_live.ex` + `web/components/layouts.ex` | 507 | `web/live/dashboard.ts` (SSR+SSE) | — | todo |
 
 ### Phase 6 — CLI & tooling

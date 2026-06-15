@@ -461,9 +461,9 @@ describe("Orchestrator status / live GenServer", () => {
     }));
 
     let snapshot = await snap(orch);
-    expect(snapshot.polling.checking).toBe(false);
-    expect(snapshot.polling.poll_interval_ms).toBe(30_000);
-    const dueInMs = snapshot.polling.next_poll_in_ms;
+    expect(snapshot.polling?.checking).toBe(false);
+    expect(snapshot.polling?.poll_interval_ms).toBe(30_000);
+    const dueInMs = snapshot.polling?.next_poll_in_ms;
     expect(typeof dueInMs).toBe("number");
     expect(dueInMs as number).toBeGreaterThanOrEqual(0);
     expect(dueInMs as number).toBeLessThanOrEqual(4_000);
@@ -474,8 +474,8 @@ describe("Orchestrator status / live GenServer", () => {
       next_poll_due_at_ms: null,
     }));
     snapshot = await snap(orch);
-    expect(snapshot.polling.checking).toBe(true);
-    expect(snapshot.polling.next_poll_in_ms).toBeNull();
+    expect(snapshot.polling?.checking).toBe(true);
+    expect(snapshot.polling?.next_poll_in_ms).toBeNull();
   });
 
   test("triggers an immediate poll cycle shortly after startup", async () => {
@@ -483,16 +483,16 @@ describe("Orchestrator status / live GenServer", () => {
     const orch = makeOrchestrator();
     await orch.start();
 
-    await waitForSnapshot(orch, (s) => s.polling.checking === true);
+    await waitForSnapshot(orch, (s) => s.polling?.checking === true);
     const settled = await waitForSnapshot(
       orch,
       (s) =>
-        s.polling.checking === false &&
-        typeof s.polling.next_poll_in_ms === "number" &&
-        s.polling.next_poll_in_ms <= 5_000,
+        s.polling?.checking === false &&
+        typeof s.polling?.next_poll_in_ms === "number" &&
+        s.polling?.next_poll_in_ms <= 5_000,
     );
-    expect(settled.polling.poll_interval_ms).toBe(5_000);
-    expect(settled.polling.next_poll_in_ms as number).toBeGreaterThanOrEqual(0);
+    expect(settled.polling?.poll_interval_ms).toBe(5_000);
+    expect(settled.polling?.next_poll_in_ms as number).toBeGreaterThanOrEqual(0);
   });
 
   test("poll cycle resets next refresh countdown after a check", async () => {
@@ -510,12 +510,12 @@ describe("Orchestrator status / live GenServer", () => {
     const snapshot = await waitForSnapshot(
       orch,
       (s) =>
-        s.polling.checking === false &&
-        s.polling.poll_interval_ms === 50 &&
-        typeof s.polling.next_poll_in_ms === "number" &&
-        s.polling.next_poll_in_ms <= 50,
+        s.polling?.checking === false &&
+        s.polling?.poll_interval_ms === 50 &&
+        typeof s.polling?.next_poll_in_ms === "number" &&
+        s.polling?.next_poll_in_ms <= 50,
     );
-    expect(snapshot.polling.next_poll_in_ms as number).toBeGreaterThanOrEqual(0);
+    expect(snapshot.polling?.next_poll_in_ms as number).toBeGreaterThanOrEqual(0);
   });
 
   test("restarts stalled workers with retry backoff", async () => {

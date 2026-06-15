@@ -769,7 +769,7 @@ export type Snapshot = {
   blocked: Array<Record<string, unknown>>;
   codex_totals: CodexTotals | null;
   rate_limits: unknown;
-  polling: {
+  polling?: {
     checking: boolean;
     next_poll_in_ms: number | null;
     poll_interval_ms: number | undefined;
