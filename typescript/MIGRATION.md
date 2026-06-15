@@ -99,7 +99,7 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 | `symphony_elixir/linear/adapter.ex` | 91 | `symphony/linear/adapter.ts` | core_test | green |
 | `symphony_elixir/linear/client.ex` | 586 | `symphony/linear/client.ts` | core_test | green |
 | `symphony_elixir/ssh.ex` | 100 | `symphony/ssh.ts` | ssh_test | green |
-| `symphony_elixir/workspace.ex` | 483 | `symphony/workspace.ts` | workspace_and_config_test | todo |
+| `symphony_elixir/workspace.ex` | 483 | `symphony/workspace.ts` | workspace_and_config_test | green |
 | `symphony_elixir/codex/dynamic_tool.ex` | 209 | `symphony/codex/dynamic-tool.ts` | dynamic_tool_test | green |
 | `symphony_elixir/codex/app_server.ex` | 1098 | `symphony/codex/app-server.ts` | app_server_test | todo |
 

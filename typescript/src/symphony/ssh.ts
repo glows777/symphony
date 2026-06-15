@@ -9,6 +9,9 @@ export type RunOpts = {
   stderrToStdout?: boolean;
   cwd?: string;
   env?: Record<string, string>;
+  // Extension over the Elixir API: Elixir wraps SSH.run in a Task.yield timeout;
+  // here the timeout is pushed into the spawn and surfaces as an ssh_timeout error.
+  timeout?: number;
 };
 
 export type StartPortOpts = {
@@ -27,7 +30,11 @@ export function run(
   const proc = Bun.spawnSync([executable.value, ...sshArgs(host, command)], {
     ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
     ...(opts.env === undefined ? {} : { env: opts.env }),
+    ...(opts.timeout === undefined ? {} : { timeout: opts.timeout }),
   });
+  if (proc.exitedDueToTimeout) {
+    return err({ tag: "ssh_timeout" });
+  }
   const stdout = proc.stdout ? proc.stdout.toString() : "";
   const stderr = proc.stderr ? proc.stderr.toString() : "";
   const output = opts.stderrToStdout ? stdout + stderr : stdout;
