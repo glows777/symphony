@@ -43,7 +43,7 @@ type SessionPolicies = {
   turnSandboxPolicy: JsonObject;
 };
 
-type Session = {
+export type Session = {
   transport: Transport;
   metadata: JsonObject;
   approvalPolicy: string | JsonObject;
