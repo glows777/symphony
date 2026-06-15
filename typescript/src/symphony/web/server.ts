@@ -10,6 +10,7 @@ import { serverPort, settingsBang } from "../config.ts";
 import * as Presenter from "./presenter.ts";
 import type { SnapshotProvider } from "./presenter.ts";
 import { setBoundPort } from "./server-port.ts";
+import { serveStaticAsset } from "./static-assets.ts";
 
 const DEFAULT_SNAPSHOT_TIMEOUT_MS = 15_000;
 
@@ -168,7 +169,8 @@ export class HttpServer {
     const host = opts.host ?? settingsBang().server.host;
     const provider = opts.orchestrator ?? UNAVAILABLE_PROVIDER;
     const snapshotTimeoutMs = opts.snapshotTimeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS;
-    const fetch = createRouter(provider, snapshotTimeoutMs, opts.handlers ?? {});
+    const handlers: RouterHandlers = { staticAsset: serveStaticAsset, ...opts.handlers };
+    const fetch = createRouter(provider, snapshotTimeoutMs, handlers);
 
     try {
       const server = Bun.serve({ hostname: normalizeHost(host), port, fetch });
