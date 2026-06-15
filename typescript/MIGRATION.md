@@ -36,6 +36,7 @@ Apply these consistently so every port is mechanical and reviewable.
 | `ecto` changeset validation | `zod` |
 | Phoenix endpoint / router / Bandit | `Bun.serve` + a small router |
 | Phoenix LiveView | SSR HTML + SSE |
+| `{:ok, value}` / `{:error, reason}` tuples | `Result<T, E>` discriminated union (`src/symphony/result.ts`) |
 
 ## Status legend
 
@@ -62,7 +63,7 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 
 | Elixir module | LOC | → TS | Test source | Status |
 |---|---:|---|---|---|
-| `symphony_elixir/path_safety.ex` | 50 | `symphony/path-safety.ts` | (workspace_and_config_test) | todo |
+| `symphony_elixir/path_safety.ex` | 50 | `symphony/path-safety.ts` | (workspace_and_config_test) | green |
 | `symphony_elixir/linear/issue.ex` | 58 | `symphony/linear/issue.ts` | core_test | todo |
 | `symphony_elixir/prompt_builder.ex` | 64 | `symphony/prompt-builder.ts` | core_test | todo |
 | `symphony_elixir/log_file.ex` | 80 | `symphony/log-file.ts` | log_file_test | todo |
