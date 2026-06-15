@@ -64,11 +64,19 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 | Elixir module | LOC | → TS | Test source | Status |
 |---|---:|---|---|---|
 | `symphony_elixir/path_safety.ex` | 50 | `symphony/path-safety.ts` | (workspace_and_config_test) | green |
-| `symphony_elixir/linear/issue.ex` | 58 | `symphony/linear/issue.ts` | core_test | todo |
+| `symphony_elixir/linear/issue.ex` | 58 | `symphony/linear/issue.ts` | core_test | green |
 | `symphony_elixir/prompt_builder.ex` | 64 | `symphony/prompt-builder.ts` | core_test | todo |
-| `symphony_elixir/log_file.ex` | 80 | `symphony/log-file.ts` | log_file_test | todo |
+| `symphony_elixir/log_file.ex` | 80 | `symphony/log-file.ts` | log_file_test | green |
 | `symphony_elixir/tracker.ex` | 46 | `symphony/tracker/tracker.ts` | core_test | todo |
 | `symphony_elixir/tracker/memory.ex` | 72 | `symphony/tracker/memory.ts` | core_test | todo |
+
+> **Ordering note:** `prompt_builder`, `tracker`, and `tracker/memory` are listed in
+> Phase 1 but have forward dependencies (Config/Workflow for `prompt_builder`,
+> Config/Linear.Adapter for `tracker`). They are ported after their dependencies land
+> (Phase 2/3) and verified via the translated `core_test`/`extensions_test`.
+>
+> **Infra helpers added:** `src/symphony/result.ts` (`{:ok,_}/{:error,_}` →
+> `Result<T,E>`) and `src/symphony/app-env.ts` (Elixir `Application` env).
 
 ### Phase 2 — Config & workflow
 
