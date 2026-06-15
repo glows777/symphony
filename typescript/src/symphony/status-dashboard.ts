@@ -100,6 +100,25 @@ export function humanizeCodexMessageExport(message: unknown): string {
   return humanizeCodexMessage(message);
 }
 
+// ---- live-dashboard notification hook --------------------------------------
+//
+// Port of `StatusDashboard.notify_update/0`: the orchestrator pings the live
+// dashboard process after every state change so it can re-render. The live
+// render loop (a GenServer in Elixir) is ported in a later phase and registers
+// itself here; until then this is a safe no-op.
+
+export type LiveDashboard = { notifyUpdate(): void };
+
+let liveDashboard: LiveDashboard | null = null;
+
+export function registerLiveDashboard(dashboard: LiveDashboard | null): void {
+  liveDashboard = dashboard;
+}
+
+export function notifyUpdate(): void {
+  liveDashboard?.notifyUpdate();
+}
+
 // ---- snapshot rendering ----------------------------------------------------
 
 function formatSnapshotContent(

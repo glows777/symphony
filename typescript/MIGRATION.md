@@ -114,10 +114,25 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 | Elixir module | LOC | → TS | Test source | Status |
 |---|---:|---|---|---|
 | `symphony_elixir/agent_runner.ex` | 215 | `symphony/agent-runner.ts` | core_test | green |
-| `symphony_elixir/orchestrator.ex` | 1951 | `symphony/orchestrator.ts` | orchestrator_status_test, core_test | wip (decision/reconcile seams green; GenServer integration next) |
+| `symphony_elixir/orchestrator.ex` | 1951 | `symphony/orchestrator.ts` | orchestrator_status_test, core_test | green |
 | `symphony_elixir/status_dashboard.ex` | 1952 | `symphony/status-dashboard.ts` | status_dashboard_snapshot_test | green |
 
 > Dashboard reuses `../elixir/test/fixtures/status_dashboard_snapshots/*` golden files unchanged.
+>
+> **Orchestrator GenServer:** ported as a class holding `State` + a promise-chained
+> serialized mailbox (`cast`/`call`), per the OTP→TS rulebook. `Process.send_after`
+> → tracked `setTimeout` (cleared by `stop()`); `make_ref()` tokens → `Symbol`;
+> `:sys.get_state`/`:sys.replace_state` → `getState`/`replaceState` seams;
+> `handle_call(:request_refresh)` + `handle_info({:tick, _})` are also exposed as
+> pure `*ForTest` seams for the coalescing case. Async handlers commit state only
+> when they resolve, so reconcile/dispatch awaits stay inside one mailbox turn.
+> `notify_dashboard` calls `StatusDashboard.notifyUpdate()`, which fans out to a
+> live dashboard registered via `registerLiveDashboard` (no-op until Phase 5/6).
+> The codex-update envelope reads the TS app-server's camelCase top-level fields
+> (`event`/`sessionId`/`codexAppServerPid`/`usage`) while nested `payload` stays
+> string-keyed JSON off the wire. Test-isolation fix: `teardownWorkflow` now clears
+> the injected `linear_client_module` app-env so the live poll loop sees the real
+> (offline-erroring) Linear client.
 
 ### Phase 5 — Web (SSR + SSE)
 
