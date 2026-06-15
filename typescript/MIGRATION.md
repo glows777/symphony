@@ -139,8 +139,8 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 | Elixir module | LOC | → TS | Test source | Status |
 |---|---:|---|---|---|
 | `symphony_elixir_web/observability_pubsub.ex` | 25 | `web/observability-pubsub.ts` | observability_pubsub_test | green |
-| `symphony_elixir/http_server.ex` + `web/endpoint.ex` + `web/router.ex` | 162 | `web/server.ts` | app_server_test | todo |
-| `web/controllers/observability_api_controller.ex` | 63 | `web/controllers/observability-api.ts` | app_server_test | todo |
+| `symphony_elixir/http_server.ex` + `web/endpoint.ex` + `web/router.ex` | 162 | `web/server.ts` | server_test (from extensions_test) | green |
+| `web/controllers/observability_api_controller.ex` | 63 | `web/server.ts` (router) | server_test (from extensions_test) | green |
 | `web/static_assets.ex` + `web/controllers/static_asset_controller.ex` | 87 | `web/static-assets.ts` | — | todo |
 | `web/presenter.ex` | 242 | `web/presenter.ts` | presenter_test (from extensions_test) | green |
 | `web/live/dashboard_live.ex` + `web/components/layouts.ex` | 507 | `web/live/dashboard.ts` (SSR+SSE) | — | todo |
