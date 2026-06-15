@@ -82,6 +82,12 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 >
 > **Infra helpers added:** `src/symphony/result.ts` (`{:ok,_}/{:error,_}` →
 > `Result<T,E>`) and `src/symphony/app-env.ts` (Elixir `Application` env).
+>
+> **Oracle replay:** `src/symphony/codex/app-server.ts` exports
+> `replayTranscript(serverMessages) => Promise<unknown[]>` (Elixir Port → a
+> Transport abstraction: real `Bun.spawn`/`SSH.startPort` or in-memory replay).
+> Parity vs recorded Elixir Codex fixtures is pending the Elixir toolchain;
+> the app_server_test cases run against real fake-codex subprocesses.
 
 ### Phase 2 — Config & workflow
 
@@ -101,7 +107,7 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 | `symphony_elixir/ssh.ex` | 100 | `symphony/ssh.ts` | ssh_test | green |
 | `symphony_elixir/workspace.ex` | 483 | `symphony/workspace.ts` | workspace_and_config_test | green |
 | `symphony_elixir/codex/dynamic_tool.ex` | 209 | `symphony/codex/dynamic-tool.ts` | dynamic_tool_test | green |
-| `symphony_elixir/codex/app_server.ex` | 1098 | `symphony/codex/app-server.ts` | app_server_test | todo |
+| `symphony_elixir/codex/app_server.ex` | 1098 | `symphony/codex/app-server.ts` | app_server_test | green |
 
 ### Phase 4 — Stateful core
 
