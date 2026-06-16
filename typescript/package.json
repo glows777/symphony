@@ -15,6 +15,7 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "check": "bun run typecheck && bun run lint && bun run test",
+    "verify": "bun run scripts/verify.ts",
     "oracle:record-api": "bun harness/record-api.ts",
     "oracle:assert": "bun harness/assert-parity.ts"
   },

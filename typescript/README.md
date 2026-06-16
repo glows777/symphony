@@ -28,7 +28,62 @@ bun test            # run the test suite (translated from ExUnit)
 bun run typecheck   # tsc --strict, no emit
 bun run lint        # biome check
 bun run check       # typecheck + lint + test (the quality gate)
+bun run verify      # check + a real end-to-end smoke of the running app
 ```
+
+## Testing locally
+
+Everything here runs against this `typescript/` directory alone — **no Elixir, no
+Codex account, no Linear key, and no network access** are required.
+
+Prerequisites: **[Bun](https://bun.sh) only** (`>= 1.3`).
+
+```bash
+cd typescript
+bun install         # install dependencies
+bun run check       # the quality gate: typecheck + lint + test
+bun run verify      # one-command, self-contained end-to-end verification
+```
+
+`bun run verify` runs `bun run check`, then boots the real application
+(`src/cli.ts`) as a child process against [`examples/smoke.workflow.md`](./examples/smoke.workflow.md)
+— the in-memory tracker seeded with one candidate issue, a temp-dir workspace
+root, and the repo's fake Codex ([`test/harness/fake-codex.ts`](./test/harness/fake-codex.ts))
+instead of a real `codex app-server`. It then:
+
+1. polls `GET /api/v1/state` until it returns `200` and asserts the JSON shape;
+2. checks `POST /api/v1/refresh` returns `202` and an unknown issue returns `404`;
+3. confirms a workspace directory was created for the dispatched issue; and
+4. sends `SIGTERM` and asserts the process exits `0` cleanly.
+
+It prints a `PASS`/`FAIL` summary and exits non-zero on any failure.
+
+### Manual smoke (`--port` + curl)
+
+To poke the running app by hand, point the two env vars the smoke workflow uses
+at a temp workspace root and the fake Codex, then boot the CLI on a port:
+
+```bash
+cd typescript
+export SYMPHONY_SMOKE_WORKSPACE_ROOT="$(mktemp -d)"
+export SYMPHONY_SMOKE_FAKE_CODEX="$PWD/test/harness/fake-codex.ts"
+
+bun run src/cli.ts \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails \
+  --port 4000 \
+  examples/smoke.workflow.md
+```
+
+In another terminal:
+
+```bash
+curl -s localhost:4000/api/v1/state | jq        # 200, snapshot JSON
+curl -s -X POST localhost:4000/api/v1/refresh   # 202
+curl -s -o /dev/null -w '%{http_code}\n' localhost:4000/api/v1/NOPE   # 404
+ls "$SYMPHONY_SMOKE_WORKSPACE_ROOT"             # SMOKE-1 (dispatched issue workspace)
+```
+
+Stop the server with `Ctrl-C` (or `SIGTERM`); it shuts down cleanly with exit `0`.
 
 ## Layout
 
