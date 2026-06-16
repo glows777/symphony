@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
-import { type Deps, evaluate } from "../../src/cli.ts";
+import { type Deps, evaluate, main } from "../../src/cli.ts";
 import { err, ok } from "../../src/symphony/result.ts";
 
 // Translated from cli_test.exs. The Elixir `deps` map becomes an injected Deps
@@ -134,5 +134,52 @@ describe("CLI", () => {
     if (!extra.ok) {
       expect(extra.error).toContain("Usage: symphony");
     }
+  });
+
+  describe("main", () => {
+    test("blocks on shutdown after a successful start (does not exit 0 immediately)", async () => {
+      const calls = freshCalls();
+      let waited = false;
+      let resolveWait = (): void => {};
+      const wait = (): Promise<void> =>
+        new Promise<void>((resolve) => {
+          waited = true;
+          resolveWait = resolve;
+        });
+
+      const pending = main([ACK_FLAG, "WORKFLOW.md"], makeDeps({}, calls), wait);
+
+      // The app started, and main is now blocked in `wait` — it must not have
+      // resolved (which is what would tear the server/orchestrator down).
+      const settledEarly = await Promise.race([
+        pending.then(() => "resolved"),
+        new Promise((r) => setTimeout(() => r("pending"), 50)),
+      ]);
+      expect(calls.started).toBe(1);
+      expect(waited).toBe(true);
+      expect(settledEarly).toBe("pending");
+
+      // A shutdown signal lets it exit cleanly with 0.
+      resolveWait();
+      expect(await pending).toBe(0);
+    });
+
+    test("returns 1 on the error path without waiting", async () => {
+      const originalWrite = process.stderr.write.bind(process.stderr);
+      let stderr = "";
+      process.stderr.write = ((chunk: string) => {
+        stderr += chunk;
+        return true;
+      }) as typeof process.stderr.write;
+
+      try {
+        const neverWait = (): Promise<void> => new Promise<void>(() => {});
+        const code = await main(["WORKFLOW.md"], makeDeps({}, freshCalls()), neverWait);
+        expect(code).toBe(1);
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+      expect(stderr).toContain(ACK_FLAG);
+    });
   });
 });

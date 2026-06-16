@@ -225,15 +225,30 @@ function runtimeDeps(): Deps {
   };
 }
 
-export async function main(args: string[]): Promise<number> {
-  const result = await evaluate(args);
-  if (result.ok) {
-    // The app is running; in the escript this blocks on the supervisor. Here the
-    // started Bun.serve keeps the process alive, so we simply return success.
-    return 0;
+export async function main(
+  args: string[],
+  deps: Deps = runtimeDeps(),
+  wait: () => Promise<void> = waitForShutdown,
+): Promise<number> {
+  const result = await evaluate(args, deps);
+  if (!result.ok) {
+    process.stderr.write(`${result.error}\n`);
+    return 1;
   }
-  process.stderr.write(`${result.error}\n`);
-  return 1;
+  // Port of `wait_for_shutdown/0`: Elixir's `main/1` blocks forever monitoring
+  // the supervisor. Here the started Bun.serve + orchestrator timers keep the
+  // event loop alive; we block until a termination signal and then exit 0, so
+  // the entry point does NOT tear the just-started app down.
+  await wait();
+  return 0;
+}
+
+function waitForShutdown(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const stop = (): void => resolve();
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+  });
 }
 
 if (import.meta.main) {
