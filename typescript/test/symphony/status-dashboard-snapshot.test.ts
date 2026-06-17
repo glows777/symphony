@@ -12,10 +12,7 @@ import {
 import { setupWorkflow, teardownWorkflow } from "../support/test-support.ts";
 
 const TERMINAL_COLUMNS = 115;
-const SNAPSHOT_DIR = path.resolve(
-  import.meta.dir,
-  "../../../elixir/test/fixtures/status_dashboard_snapshots",
-);
+const SNAPSHOT_DIR = path.resolve(import.meta.dir, "../fixtures/status_dashboard_snapshots");
 
 // Ported from test/support/snapshot_support.exs.
 function normalizeContent(content: string): string {

@@ -1,14 +1,15 @@
 # Symphony (TypeScript / Bun)
 
-A literal port of the Elixir reference implementation in [`../elixir`](../elixir) to TypeScript
-running on [Bun](https://bun.sh). Symphony is an autonomous agent-orchestration service: it polls a
-tracker (Linear) for work, creates an isolated workspace per issue, runs Codex in app-server mode
-inside that workspace, and supervises the agent until the issue is done. See [`../SPEC.md`](../SPEC.md)
-for the language-agnostic specification (used here as a reference/classification guide only — the
-Elixir implementation is the source of truth for behavior).
+The reference implementation of Symphony, in TypeScript running on [Bun](https://bun.sh). It began
+as a literal, module-for-module port of an Elixir reference implementation (now removed; preserved
+in git history) and is the canonical implementation today. Symphony is an autonomous
+agent-orchestration service: it polls a tracker (Linear) for work, creates an isolated workspace
+per issue, runs Codex in app-server mode inside that workspace, and supervises the agent until the
+issue is done. See [`../SPEC.md`](../SPEC.md) for the language-agnostic specification.
 
-> [!WARNING]
-> This port is in progress. See [`MIGRATION.md`](./MIGRATION.md) for the current status of each module.
+> [!NOTE]
+> The port is complete and green. See [`MIGRATION.md`](./MIGRATION.md) for the module-by-module
+> record and the OTP→TS translation rulebook.
 
 ## Requirements
 

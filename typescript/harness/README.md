@@ -25,6 +25,11 @@ Fixtures are written to `test/fixtures/oracle/{api,codex}/`.
 
 ## 1. Record (against Elixir)
 
+> The Elixir reference was removed at cutover (the TypeScript port is now canonical). To record
+> fresh fixtures you must first restore the Elixir tree from git history, e.g.
+> `git checkout <pre-cutover-commit> -- elixir/`. The already-recorded fixtures under
+> `test/fixtures/oracle/` remain valid for assertion.
+
 **JSON-API.** Start the Elixir build with an HTTP port, then record:
 
 ```bash

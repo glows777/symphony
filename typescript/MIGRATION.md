@@ -1,7 +1,14 @@
 # Symphony: Elixir → TypeScript/Bun Migration
 
-Living plan and scoreboard for porting the Elixir reference implementation (`../elixir`) to
-TypeScript on Bun.
+Plan and scoreboard for porting the Elixir reference implementation to TypeScript on Bun.
+
+> **Status: migration complete.** Every module is `green`, `bun run check` (typecheck + biome +
+> 227 tests) and `bun run verify` (self-contained end-to-end smoke) pass, and the real
+> Linear/Codex live e2e is ported (`test/live-e2e-real.test.ts`, env-gated). The cutover is done:
+> `typescript/` is the canonical implementation, the Elixir tree has been removed (preserved in
+> git history), and the dashboard golden snapshots now live in
+> `test/fixtures/status_dashboard_snapshots/`. The Elixir references below are retained as the
+> historical record of what each module was ported from.
 
 ## Decisions (locked)
 
@@ -10,8 +17,8 @@ TypeScript on Bun.
 - **SPEC.md role:** reference / classification guide only. The Elixir implementation is the
   behavioral source of truth.
 - **Dashboard:** Phoenix LiveView → server-rendered HTML + Server-Sent Events (via `Bun.serve`).
-- **Layout:** new `typescript/` dir kept side-by-side with `elixir/` until parity, then Elixir is
-  deprecated.
+- **Layout:** `typescript/` was kept side-by-side with `elixir/` until parity; at cutover the
+  Elixir tree was removed and `typescript/` became the project root (history retains Elixir).
 - **Verification:** record reference fixtures from the Elixir build (JSON-API responses + Codex
   JSON-RPC stdio traffic), assert the TS build against them. Plus translated unit tests and the
   shared dashboard golden snapshots.
@@ -117,7 +124,8 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 | `symphony_elixir/orchestrator.ex` | 1951 | `symphony/orchestrator.ts` | orchestrator_status_test, core_test | green |
 | `symphony_elixir/status_dashboard.ex` | 1952 | `symphony/status-dashboard.ts` | status_dashboard_snapshot_test | green |
 
-> Dashboard reuses `../elixir/test/fixtures/status_dashboard_snapshots/*` golden files unchanged.
+> Dashboard reuses the `status_dashboard_snapshots/*` golden files unchanged (copied at cutover
+> from the Elixir tree to `test/fixtures/status_dashboard_snapshots/`).
 >
 > **Orchestrator GenServer:** ported as a class holding `State` + a promise-chained
 > serialized mailbox (`cast`/`call`), per the OTP→TS rulebook. `Process.send_after`
@@ -234,7 +242,8 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
    - `record-elixir.ts`: drive the Elixir build, capture JSON-API responses and Codex JSON-RPC
      stdio traffic into versioned fixtures under `test/fixtures/oracle/`.
    - `assert-parity.ts`: replay recorded inputs against the TS build, diff outputs.
-3. **Golden snapshots** — reuse `../elixir/test/fixtures/status_dashboard_snapshots/*` directly.
+3. **Golden snapshots** — `test/fixtures/status_dashboard_snapshots/*` (copied from the Elixir
+   tree at cutover; byte-identical).
 4. **Live e2e** — Phase 7, end-to-end parity gate.
 
 ## Coverage / quality gate
