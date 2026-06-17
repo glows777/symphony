@@ -160,6 +160,35 @@ Docker path) the SSH workers + remote test root on completion. The Docker suppor
 Never commit `LINEAR_API_KEY` or `auth.json`. See the Phase 7 notes in
 [`typescript/MIGRATION.md`](./typescript/MIGRATION.md) for the port details.
 
+**Observed run (2026-06-18, disposable `SYME2E` team):**
+
+- **Local worker scenario — PASS.** Provisioned issue `SYME2E-1`, ran a real local
+  `codex app-server` turn, and Codex **commented on and moved the issue to `Done`**; the test
+  then marked the project **`Completed`**. Verified directly on Linear: `SYME2E-1` =
+  `Done (completed)`, the `Symphony live e2e comment` is present, project status `Completed`.
+- **SSH (auto Docker) scenario — blocked by the local environment, not by Symphony.** The full
+  orchestration worked: the disposable workers built/booted, SSH dispatch connected, the Codex
+  app-server initialized over SSH, a thread started, and **3 turns ran** in the container. But
+  the **Codex process inside the container cannot egress to `chatgpt.com`** (its model backend):
+  `wss://chatgpt.com/backend-api/codex/responses` → `tls handshake eof`, and a direct probe from
+  a worker container gives `chatgpt.com` → `UND_ERR_CONNECT_TIMEOUT` while `api.linear.app`
+  succeeds. With no model backend, Codex can't comment/close, so the turn retries until the
+  300s per-test timeout. **To pass the SSH scenario you need a worker environment whose Codex can
+  reach its backend** (allow container egress to `chatgpt.com`, or point
+  `SYMPHONY_LIVE_SSH_WORKER_HOSTS` at hosts where `codex` is already working).
+
+> Two real fixes came out of this run (committed): the SSH transport now pipes the ssh process
+> stdin (`src/symphony/ssh.ts`) — without it the SSH worker path threw on the first JSON-RPC
+> send and could never start a Codex session — and the live-e2e workflow now uses a 60s
+> `codex_read_timeout_ms` so a cold-booting containerized Codex has time to answer the
+> initialize handshake.
+
+> **Cleanup caveat:** when the SSH test hits the 300s timeout, Bun terminates it abruptly and the
+> test's `finally` (compose down) does **not** run, leaking the worker containers. If a run times
+> out, clean up manually:
+> `docker compose -p symphony-live-e2e-ssh-<n> -f typescript/test/support/live_e2e_docker/docker-compose.yml down -v --remove-orphans`
+> (or `docker ps -a --filter name=symphony-live-e2e` then `docker rm -f`).
+
 ## 6. Step 4 — Cutover (OPTIONAL, only after you're satisfied)
 
 Makes `typescript/` self-contained and removes the Elixir reference. **This is the one
