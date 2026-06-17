@@ -189,7 +189,17 @@ Never commit `LINEAR_API_KEY` or `auth.json`. See the Phase 7 notes in
 > `docker compose -p symphony-live-e2e-ssh-<n> -f typescript/test/support/live_e2e_docker/docker-compose.yml down -v --remove-orphans`
 > (or `docker ps -a --filter name=symphony-live-e2e` then `docker rm -f`).
 
-## 6. Step 4 — Cutover (OPTIONAL, only after you're satisfied)
+## 6. Step 4 — Cutover (DONE)
+
+> **Completed on branch `claude/sweet-clarke-78v0u8`.** The Elixir tree was removed (`git rm -r
+> elixir/`; recoverable from history), the dashboard golden snapshots were copied into
+> `typescript/test/fixtures/status_dashboard_snapshots/` and the snapshot test repointed at them,
+> and the docs (root `README.md`, `typescript/README.md`, `typescript/MIGRATION.md`,
+> `typescript/harness/README.md`) were repointed to treat `typescript/` as the canonical
+> implementation. Re-verified standalone: `bun run check` → 227 pass / 2 skip / 0 fail across 32
+> files; `bun run verify` → PASS. The original steps below are retained for the record; the bash
+> blocks reference the now-removed `elixir/` paths (restore them from git history if you need to
+> re-run any of it).
 
 Makes `typescript/` self-contained and removes the Elixir reference. **This is the one
 irreversible step** (recoverable via git history) — do it on a clone/branch and re-verify
