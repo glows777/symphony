@@ -51,8 +51,11 @@ export function startPort(
     return err(executable.error);
   }
   // The Elixir `:line` port option frames stdout; in Bun line framing is handled
-  // by the reader, so the process is spawned the same way regardless.
+  // by the reader, so the process is spawned the same way regardless. stdin must
+  // be piped: the Codex app-server transport writes JSON-RPC requests to the
+  // ssh process stdin (mirrors the Elixir port writing to the remote stdin).
   const proc = Bun.spawn([executable.value, ...sshArgs(host, command)], {
+    stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
   });

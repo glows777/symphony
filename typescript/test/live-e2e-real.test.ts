@@ -223,6 +223,12 @@ async function runLiveIssueFlow(backend: Backend): Promise<void> {
       codex_approval_policy: "never",
       codex_turn_timeout_ms: 600_000,
       codex_stall_timeout_ms: 600_000,
+      // Deviation from the Elixir literal (which leaves the 5s default): a Codex
+      // app-server booting cold inside a fresh Docker worker needs >5s to answer
+      // the initialize/thread-start handshake (first-run sandbox setup). This is
+      // an IO max-wait, not a test assertion — the agent must still really
+      // comment on and close the issue for the asserts below to pass.
+      codex_read_timeout_ms: 60_000,
       observability_enabled: false,
       prompt: livePrompt(stringField(project, "slugId")),
     });
