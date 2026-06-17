@@ -184,32 +184,48 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 >   before-remove hook + translate `workspace_before_remove_test`.
 > - `StatusDashboard.render_offline_status/0` is still unported; wire it into
 >   `stopApp` once translated.
-> - **Phase 7 (live e2e):** port `test/symphony_elixir/live_e2e_test.exs` +
->   `test/support/live_e2e_docker/` to `test/live-e2e.test.ts` + a Bun harness
->   (real fake-codex subprocess + bound HttpServer + memory tracker, asserting an
->   issue flows dispatch→running→completion end-to-end). Heaviest item; depends on
->   the Docker/SSH support harness being reframed for Bun.
+> - **Phase 7 (live e2e):** done. The sandbox-runnable in-process slice is
+>   `test/live-e2e.test.ts`; the real Docker/Linear/Codex e2e is
+>   `test/live-e2e-real.test.ts` (env-gated on `SYMPHONY_RUN_LIVE_E2E=1`) with the
+>   Docker/SSH support harness under `test/support/live_e2e_docker/`. See the
+>   "Phase 7 — Live e2e" section below.
 
 ### Phase 7 — Live e2e
 
 | Elixir | → TS | Status |
 |---|---|---|
 | (in-process e2e — sandbox-runnable slice) | `test/live-e2e.test.ts` | green |
-| `test/symphony_elixir/live_e2e_test.exs` + `test/support/live_e2e_docker/` | `test/live-e2e.test.ts` + Docker harness | todo (env-gated) |
+| `test/symphony_elixir/live_e2e_test.exs` | `test/live-e2e-real.test.ts` | green (env-gated, `SYMPHONY_RUN_LIVE_E2E=1`) |
+| `test/support/live_e2e_docker/` (Dockerfile/compose/entrypoint/sshd conf) | `test/support/live_e2e_docker/` | ported (verbatim; provider-agnostic SSH+codex worker) |
 
 > **Phase 7 is split.** The sandbox-runnable **in-process e2e is green**:
 > `test/live-e2e.test.ts` drives the real `startApp()` wiring (Orchestrator +
 > AgentRunner + Codex AppServer + HttpServer) against the memory tracker and a
 > fake-codex subprocess with local dispatch, asserting a candidate issue flows
 > dispatch → codex turn → completion, that the agent created the workspace, and
-> that the bound `/api/v1/state` answers. The **real Docker/Linear/Codex e2e**
-> remains environment-gated: the Elixir `live_e2e_test` is tagged `:live_e2e` and
-> skipped unless `SYMPHONY_RUN_LIVE_E2E=1`; it needs Docker Compose workers, SSH,
-> a real Linear team/project + API token, and a Codex `auth.json` — none
-> available in CI / this sandbox. Remaining work: translate `live_e2e_test.exs`
-> to a `SYMPHONY_RUN_LIVE_E2E`-gated `bun test` and reframe
-> `test/support/live_e2e_docker/` (Dockerfile/compose/entrypoint) for the Bun
-> worker image, verifiable only where Docker + credentials exist.
+> that the bound `/api/v1/state` answers.
+>
+> The **real Docker/Linear/Codex e2e** is now ported to
+> `test/live-e2e-real.test.ts` — a literal port of `live_e2e_test.exs` that
+> provisions a disposable Linear team→project→issue via GraphQL (`projectCreate`/
+> `issueCreate`), writes a temp `WORKFLOW.md`, drives one real `codex app-server`
+> run through `AgentRunner.run` that must comment on and close the issue, asserts
+> the `LIVE_E2E_RESULT.txt`/comment/terminal-state outcomes, then marks the
+> project complete. It runs both scenarios (local worker + SSH workers). When
+> `SYMPHONY_LIVE_SSH_WORKER_HOSTS` is unset the SSH scenario spins up the two
+> disposable Docker workers from `test/support/live_e2e_docker/` (copied verbatim
+> from Elixir — the image is provider-agnostic: `node:20` + `@openai/codex` +
+> `sshd`, with `~/.codex/auth.json` mounted in). It is **guarded with
+> `test.skipIf` and skips unless `SYMPHONY_RUN_LIVE_E2E === "1"`**, so the default
+> `bun test` / `bun run check` runs it as 2 skipped tests with no Linear key, no
+> Docker, and no network. Run instructions: HANDOFF.md → "Real live e2e".
+>
+> Adaptation note: ExUnit boots the OTP supervision tree, so the Elixir test
+> terminates/restarts the `Orchestrator` child around the run; `bun test` starts
+> nothing automatically, so the TS port drives `AgentRunner.run/3` directly (the
+> same call the Elixir test makes after terminating the orchestrator). The
+> Elixir mailbox `receive {:worker_runtime_info, ...}` becomes the `AgentRunner`
+> recipient callback capturing the worker runtime info.
 
 ## Verification harness (Phase 0 deliverable)
 

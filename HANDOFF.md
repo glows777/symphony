@@ -112,18 +112,53 @@ bun run start --port 4000 ./WORKFLOW.md            # terminal 1
 bun harness/assert-parity.ts http://127.0.0.1:4000 # terminal 2  (PASS/FAIL/SKIP per fixture)
 ```
 
-**Real Docker/Linear/Codex live e2e** (env-gated; not run by `check`/`verify`):
+### Real live e2e (Docker + real Linear + Codex)
+
+A literal port of the Elixir `live_e2e_test.exs` lives at
+[`typescript/test/live-e2e-real.test.ts`](./typescript/test/live-e2e-real.test.ts). It
+provisions a **disposable** Linear project + issue via GraphQL, writes a temp `WORKFLOW.md`,
+drives one real `codex app-server` run that must comment on and close the issue, asserts the
+result file / comment / terminal-state outcomes, then marks the project complete. It runs two
+scenarios: a **local worker** and **SSH workers**.
+
+It is **env-gated and skips unless `SYMPHONY_RUN_LIVE_E2E=1`** — the default `bun test` /
+`bun run check` runs it as 2 skipped tests with no Linear key, no Docker, no network (verified:
+`bun test test/live-e2e-real.test.ts` → `0 pass, 2 skip`).
+
+**Prerequisites (run-time only):**
+- Bun `>= 1.3`.
+- A **disposable** Linear API key with permission to create projects/issues in the test team.
+  Its team **key** must be `SYME2E` (or override via `SYMPHONY_LIVE_LINEAR_TEAM_KEY`); the team
+  must already exist.
+- A Codex `auth.json` at `~/.codex/auth.json` (mounted into the Docker workers read-only).
+- For the SSH scenario with auto Docker workers: Docker (with `docker compose`), `ssh`, and
+  `ssh-keygen` on `PATH`. To use your own SSH workers instead, set
+  `SYMPHONY_LIVE_SSH_WORKER_HOSTS` (comma-separated `host` or `host:port`); they must share one
+  home dir and have `codex` + `~/.codex/auth.json` available.
+
+**Run it:**
 
 ```bash
 cd typescript
-export LINEAR_API_KEY=...        # disposable key, in shell env only — never in chat/commits
-SYMPHONY_RUN_LIVE_E2E=1 bun test test/live-e2e.test.ts
+export LINEAR_API_KEY=...                  # disposable key — shell env ONLY, never in chat/commits
+# optional overrides:
+# export SYMPHONY_LIVE_LINEAR_TEAM_KEY=SYME2E
+# export SYMPHONY_LIVE_SSH_WORKER_HOSTS="host1:2201,host2:2202"   # skips Docker if set
+
+# both scenarios (local + ssh):
+SYMPHONY_RUN_LIVE_E2E=1 bun test test/live-e2e-real.test.ts
+
+# just one scenario:
+SYMPHONY_RUN_LIVE_E2E=1 bun test test/live-e2e-real.test.ts -t "local worker"
+SYMPHONY_RUN_LIVE_E2E=1 bun test test/live-e2e-real.test.ts -t "ssh worker"
 ```
 
-> The real live e2e additionally needs Docker Compose workers, SSH, a real Linear
-> team/project, and a Codex `auth.json`. Its harness is not fully reframed for Bun yet — see
-> the Phase 7 notes in [`typescript/MIGRATION.md`](./typescript/MIGRATION.md). The sandbox
-> in-process e2e (`test/live-e2e.test.ts`, default) already runs as part of `bun run check`.
+Each test creates its own project/issue and tears down its temp workspace and (for the auto
+Docker path) the SSH workers + remote test root on completion. The Docker support files are at
+[`typescript/test/support/live_e2e_docker/`](./typescript/test/support/live_e2e_docker/)
+(`Dockerfile`, `docker-compose.yml`, `live_worker_entrypoint.sh`, `symphony-live-worker.conf`).
+Never commit `LINEAR_API_KEY` or `auth.json`. See the Phase 7 notes in
+[`typescript/MIGRATION.md`](./typescript/MIGRATION.md) for the port details.
 
 ## 6. Step 4 — Cutover (OPTIONAL, only after you're satisfied)
 
