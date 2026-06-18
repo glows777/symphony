@@ -252,3 +252,66 @@ before relying on it.
   path regressed (gate failed, server didn't bind, a status code / workspace / `SIGTERM`
   assertion failed) — fix the regression, not the check. If the `[verify] check` step itself
   failed, run `bun run check` to localize it to a unit test.
+
+## 9. Session log — Phase 7 real e2e + cutover (2026-06-18)
+
+Work done on branch `claude/sweet-clarke-78v0u8` (pushed to `origin`). All commits keep
+`bun run check` and `bun run verify` green; `.env`/secrets never committed; the Linear key was
+never printed.
+
+**Ported the real Linear/Codex/Docker live e2e** (Option 2):
+
+- Copied the Elixir Docker worker harness verbatim to
+  `typescript/test/support/live_e2e_docker/` (`Dockerfile`, `docker-compose.yml`,
+  `live_worker_entrypoint.sh`, `symphony-live-worker.conf`) — provider-agnostic, no adaptation
+  needed.
+- Wrote `typescript/test/live-e2e-real.test.ts`, a literal port of `live_e2e_test.exs` reusing the
+  already-ported modules (AgentRunner, linear/client `graphql`, ssh, workflow, issue,
+  test-support). It provisions a disposable Linear team→project→issue via GraphQL, writes a temp
+  `WORKFLOW.md`, drives one real `codex app-server` run that must comment on and close the issue,
+  asserts the result-file/comment/terminal-state outcomes, then marks the project complete. Runs
+  the local-worker and SSH-worker scenarios. **Guarded with `test.skipIf` — skips unless
+  `SYMPHONY_RUN_LIVE_E2E=1`**, so the default `bun test`/`bun run check` stays green with no key,
+  no Docker, no network.
+- Added a root `.gitignore` (`.env`, `.env.*`) so a local Linear key is never committed.
+
+**Ran the real e2e** against a freshly-created disposable Linear team `SYME2E` (created via
+`teamCreate`):
+
+- **Local-worker scenario — PASS, verified on Linear.** Issue `SYME2E-1` → real `codex app-server`
+  turn → Codex commented on and moved it to `Done`; the test marked the project `Completed`.
+  Confirmed via the Linear API: `SYME2E-1` = `Done (completed)`, the `Symphony live e2e comment`
+  is present, project `Completed`.
+- **SSH/Docker scenario — blocked by the local environment, not by Symphony.** Full orchestration
+  worked (workers built/booted, SSH dispatch connected, Codex initialized over SSH, a thread
+  started, 3 turns ran), but the **container's Codex cannot egress to `chatgpt.com`** (its model
+  backend): `tls handshake eof` to `wss://chatgpt.com/...`, and a direct probe gave
+  `chatgpt.com → UND_ERR_CONNECT_TIMEOUT` while `api.linear.app` succeeded. No backend → can't
+  comment/close → the turn retries until the 300s per-test timeout. The SSH scenario needs a
+  worker environment whose Codex can reach its backend. See the "Observed run" note in §5.
+- **Two real fixes the run surfaced** (production/robustness, not test-weakening): `ssh.ts`
+  `startPort` now pipes the ssh process stdin (without it the SSH Codex transport threw on the
+  first JSON-RPC send and could never start a session — masked by mocked unit tests); and the
+  live-e2e workflow uses a 60s `codex_read_timeout_ms` so a cold-booting containerized Codex can
+  answer the initialize handshake.
+- **Cleanup:** the timed-out SSH test's `finally` didn't run, so I compose-downed the leaked
+  workers and cleared the prewarm image + temp dirs manually (all verified clean). The `SYME2E`
+  team still holds `SYME2E-1` (passing run) plus `SYME2E-2/3/4` (left in progress from the blocked
+  SSH runs) and their projects — delete the team to discard them.
+
+**Did the cutover (§6, Step 4):**
+
+- Copied the dashboard golden snapshots into `typescript/test/fixtures/status_dashboard_snapshots/`
+  and repointed `status-dashboard-snapshot.test.ts` at them (the correct relative path from
+  `test/symphony/` is `../fixtures`, not the `../../fixtures` the original §6 sketch suggested).
+- `git rm -r elixir/` (recoverable from history).
+- Repointed docs (root `README.md`, `typescript/README.md`, `typescript/MIGRATION.md`,
+  `typescript/harness/README.md`) to treat `typescript/` as the canonical implementation; kept the
+  `// Literal port of symphony_elixir/…` provenance comments as historical attribution.
+- Re-verified standalone: `bun run check` → 227 pass / 2 skip / 0 fail across 32 files;
+  `bun run verify` → PASS.
+
+**Note:** §1–§6 above were written before the cutover and still describe the side-by-side
+`elixir/` + `typescript/` layout and reference `elixir/` paths (e.g. the §6 bash blocks, the §7
+"source of truth" line). Post-cutover, `typescript/` is the project and `elixir/` lives only in git
+history — restore it from history if you need to re-run anything that references it.
