@@ -27,12 +27,14 @@ Tell your favorite coding agent to build Symphony in a programming language of y
 
 ### Option 2. Use our experimental reference implementation
 
-Check out [elixir/README.md](elixir/README.md) for instructions on how to set up your environment
-and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
-help with the setup:
+The reference implementation lives in [`typescript/`](typescript) (TypeScript on
+[Bun](https://bun.sh)). See [typescript/README.md](typescript/README.md) for setup, the quality
+gate (`bun run check`), and the self-contained end-to-end smoke (`bun run verify`).
 
-> Set up Symphony for my repository based on
-> https://github.com/openai/symphony/blob/main/elixir/README.md
+> An earlier Elixir reference implementation was the original source of truth for behavior; the
+> TypeScript port is now the canonical implementation and the Elixir tree has been removed (it
+> remains in git history). See [typescript/MIGRATION.md](typescript/MIGRATION.md) for the
+> port's module-by-module record and the OTP→TS translation rulebook.
 
 ---
 

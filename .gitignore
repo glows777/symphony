@@ -1,0 +1,4 @@
+# Secrets — never commit. The real live e2e reads LINEAR_API_KEY from the shell
+# env; keep any local .env out of git.
+.env
+.env.*
