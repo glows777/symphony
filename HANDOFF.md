@@ -315,3 +315,25 @@ never printed.
 `elixir/` + `typescript/` layout and reference `elixir/` paths (e.g. the §6 bash blocks, the §7
 "source of truth" line). Post-cutover, `typescript/` is the project and `elixir/` lives only in git
 history — restore it from history if you need to re-run anything that references it.
+
+## 10. Session log — PR #1 + review fixes (2026-06-21)
+
+Opened **PR #1** (`claude/sweet-clarke-78v0u8` → `main`): "Migrate Symphony from Elixir to
+TypeScript/Bun". Requested merge via merge-commit or rebase-merge (not squash) to preserve the
+per-module commit history.
+
+Addressed two **P1 review comments** on `typescript/src/app.ts` (`startApp`), both real startup
+fidelity gaps vs the Elixir `:one_for_one` supervision tree (commit `fca798f`):
+
+- **WorkflowStore was not started.** `startApp` now calls `WorkflowStore.startLink()` before the
+  orchestrator (mirroring the supervisor child order) so config reads use the cached
+  last-known-good `WORKFLOW.md` instead of re-parsing on every poll — a transient invalid edit can
+  no longer make `refreshRuntimeConfig()` throw in the tick handler and stall the poll loop;
+  `stopApp` stops it during shutdown.
+- **HTTP bind failures were swallowed.** `startApp` now checks the `StartResult`; on `kind: "error"`
+  (e.g. port in use) it unwinds the orchestrator + workflow store and returns an error instead of
+  reporting a successful start with no listener (`kind: "ignore"` = no port configured, still ok).
+
+Verified: `bun run check` (227 pass / 2 skip / 0 fail) and `bun run verify` green; a second
+instance on an in-use port exits `1` with `EADDRINUSE` instead of falsely succeeding. Pushed; both
+review threads answered.
