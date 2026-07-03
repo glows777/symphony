@@ -2197,6 +2197,17 @@ function refreshRuntimeConfig(state: State): State {
 }
 
 function logDispatchError(error: unknown): void {
+  // TrackerError-shaped failures carry their own operator copy; the plugin
+  // supplies it so the core stays provider-agnostic.
+  if (
+    isObj(error) &&
+    typeof error.tag === "string" &&
+    typeof error.code === "string" &&
+    typeof error.message === "string"
+  ) {
+    logger.error(error.message);
+    return;
+  }
   const tag = isObj(error) && typeof error.tag === "string" ? error.tag : null;
   switch (tag) {
     case "missing_linear_api_token":

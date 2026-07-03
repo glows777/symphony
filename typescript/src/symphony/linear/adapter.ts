@@ -56,12 +56,12 @@ export async function createComment(
   const response = await clientModule().graphql(CREATE_COMMENT_MUTATION, { issueId, body });
   if (isOkResult(response)) {
     const success = getInPath(response.value, ["data", "commentCreate", "success"]) === true;
-    return success ? ok(undefined) : err({ tag: "comment_create_failed" });
+    return success ? ok(undefined) : err(commentCreateFailedError());
   }
   if (isErrResult(response)) {
     return err(response.error);
   }
-  return err({ tag: "comment_create_failed" });
+  return err(commentCreateFailedError());
 }
 
 export async function updateIssueState(
@@ -78,12 +78,12 @@ export async function updateIssueState(
   });
   if (isOkResult(response)) {
     const success = getInPath(response.value, ["data", "issueUpdate", "success"]) === true;
-    return success ? ok(undefined) : err({ tag: "issue_update_failed" });
+    return success ? ok(undefined) : err(issueUpdateFailedError());
   }
   if (isErrResult(response)) {
     return err(response.error);
   }
-  return err({ tag: "issue_update_failed" });
+  return err(issueUpdateFailedError());
 }
 
 async function resolveStateId(
@@ -108,7 +108,30 @@ async function resolveStateId(
       return ok(stateId);
     }
   }
-  return err({ tag: "state_not_found" });
+  return err({
+    tag: "state_not_found",
+    code: "provider_error",
+    message: `Linear workflow state ${JSON.stringify(stateName)} not found`,
+  });
+}
+
+// Legacy tags preserved; `code`/`message` follow the TrackerError convention
+// from plugins/types.ts.
+
+function commentCreateFailedError() {
+  return {
+    tag: "comment_create_failed",
+    code: "provider_error",
+    message: "Linear comment creation failed",
+  } as const;
+}
+
+function issueUpdateFailedError() {
+  return {
+    tag: "issue_update_failed",
+    code: "provider_error",
+    message: "Linear issue state update failed",
+  } as const;
 }
 
 function isOkResult(value: unknown): value is { ok: true; value: unknown } {

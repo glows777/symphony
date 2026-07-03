@@ -67,10 +67,10 @@ export async function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> 
   const projectSlug = tracker.projectSlug;
 
   if (tracker.apiKey === null) {
-    return err({ tag: "missing_linear_api_token" });
+    return err(missingApiTokenError());
   }
   if (projectSlug === null) {
-    return err({ tag: "missing_linear_project_slug" });
+    return err(missingProjectSlugError());
   }
   const assigneeFilter = await routingAssigneeFilter();
   if (!assigneeFilter.ok) {
@@ -87,10 +87,10 @@ export async function fetchIssuesByStates(stateNames: string[]): Promise<Result<
   const tracker = settingsBang().tracker;
   const projectSlug = tracker.projectSlug;
   if (tracker.apiKey === null) {
-    return err({ tag: "missing_linear_api_token" });
+    return err(missingApiTokenError());
   }
   if (projectSlug === null) {
-    return err({ tag: "missing_linear_project_slug" });
+    return err(missingProjectSlugError());
   }
   return doFetchByStates(projectSlug, normalizedStates, null);
 }
@@ -128,10 +128,20 @@ export async function graphql(
     logger.error(
       `Linear GraphQL request failed status=${response.value.status}${linearErrorContext(payload, response.value)}`,
     );
-    return err({ tag: "linear_api_status", status: response.value.status });
+    return err({
+      tag: "linear_api_status",
+      code: "provider_status",
+      message: `Linear GraphQL request failed with HTTP ${response.value.status}`,
+      status: response.value.status,
+    });
   }
   logger.error(`Linear GraphQL request failed: ${inspect(response.error)}`);
-  return err({ tag: "linear_api_request", reason: response.error });
+  return err({
+    tag: "linear_api_request",
+    code: "transport_failed",
+    message: "Linear GraphQL request failed before receiving a response",
+    reason: response.error,
+  });
 }
 
 // ---- test seams (mirror the *_for_test helpers) ----------------------------
@@ -305,7 +315,7 @@ function truncateErrorBody(body: string): string {
 function graphqlHeaders(): Result<Record<string, string>, unknown> {
   const token = settingsBang().tracker.apiKey;
   if (token === null) {
-    return err({ tag: "missing_linear_api_token" });
+    return err(missingApiTokenError());
   }
   return ok({ Authorization: token, "Content-Type": "application/json" });
 }
@@ -345,9 +355,18 @@ function decodeLinearResponse(
   }
   const errors = getIn(body, ["errors"]);
   if (errors !== undefined) {
-    return err({ tag: "linear_graphql_errors", errors });
+    return err({
+      tag: "linear_graphql_errors",
+      code: "provider_error",
+      message: "Linear GraphQL response contained errors",
+      errors,
+    });
   }
-  return err({ tag: "linear_unknown_payload" });
+  return err({
+    tag: "linear_unknown_payload",
+    code: "invalid_payload",
+    message: "Linear GraphQL response had an unexpected shape",
+  });
 }
 
 function decodeLinearPageResponse(
@@ -384,7 +403,11 @@ function nextPageCursor(pageInfo: PageInfo): Result<string, unknown> | "done" {
     if (typeof pageInfo.endCursor === "string" && pageInfo.endCursor.length > 0) {
       return ok(pageInfo.endCursor);
     }
-    return err({ tag: "linear_missing_end_cursor" });
+    return err({
+      tag: "linear_missing_end_cursor",
+      code: "invalid_payload",
+      message: "Linear pagination response is missing endCursor",
+    });
   }
   return "done";
 }
@@ -453,7 +476,7 @@ function buildAssigneeFilterSync(assignee: string): Result<AssigneeFilter, unkno
     return ok(null);
   }
   if (normalized === "me") {
-    return err({ tag: "missing_linear_viewer_identity" });
+    return err(missingViewerIdentityError());
   }
   return ok({ configuredAssignee: assignee, matchValues: new Set([normalized]) });
 }
@@ -467,11 +490,11 @@ async function resolveViewerAssigneeFilter(): Promise<Result<AssigneeFilter, unk
   if (isObject(viewer)) {
     const viewerId = normalizeAssigneeMatchValue(viewer.id);
     if (viewerId === null) {
-      return err({ tag: "missing_linear_viewer_identity" });
+      return err(missingViewerIdentityError());
     }
     return ok({ configuredAssignee: "me", matchValues: new Set([viewerId]) });
   }
-  return err({ tag: "missing_linear_viewer_identity" });
+  return err(missingViewerIdentityError());
 }
 
 function normalizeAssigneeMatchValue(value: unknown): string | null {
@@ -530,6 +553,35 @@ function parseDateTime(raw: unknown): Date | null {
 
 function parsePriority(priority: unknown): number | null {
   return typeof priority === "number" && Number.isInteger(priority) ? priority : null;
+}
+
+// ---- error constructors ------------------------------------------------------
+// Legacy tags are preserved verbatim; `code`/`message` follow the TrackerError
+// convention from plugins/types.ts (extra fields like `status` stay top-level
+// for compatibility with existing consumers).
+
+function missingApiTokenError() {
+  return {
+    tag: "missing_linear_api_token",
+    code: "missing_credentials",
+    message: "Linear API token missing in WORKFLOW.md",
+  } as const;
+}
+
+function missingProjectSlugError() {
+  return {
+    tag: "missing_linear_project_slug",
+    code: "missing_config",
+    message: "Linear project slug missing in WORKFLOW.md",
+  } as const;
+}
+
+function missingViewerIdentityError() {
+  return {
+    tag: "missing_linear_viewer_identity",
+    code: "missing_config",
+    message: 'Unable to resolve the Linear viewer identity for assignee "me"',
+  } as const;
 }
 
 // ---- helpers ---------------------------------------------------------------

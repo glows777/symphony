@@ -145,7 +145,12 @@ describe("Linear.Client", () => {
       const result = await graphql("query Viewer { viewer { id } }", {}, { requestFun });
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.error).toEqual({ tag: "linear_api_status", status: 400 });
+        expect(result.error).toEqual({
+          tag: "linear_api_status",
+          code: "provider_status",
+          message: "Linear GraphQL request failed with HTTP 400",
+          status: 400,
+        });
       }
 
       const logged = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");

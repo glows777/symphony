@@ -89,7 +89,11 @@ describe("Tracker", () => {
 
     graphqlResult = ok({ data: { commentCreate: { success: false } } });
     expect(await Adapter.createComment("issue-1", "broken")).toEqual(
-      err({ tag: "comment_create_failed" }),
+      err({
+        tag: "comment_create_failed",
+        code: "provider_error",
+        message: "Linear comment creation failed",
+      }),
     );
 
     graphqlResult = err("boom");
@@ -97,12 +101,20 @@ describe("Tracker", () => {
 
     graphqlResult = ok({ data: {} });
     expect(await Adapter.createComment("issue-1", "weird")).toEqual(
-      err({ tag: "comment_create_failed" }),
+      err({
+        tag: "comment_create_failed",
+        code: "provider_error",
+        message: "Linear comment creation failed",
+      }),
     );
 
     graphqlResult = "unexpected";
     expect(await Adapter.createComment("issue-1", "odd")).toEqual(
-      err({ tag: "comment_create_failed" }),
+      err({
+        tag: "comment_create_failed",
+        code: "provider_error",
+        message: "Linear comment creation failed",
+      }),
     );
 
     // update_issue_state: state lookup then mutation.
@@ -117,7 +129,11 @@ describe("Tracker", () => {
       ok({ data: { issueUpdate: { success: false } } }),
     ];
     expect(await Adapter.updateIssueState("issue-1", "Broken")).toEqual(
-      err({ tag: "issue_update_failed" }),
+      err({
+        tag: "issue_update_failed",
+        code: "provider_error",
+        message: "Linear issue state update failed",
+      }),
     );
 
     graphqlResults = [err("boom")];
@@ -125,7 +141,11 @@ describe("Tracker", () => {
 
     graphqlResults = [ok({ data: {} })];
     expect(await Adapter.updateIssueState("issue-1", "Missing")).toEqual(
-      err({ tag: "state_not_found" }),
+      err({
+        tag: "state_not_found",
+        code: "provider_error",
+        message: 'Linear workflow state "Missing" not found',
+      }),
     );
 
     graphqlResults = [
@@ -133,7 +153,11 @@ describe("Tracker", () => {
       ok({ data: {} }),
     ];
     expect(await Adapter.updateIssueState("issue-1", "Weird")).toEqual(
-      err({ tag: "issue_update_failed" }),
+      err({
+        tag: "issue_update_failed",
+        code: "provider_error",
+        message: "Linear issue state update failed",
+      }),
     );
 
     graphqlResults = [
@@ -141,7 +165,11 @@ describe("Tracker", () => {
       "unexpected",
     ];
     expect(await Adapter.updateIssueState("issue-1", "Odd")).toEqual(
-      err({ tag: "issue_update_failed" }),
+      err({
+        tag: "issue_update_failed",
+        code: "provider_error",
+        message: "Linear issue state update failed",
+      }),
     );
   });
 
