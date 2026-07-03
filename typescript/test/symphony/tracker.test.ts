@@ -4,6 +4,8 @@ import * as Adapter from "../../src/symphony/linear/adapter.ts";
 import type { GraphqlOpts, LinearClientModule } from "../../src/symphony/linear/client.ts";
 import type { Issue } from "../../src/symphony/linear/issue.ts";
 import { newIssue } from "../../src/symphony/linear/issue.ts";
+import { LinearPlugin } from "../../src/symphony/plugins/linear/plugin.ts";
+import { MemoryPlugin } from "../../src/symphony/plugins/memory/plugin.ts";
 import { type Result, err, ok } from "../../src/symphony/result.ts";
 import type { MemoryEvent } from "../../src/symphony/tracker/memory.ts";
 import * as Memory from "../../src/symphony/tracker/memory.ts";
@@ -29,7 +31,7 @@ describe("Tracker", () => {
     putEnv("memory_tracker_recipient", (event: MemoryEvent) => events.push(event));
     writeWorkflowFile(workflowFilePath(), { tracker_kind: "memory" });
 
-    expect(Tracker.adapter()).toBe(Memory);
+    expect(Tracker.adapter()).toBe(MemoryPlugin);
     expect(await Tracker.fetchCandidateIssues()).toEqual(ok([issue]));
     expect(await Tracker.fetchIssuesByStates([" in progress ", 42 as unknown as string])).toEqual(
       ok([issue]),
@@ -44,7 +46,7 @@ describe("Tracker", () => {
     ]);
 
     writeWorkflowFile(workflowFilePath(), { tracker_kind: "linear" });
-    expect(Tracker.adapter()).toBe(Adapter);
+    expect(Tracker.adapter()).toBe(LinearPlugin);
   });
 
   test("linear adapter delegates reads and validates mutation responses", async () => {

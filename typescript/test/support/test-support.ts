@@ -236,5 +236,6 @@ export function teardownWorkflow(root: string): void {
   deleteEnv("memory_tracker_issues");
   deleteEnv("memory_tracker_recipient");
   deleteEnv("linear_client_module");
+  deleteEnv("tracker_plugin_overrides");
   fs.rmSync(root, { recursive: true, force: true });
 }
