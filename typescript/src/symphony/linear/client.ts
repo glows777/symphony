@@ -5,6 +5,7 @@
 
 import { settingsBang } from "../config.ts";
 import { logger } from "../logger.ts";
+import { linearSettings } from "../plugins/linear/settings.ts";
 import { type Result, err, ok } from "../result.ts";
 import { type Blocker, type Issue, newIssue } from "./issue.ts";
 
@@ -63,10 +64,11 @@ export type GraphqlFun = (
 type JsonObject = Record<string, unknown>;
 
 export async function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> {
-  const tracker = settingsBang().tracker;
-  const projectSlug = tracker.projectSlug;
+  const settings = settingsBang();
+  const linear = linearSettings(settings);
+  const projectSlug = linear.projectSlug;
 
-  if (tracker.apiKey === null) {
+  if (linear.apiKey === null) {
     return err(missingApiTokenError());
   }
   if (projectSlug === null) {
@@ -76,7 +78,7 @@ export async function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> 
   if (!assigneeFilter.ok) {
     return err(assigneeFilter.error);
   }
-  return doFetchByStates(projectSlug, tracker.activeStates, assigneeFilter.value);
+  return doFetchByStates(projectSlug, settings.tracker.activeStates, assigneeFilter.value);
 }
 
 export async function fetchIssuesByStates(stateNames: string[]): Promise<Result<Issue[], unknown>> {
@@ -84,9 +86,9 @@ export async function fetchIssuesByStates(stateNames: string[]): Promise<Result<
   if (normalizedStates.length === 0) {
     return ok([]);
   }
-  const tracker = settingsBang().tracker;
-  const projectSlug = tracker.projectSlug;
-  if (tracker.apiKey === null) {
+  const linear = linearSettings(settingsBang());
+  const projectSlug = linear.projectSlug;
+  if (linear.apiKey === null) {
     return err(missingApiTokenError());
   }
   if (projectSlug === null) {
@@ -313,7 +315,7 @@ function truncateErrorBody(body: string): string {
 }
 
 function graphqlHeaders(): Result<Record<string, string>, unknown> {
-  const token = settingsBang().tracker.apiKey;
+  const token = linearSettings(settingsBang()).apiKey;
   if (token === null) {
     return err(missingApiTokenError());
   }
@@ -325,7 +327,7 @@ async function postGraphqlRequest(
   headers: Record<string, string>,
 ): Promise<Result<RequestResponse, unknown>> {
   try {
-    const response = await fetch(settingsBang().tracker.endpoint, {
+    const response = await fetch(linearSettings(settingsBang()).endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
@@ -451,7 +453,7 @@ function assignedToWorker(assignee: unknown, assigneeFilter: AssigneeFilter): bo
 }
 
 async function routingAssigneeFilter(): Promise<Result<AssigneeFilter, unknown>> {
-  const assignee = settingsBang().tracker.assignee;
+  const assignee = linearSettings(settingsBang()).assignee;
   if (assignee === null) {
     return ok(null);
   }

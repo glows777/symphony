@@ -4,12 +4,35 @@
 // injected `memory_tracker_recipient` callback. It implements every optional
 // capability so it can stand in for a full-featured tracker in tests.
 
+import type { JsonMap } from "../../config/schema.ts";
+import { ok } from "../../result.ts";
 import * as Memory from "../../tracker/memory.ts";
-import type { TrackerPlugin } from "../types.ts";
+import type { PluginFieldError, TrackerPlugin } from "../types.ts";
 
 export const MemoryPlugin: TrackerPlugin = {
   id: "memory",
   displayName: "In-memory (testing)",
+
+  configSchema: {
+    // Permissive by design: seed entries stay exactly as authored and the
+    // memory tracker skips malformed ones at read time, matching the
+    // pre-plugin behavior where the schema ignored this key entirely.
+    cast(raw: JsonMap, _section: string): { value: JsonMap; errors: PluginFieldError[] } {
+      const value: JsonMap = {};
+      if (Array.isArray(raw.seed_issues)) {
+        value.seed_issues = raw.seed_issues;
+      }
+      return { value, errors: [] };
+    },
+
+    finalize(value: JsonMap): JsonMap {
+      return value;
+    },
+
+    validate() {
+      return ok(undefined);
+    },
+  },
 
   fetchCandidateIssues: Memory.fetchCandidateIssues,
   fetchIssuesByStates: Memory.fetchIssuesByStates,

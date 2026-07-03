@@ -7,6 +7,7 @@
 // snake_case field names so the orchestrator snapshot maps over unchanged.
 
 import { serverPort, settingsBang } from "./config.ts";
+import { linearSettings } from "./plugins/linear/settings.ts";
 import type { Result } from "./result.ts";
 import { boundPort } from "./web/server-port.ts";
 
@@ -181,7 +182,7 @@ function formatSnapshotContent(
 }
 
 function formatProjectLinkLines(): string[] {
-  const projectSlug = settingsBang().tracker.projectSlug;
+  const projectSlug = linearSettings(settingsBang()).projectSlug;
   const projectPart =
     typeof projectSlug === "string" && projectSlug !== ""
       ? colorize(linearProjectUrl(projectSlug), ANSI_CYAN)

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
 import { putEnv } from "../../src/symphony/app-env.ts";
 import * as Adapter from "../../src/symphony/linear/adapter.ts";
 import type { GraphqlOpts, LinearClientModule } from "../../src/symphony/linear/client.ts";
@@ -176,5 +177,33 @@ describe("Tracker", () => {
   test("memory adapter stays quiet without a recipient", async () => {
     expect(await Memory.createComment("issue-1", "quiet")).toEqual(ok(undefined));
     expect(await Memory.updateIssueState("issue-1", "Quiet")).toEqual(ok(undefined));
+  });
+
+  test("memory tracker serves seed_issues claimed by its plugin config schema", async () => {
+    fs.writeFileSync(
+      workflowFilePath(),
+      [
+        "---",
+        "tracker:",
+        '  kind: "memory"',
+        "  seed_issues:",
+        '    - id: "seed-1"',
+        '      identifier: "MT-77"',
+        '      title: "Seeded issue"',
+        '      state: "Todo"',
+        "---",
+        "Prompt body.",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await Tracker.fetchCandidateIssues();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toHaveLength(1);
+      expect(result.value[0]?.id).toBe("seed-1");
+      expect(result.value[0]?.identifier).toBe("MT-77");
+      expect(result.value[0]?.state).toBe("Todo");
+    }
   });
 });

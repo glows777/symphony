@@ -12,10 +12,10 @@
 // behavior is unchanged when no `seed_issues` key is present.
 
 import { getEnv } from "../app-env.ts";
+import { settings } from "../config.ts";
 import type { JsonMap } from "../config/schema.ts";
 import { type Issue, isIssue, newIssue } from "../linear/issue.ts";
 import { type Result, ok } from "../result.ts";
-import { current as currentWorkflow } from "../workflow.ts";
 
 export type MemoryEvent =
   | { tag: "memory_tracker_comment"; issueId: string; body: string }
@@ -60,19 +60,16 @@ function issueEntries(): Issue[] {
   return [...configuredIssues().filter(isIssue), ...seededIssues()];
 }
 
-// Reads `tracker.seed_issues` from the active WORKFLOW.md (the raw, snake_cased
-// config map) and brands each entry as an `Issue`. Unknown/blank entries are
-// skipped. The config schema ignores this key, so it does not affect parsing.
+// Reads `tracker.seed_issues` from the memory plugin's config section
+// (claimed by its configSchema cast; entries keep their raw snake_cased
+// shape) and brands each entry as an `Issue`. Unknown/blank entries are
+// skipped.
 function seededIssues(): Issue[] {
-  const workflow = currentWorkflow();
-  if (!workflow.ok) {
+  const config = settings();
+  if (!config.ok) {
     return [];
   }
-  const tracker = workflow.value.config.tracker;
-  if (!isMap(tracker)) {
-    return [];
-  }
-  const seeds = tracker.seed_issues;
+  const seeds = config.value.tracker.plugin.seed_issues;
   if (!Array.isArray(seeds)) {
     return [];
   }

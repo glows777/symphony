@@ -2,6 +2,10 @@
 //
 // Runtime configuration loaded from WORKFLOW.md.
 
+// Side-effect import: built-in tracker plugins must be registered before
+// settings are parsed (schema casting delegates the tracker plugin section).
+import "./plugins/index.ts";
+
 import { getEnv } from "./app-env.ts";
 import {
   type JsonMap,
@@ -10,6 +14,7 @@ import {
   parse as parseSchema,
   resolveRuntimeTurnSandboxPolicy,
 } from "./config/schema.ts";
+import { trackerPlugin } from "./plugins/registry.ts";
 import { type Result, err, ok } from "./result.ts";
 import { current as workflowCurrent } from "./workflow.ts";
 
@@ -112,20 +117,15 @@ export function codexRuntimeSettings(
 }
 
 function validateSemantics(settings: Settings): Result<undefined, unknown> {
-  const { kind, apiKey, projectSlug } = settings.tracker;
-  if (kind === null) {
-    return err({ tag: "missing_tracker_kind" });
+  const plugin = trackerPlugin(settings.tracker.kind);
+  if (!plugin.ok) {
+    return err(plugin.error);
   }
-  if (kind !== "linear" && kind !== "memory") {
-    return err({ tag: "unsupported_tracker_kind", value: kind });
+  const schema = plugin.value.configSchema;
+  if (schema === undefined) {
+    return ok(undefined);
   }
-  if (kind === "linear" && typeof apiKey !== "string") {
-    return err({ tag: "missing_linear_api_token" });
-  }
-  if (kind === "linear" && typeof projectSlug !== "string") {
-    return err({ tag: "missing_linear_project_slug" });
-  }
-  return ok(undefined);
+  return schema.validate(settings);
 }
 
 function formatConfigError(reason: unknown): string {

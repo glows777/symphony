@@ -9,21 +9,25 @@
 import os from "node:os";
 import path from "node:path";
 import { canonicalize } from "../path-safety.ts";
+import { envReferenceName } from "../plugins/config-helpers.ts";
+import { trackerPluginOrNull } from "../plugins/registry.ts";
 import { type Result, err, ok } from "../result.ts";
 
 const DEFAULT_WORKSPACE_ROOT = path.join(os.tmpdir(), "symphony_workspaces");
 
 export type JsonMap = { [key: string]: unknown };
 
+// Core tracker settings: only the fields the orchestrator's scheduling loop
+// reads (routing labels + state machine vocabulary). Provider-specific fields
+// (endpoint, credentials, project selection, ...) live in `plugin`, cast and
+// finalized by the active tracker plugin's configSchema; unregistered kinds
+// pass the raw section through untouched so validate() can report them.
 export type TrackerSettings = {
   kind: string | null;
-  endpoint: string;
-  apiKey: string | null;
-  projectSlug: string | null;
-  assignee: string | null;
   requiredLabels: string[];
   activeStates: string[];
   terminalStates: string[];
+  plugin: JsonMap;
 };
 
 export type PollingSettings = { intervalMs: number };
@@ -300,19 +304,9 @@ function castTracker(raw: unknown, section: string, errors: FieldError[]): Track
     [],
     errors,
   );
+  const kind = field<string | null>(r, "kind", section, castString, null, errors).value;
   return {
-    kind: field<string | null>(r, "kind", section, castString, null, errors).value,
-    endpoint: field<string>(
-      r,
-      "endpoint",
-      section,
-      castString,
-      "https://api.linear.app/graphql",
-      errors,
-    ).value,
-    apiKey: field<string | null>(r, "api_key", section, castString, null, errors).value,
-    projectSlug: field<string | null>(r, "project_slug", section, castString, null, errors).value,
-    assignee: field<string | null>(r, "assignee", section, castString, null, errors).value,
+    kind,
     requiredLabels: requiredLabels.cast ? normalizeRequiredLabels(requiredLabels.value) : [],
     activeStates: field<string[]>(
       r,
@@ -330,7 +324,28 @@ function castTracker(raw: unknown, section: string, errors: FieldError[]): Track
       ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
       errors,
     ).value,
+    plugin: castTrackerPluginSection(raw, kind, section, errors),
   };
+}
+
+// Delegates the provider-specific fields of the raw tracker section to the
+// active plugin's configSchema. Unregistered kinds (including a missing kind)
+// pass the section through untouched: parse succeeds and validate() reports
+// the unsupported/missing kind, matching the pre-plugin behavior.
+function castTrackerPluginSection(
+  raw: unknown,
+  kind: string | null,
+  section: string,
+  errors: FieldError[],
+): JsonMap {
+  const rawSection = isMap(raw) ? raw : {};
+  const schema = trackerPluginOrNull(kind)?.configSchema;
+  if (schema === undefined) {
+    return rawSection;
+  }
+  const result = schema.cast(rawSection, section);
+  errors.push(...result.errors);
+  return result.value;
 }
 
 function normalizeRequiredLabels(labels: string[]): string[] {
@@ -509,8 +524,7 @@ function finalizeSettings(settings: Settings): Settings {
     ...settings,
     tracker: {
       ...settings.tracker,
-      apiKey: resolveSecretSetting(settings.tracker.apiKey, envOrNull("LINEAR_API_KEY")),
-      assignee: resolveSecretSetting(settings.tracker.assignee, envOrNull("LINEAR_ASSIGNEE")),
+      plugin: finalizeTrackerPluginSection(settings.tracker),
     },
     workspace: {
       ...settings.workspace,
@@ -524,17 +538,14 @@ function finalizeSettings(settings: Settings): Settings {
   };
 }
 
-function envOrNull(name: string): string | null {
-  const value = process.env[name];
-  return value === undefined ? null : value;
-}
-
-function resolveSecretSetting(value: string | null, fallback: string | null): string | null {
-  if (value === null) {
-    return normalizeSecretValue(fallback);
+// Plugin finalization pass ($VAR references, canonical env fallbacks such as
+// LINEAR_API_KEY). Unregistered kinds keep the raw pass-through section.
+function finalizeTrackerPluginSection(tracker: TrackerSettings): JsonMap {
+  const schema = trackerPluginOrNull(tracker.kind)?.configSchema;
+  if (schema === undefined) {
+    return tracker.plugin;
   }
-  const resolved = resolveEnvValue(value, fallback);
-  return typeof resolved === "string" ? normalizeSecretValue(resolved) : resolved;
+  return schema.finalize(tracker.plugin);
 }
 
 function resolvePathValue(value: string, fallback: string): string {
@@ -547,21 +558,6 @@ function resolvePathValue(value: string, fallback: string): string {
 
 const MISSING = Symbol("missing");
 
-function resolveEnvValue(value: string, fallback: string | null): string | null {
-  const envName = envReferenceName(value);
-  if (envName === null) {
-    return value;
-  }
-  const envValue = process.env[envName];
-  if (envValue === undefined) {
-    return fallback;
-  }
-  if (envValue === "") {
-    return null;
-  }
-  return envValue;
-}
-
 function normalizePathToken(value: string): string | typeof MISSING {
   const envName = envReferenceName(value);
   if (envName === null) {
@@ -569,21 +565,6 @@ function normalizePathToken(value: string): string | typeof MISSING {
   }
   const envValue = process.env[envName];
   return envValue === undefined ? MISSING : envValue;
-}
-
-function envReferenceName(value: string): string | null {
-  if (!value.startsWith("$")) {
-    return null;
-  }
-  const name = value.slice(1);
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : null;
-}
-
-function normalizeSecretValue(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  return value === "" ? null : value;
 }
 
 function normalizeOptionalMap(value: JsonMap | null): JsonMap | null {
