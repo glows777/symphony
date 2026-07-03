@@ -89,6 +89,29 @@ export const LinearPlugin: TrackerPlugin = {
       return executeLinearGraphql(args, opts);
     },
   },
+
+  ui: {
+    projectUrl: (settings) => {
+      const projectSlug = linearSettings(settings).projectSlug;
+      if (typeof projectSlug === "string" && projectSlug !== "") {
+        return `https://linear.app/project/${projectSlug}/issues`;
+      }
+      return null;
+    },
+    defaultPromptTemplate: `You are working on a Linear issue.
+
+Identifier: {{ issue.identifier }}
+Title: {{ issue.title }}
+
+Body:
+{% if issue.description %}
+{{ issue.description }}
+{% else %}
+No description provided.
+{% endif %}
+`,
+    workItemNoun: "Linear issue",
+  },
 };
 
 function stringOrNull(value: unknown): string | null {

@@ -14,11 +14,14 @@ import {
   parse as parseSchema,
   resolveRuntimeTurnSandboxPolicy,
 } from "./config/schema.ts";
-import { trackerPlugin } from "./plugins/registry.ts";
+import { trackerPlugin, trackerPluginOrNull } from "./plugins/registry.ts";
 import { type Result, err, ok } from "./result.ts";
 import { current as workflowCurrent } from "./workflow.ts";
 
-const DEFAULT_PROMPT_TEMPLATE = `You are working on a Linear issue.
+// Provider-neutral fallback; plugins may contribute their own copy via the
+// ui.defaultPromptTemplate capability (the Linear plugin restores the
+// original "Linear issue" wording).
+const GENERIC_PROMPT_TEMPLATE = `You are working on a work item.
 
 Identifier: {{ issue.identifier }}
 Title: {{ issue.title }}
@@ -76,9 +79,18 @@ export function workflowPrompt(): string {
   const workflow = workflowCurrent();
   if (workflow.ok) {
     const prompt = workflow.value.promptTemplate;
-    return prompt.trim() === "" ? DEFAULT_PROMPT_TEMPLATE : prompt;
+    return prompt.trim() === "" ? defaultPromptTemplate() : prompt;
   }
-  return DEFAULT_PROMPT_TEMPLATE;
+  return defaultPromptTemplate();
+}
+
+function defaultPromptTemplate(): string {
+  const config = settings();
+  if (!config.ok) {
+    return GENERIC_PROMPT_TEMPLATE;
+  }
+  const plugin = trackerPluginOrNull(config.value.tracker.kind);
+  return plugin?.ui?.defaultPromptTemplate ?? GENERIC_PROMPT_TEMPLATE;
 }
 
 export function serverPort(): number | null {

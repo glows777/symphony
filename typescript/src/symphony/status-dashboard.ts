@@ -7,7 +7,7 @@
 // snake_case field names so the orchestrator snapshot maps over unchanged.
 
 import { serverPort, settingsBang } from "./config.ts";
-import { linearSettings } from "./plugins/linear/settings.ts";
+import { trackerPluginOrNull } from "./plugins/registry.ts";
 import type { Result } from "./result.ts";
 import { boundPort } from "./web/server-port.ts";
 
@@ -182,14 +182,13 @@ function formatSnapshotContent(
 }
 
 function formatProjectLinkLines(): string[] {
-  const projectSlug = linearSettings(settingsBang()).projectSlug;
+  const config = settingsBang();
+  const projectUrl = trackerPluginOrNull(config.tracker.kind)?.ui?.projectUrl?.(config) ?? null;
   const projectPart =
-    typeof projectSlug === "string" && projectSlug !== ""
-      ? colorize(linearProjectUrl(projectSlug), ANSI_CYAN)
-      : colorize("n/a", ANSI_GRAY);
+    projectUrl !== null ? colorize(projectUrl, ANSI_CYAN) : colorize("n/a", ANSI_GRAY);
   const projectLine = colorize("│ Project: ", ANSI_BOLD) + projectPart;
 
-  const url = dashboardUrl(settingsBang().server.host, serverPort(), boundPort());
+  const url = dashboardUrl(config.server.host, serverPort(), boundPort());
   if (typeof url === "string") {
     return [projectLine, colorize("│ Dashboard: ", ANSI_BOLD) + colorize(url, ANSI_CYAN)];
   }
@@ -206,10 +205,6 @@ function formatProjectRefreshLine(polling: unknown): string {
     return colorize("│ Next refresh: ", ANSI_BOLD) + colorize(`${seconds}s`, ANSI_CYAN);
   }
   return colorize("│ Next refresh: ", ANSI_BOLD) + colorize("n/a", ANSI_GRAY);
-}
-
-function linearProjectUrl(projectSlug: string): string {
-  return `https://linear.app/project/${projectSlug}/issues`;
 }
 
 function dashboardUrl(

@@ -1755,7 +1755,7 @@ export class Orchestrator {
     }
     const candidates = await Tracker.fetchCandidateIssues();
     if (!candidates.ok) {
-      logger.error(`Failed to fetch from Linear: ${inspectReason(candidates.error)}`);
+      logger.error(`Failed to fetch from tracker: ${inspectReason(candidates.error)}`);
       return next;
     }
     if (availableSlots(next) <= 0) {
