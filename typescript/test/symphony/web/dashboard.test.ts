@@ -179,4 +179,32 @@ describe("dashboard SSR + SSE", () => {
 
     await reader.cancel();
   });
+
+  test("client disconnect during an in-flight SSE render does not reject", async () => {
+    let unhandled: unknown = null;
+    const onRejection = (reason: unknown): void => {
+      unhandled = reason;
+    };
+    process.on("unhandledRejection", onRejection);
+    try {
+      // The snapshot resolves after the client has already disconnected, so the
+      // pending send() lands on a cancelled stream.
+      const slowProvider: SnapshotProvider = {
+        snapshot: () => new Promise((resolve) => setTimeout(() => resolve(staticSnapshot()), 30)),
+        requestRefresh: () => Promise.resolve(refreshReply),
+      };
+      const handler = makeEventsHandler(slowProvider, 100);
+      const res = await handler(new Request("http://127.0.0.1/events"));
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      await reader.read(); // ": connected"
+
+      broadcastUpdate();
+      await reader.cancel();
+      await new Promise((r) => setTimeout(r, 80));
+
+      expect(unhandled).toBeNull();
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
 });

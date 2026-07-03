@@ -31,6 +31,9 @@ export type RunOpts = {
   maxTurns?: number;
   issueStateFetcher?: IssueStateFetcher;
   attempt?: number | null;
+  // Cooperative cancellation (Elixir `Task.Supervisor.terminate_child` kills the
+  // worker process outright; here the orchestrator aborts this signal instead).
+  signal?: AbortSignal;
 };
 
 type ContinueOutcome =
@@ -129,10 +132,22 @@ async function runCodexTurns(
   const maxTurns = opts.maxTurns ?? settingsBang().agent.maxTurns;
   const issueStateFetcher: IssueStateFetcher =
     opts.issueStateFetcher ?? ((ids) => Tracker.fetchIssueStatesByIds(ids));
+  const signal = opts.signal ?? null;
 
+  if (signal?.aborted) {
+    return err({ tag: "aborted" });
+  }
   const session = await AppServer.startSession(workspace, { workerHost });
   if (!session.ok) {
     return err(session.error);
+  }
+  // Aborting closes the transport, which kills the Codex subprocess and makes
+  // the in-flight turn's receive loop return a port_exit error (the Elixir
+  // orchestrator gets the same effect by killing the worker's Port).
+  const onAbort = (): void => AppServer.stopSession(session.value);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) {
+    AppServer.stopSession(session.value);
   }
   try {
     return await doRunCodexTurns(
@@ -146,6 +161,7 @@ async function runCodexTurns(
       maxTurns,
     );
   } finally {
+    signal?.removeEventListener("abort", onAbort);
     AppServer.stopSession(session.value);
   }
 }
@@ -172,6 +188,9 @@ async function doRunCodexTurns(
     `Completed agent run for ${issueContext(issue)} session_id=${turnSession.value.sessionId} workspace=${workspace} turn=${turnNumber}/${maxTurns}`,
   );
 
+  if (opts.signal?.aborted) {
+    return ok(undefined);
+  }
   const outcome = await continueWithIssue(issue, issueStateFetcher);
   if (outcome.kind === "error") {
     return err(outcome.reason);

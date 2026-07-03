@@ -1460,11 +1460,19 @@ export class Orchestrator {
       return "unavailable";
     }
     const callPromise = this.call({ tag: "snapshot" }) as Promise<Snapshot>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<"timeout">((resolve) => {
-      const timer = setTimeout(() => resolve("timeout"), timeoutMs);
+      timer = setTimeout(() => resolve("timeout"), timeoutMs);
       this.timers.add(timer);
     });
-    return Promise.race([callPromise, timeout]);
+    try {
+      return await Promise.race([callPromise, timeout]);
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        this.timers.delete(timer);
+      }
+    }
   }
 
   requestRefresh(): Promise<RequestRefreshReply> {
@@ -1487,7 +1495,10 @@ export class Orchestrator {
     this.enqueue(
       () =>
         new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, ms);
+          const timer = setTimeout(() => {
+            this.timers.delete(timer);
+            resolve();
+          }, ms);
           this.timers.add(timer);
         }),
     );
@@ -1921,12 +1932,21 @@ export class Orchestrator {
     }
     const ref = Symbol("agent-ref");
     let aborted = false;
+    // Elixir's stop_running_task kills the worker process; here stop() aborts
+    // the signal so AgentRunner tears down the Codex subprocess, instead of
+    // leaving it running (and later colliding with a restarted agent).
+    const abortController = new AbortController();
     const task: RunningTask = {
       stop() {
         aborted = true;
+        abortController.abort();
       },
     };
-    AgentRunner.run(issue, (update) => this.onWorkerUpdate(update), { workerHost, attempt })
+    AgentRunner.run(issue, (update) => this.onWorkerUpdate(update), {
+      workerHost,
+      attempt,
+      signal: abortController.signal,
+    })
       .then(() => {
         if (!aborted) {
           this.cast({ tag: "down", ref, reason: "normal" });

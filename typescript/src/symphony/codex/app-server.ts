@@ -125,7 +125,12 @@ class ProcessTransport implements Transport {
   private async pump(stream: ReadableStream<Uint8Array>, which: "out" | "err"): Promise<void> {
     const decoder = new TextDecoder();
     for await (const chunk of stream) {
-      const text = (which === "out" ? this.outBuffer : this.errBuffer) + decoder.decode(chunk);
+      // stream: true carries multibyte UTF-8 sequences that straddle a chunk
+      // boundary into the next decode instead of mangling them into U+FFFD
+      // (which would corrupt the JSON line and drop the protocol message).
+      const text =
+        (which === "out" ? this.outBuffer : this.errBuffer) +
+        decoder.decode(chunk, { stream: true });
       const lines = text.split("\n");
       const remainder = lines.pop() ?? "";
       if (which === "out") {

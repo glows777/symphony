@@ -204,6 +204,19 @@ describe("Orchestrator live (core_test)", () => {
     expect(retry?.error).toBe("agent exited: :boom");
   });
 
+  test("snapshot timeout timers are released once the call settles", async () => {
+    const orch = makeOrchestrator();
+    const timers = (orch as unknown as { timers: Set<unknown> }).timers;
+    const before = timers.size;
+
+    for (let i = 0; i < 5; i++) {
+      const snapshot = await orch.snapshot(5_000);
+      expect(snapshot).not.toBe("timeout");
+    }
+
+    expect(timers.size).toBe(before);
+  });
+
   test("manual refresh coalesces repeated requests and ignores superseded ticks", async () => {
     const orch = makeOrchestrator();
     const staleTickToken = Symbol("stale-tick");

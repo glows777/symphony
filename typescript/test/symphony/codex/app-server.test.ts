@@ -351,4 +351,41 @@ describe("Codex.AppServer", () => {
     expect(malformed?.payload).toBe('{"method":"turn/completed"');
     expect(messages.some((m) => m.event === "turn_completed")).toBe(true);
   });
+
+  test("decodes multibyte UTF-8 sequences split across stream chunks", async () => {
+    const workspace = workspaceFor("MT-94");
+    // "€" (0xE2 0x82 0xAC) is written in two separate writes so the byte
+    // sequence straddles a chunk boundary in the stdout stream.
+    const cases = `  1)
+    printf '%s\\n' '{"id":1,"result":{}}'
+    ;;
+  2)
+    printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-94"}}}'
+    ;;
+  3)
+    printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-94"}}}'
+    printf '{"method":"item/agentMessage/delta","params":{"delta":"'
+    sleep 0.05
+    printf '\\342\\202'
+    sleep 0.05
+    printf '\\254"}}\\n'
+    printf '%s\\n' '{"method":"turn/completed"}'
+    ;;`;
+    installCodex(codexScript(null, cases));
+
+    const messages: AppServerMessage[] = [];
+    const result = await run(workspace, "Capture split multibyte delta", issue("MT-94"), {
+      onMessage: (m) => messages.push(m),
+    });
+    expect(result.ok).toBe(true);
+
+    const notification = messages.find(
+      (m) =>
+        m.event === "notification" &&
+        (m.payload as { method?: string })?.method === "item/agentMessage/delta",
+    );
+    expect(notification).toBeDefined();
+    const params = (notification?.payload as { params?: { delta?: string } })?.params;
+    expect(params?.delta).toBe("€");
+  });
 });

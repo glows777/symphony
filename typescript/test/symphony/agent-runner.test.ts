@@ -113,4 +113,76 @@ done
       expect(sessionStarted.message.sessionId).toBe("thread-live-turn-live");
     }
   });
+
+  test("aborting the run signal tears down a hung codex turn", async () => {
+    const workspaceRoot = path.join(testRoot, "workspaces");
+    const codexBinary = path.join(testRoot, "fake-codex-hang");
+
+    // Completes the handshake, then never emits turn/completed: without real
+    // cancellation the run would only end at codex.turn_timeout_ms (1h default).
+    fs.writeFileSync(
+      codexBinary,
+      `#!/bin/sh
+count=0
+while IFS= read -r line; do
+  count=$((count + 1))
+  case "$count" in
+    1) printf '%s\\n' '{"id":1,"result":{}}' ;;
+    2) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-hang"}}}' ;;
+    3) printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-hang"}}}' ;;
+    *) ;;
+  esac
+done
+`,
+    );
+    fs.chmodSync(codexBinary, 0o755);
+
+    writeWorkflowFile(workflowFilePath(), {
+      workspace_root: workspaceRoot,
+      codex_command: `${codexBinary} app-server`,
+    });
+
+    const issue = newIssue({
+      id: "issue-abort",
+      identifier: "MT-ABORT",
+      title: "Abort test",
+      state: "In Progress",
+    });
+
+    const updates: WorkerUpdate[] = [];
+    const recipient = (update: WorkerUpdate): void => {
+      updates.push(update);
+    };
+    const fetcher: IssueStateFetcher = () => ok([issue]);
+    const controller = new AbortController();
+
+    const settled = run(issue, recipient, {
+      issueStateFetcher: fetcher,
+      signal: controller.signal,
+    }).then(
+      () => "resolved",
+      () => "rejected",
+    );
+
+    const deadline = Date.now() + 2_000;
+    while (
+      !updates.some((u) => u.tag === "codex_worker_update" && u.message.event === "session_started")
+    ) {
+      if (Date.now() >= deadline) {
+        throw new Error("timed out waiting for session_started");
+      }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    controller.abort();
+
+    const outcome = await Promise.race([
+      settled,
+      new Promise<string>((r) => setTimeout(() => r("hung"), 3_000)),
+    ]);
+    // The killed codex port surfaces as a run failure; the orchestrator's
+    // aborted flag suppresses it. What matters is that the run settles promptly
+    // instead of holding the workspace until the turn timeout.
+    expect(outcome).toBe("rejected");
+  });
 });

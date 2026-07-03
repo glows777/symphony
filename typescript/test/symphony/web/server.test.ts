@@ -156,6 +156,12 @@ describe("web server / observability API", () => {
       expect(status).toBe(404);
       expect(body).toEqual({ error: { code: "not_found", message: "Route not found" } });
     });
+
+    test("returns 404 for malformed percent-encoding in issue identifiers", async () => {
+      const { status, body } = await json("/api/v1/%zz");
+      expect(status).toBe(404);
+      expect(body).toEqual({ error: { code: "not_found", message: "Route not found" } });
+    });
   });
 
   test("reports snapshot unavailable and orchestrator unavailable", async () => {

@@ -38,13 +38,24 @@ export function makeEventsHandler(
 ): RequestHandler {
   return () => {
     let unsubscribe: () => void = () => {};
+    let closed = false;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         const encoder = new TextEncoder();
         const send = async (): Promise<void> => {
           const payload = await statePayload(provider, snapshotTimeoutMs);
+          // The client can disconnect while the snapshot render is in flight;
+          // enqueueing on the cancelled stream would throw and surface as an
+          // unhandled rejection from the subscribe callback.
+          if (closed) {
+            return;
+          }
           const section = renderDashboardSection(payload, new Date());
-          controller.enqueue(encoder.encode(sseEvent("update", section)));
+          try {
+            controller.enqueue(encoder.encode(sseEvent("update", section)));
+          } catch {
+            // stream closed between the check and the enqueue
+          }
         };
         controller.enqueue(encoder.encode(": connected\n\n"));
         unsubscribe = subscribe(() => {
@@ -52,6 +63,7 @@ export function makeEventsHandler(
         });
       },
       cancel() {
+        closed = true;
         unsubscribe();
       },
     });
