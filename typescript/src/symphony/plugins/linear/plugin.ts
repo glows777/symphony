@@ -13,6 +13,11 @@ import {
   type TrackerPlugin,
   trackerError,
 } from "../types.ts";
+import {
+  LINEAR_GRAPHQL_TOOL,
+  executeLinearGraphql,
+  linearGraphqlToolSpec,
+} from "./graphql-tool.ts";
 import { DEFAULT_LINEAR_ENDPOINT, linearSettings } from "./settings.ts";
 
 export const LinearPlugin: TrackerPlugin = {
@@ -71,6 +76,19 @@ export const LinearPlugin: TrackerPlugin = {
 
   comments: { createComment: Adapter.createComment },
   stateUpdates: { updateIssueState: Adapter.updateIssueState },
+
+  agentTools: {
+    listAgentTools: () => [linearGraphqlToolSpec],
+    executeAgentTool: (tool, args, opts) => {
+      if (tool !== LINEAR_GRAPHQL_TOOL) {
+        return Promise.resolve({
+          success: false,
+          payload: { error: { message: `Unsupported dynamic tool: ${JSON.stringify(tool)}.` } },
+        });
+      }
+      return executeLinearGraphql(args, opts);
+    },
+  },
 };
 
 function stringOrNull(value: unknown): string | null {
