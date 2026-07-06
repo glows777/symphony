@@ -13,10 +13,11 @@ import {
   type PluginFieldError,
   type TrackerError,
   type TrackerPlugin,
+  toTrackerError,
   trackerError,
 } from "../types.ts";
 import type { Issue } from "../work-item.ts";
-import { Client, type LarkClientModule } from "./client.ts";
+import { Client, type LarkClientModule, tableUrl } from "./client.ts";
 import {
   DEFAULT_LARK_ASSIGNEE_FIELD,
   DEFAULT_LARK_DESCRIPTION_FIELD,
@@ -125,7 +126,35 @@ export const LarkPlugin: TrackerPlugin = {
   fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], TrackerError>> {
     return Promise.resolve(clientModule().fetchIssueStatesByIds(ids));
   },
+
+  stateUpdates: {
+    // The injected client module is an untyped seam, so foreign errors are
+    // normalized at this boundary.
+    updateIssueState: async (issueId, stateName): Promise<Result<undefined, TrackerError>> => {
+      const response = await clientModule().updateRecordState(issueId, stateName);
+      if (isOkResult(response)) {
+        return ok(undefined);
+      }
+      if (isErrResult(response)) {
+        return err(toTrackerError(response.error));
+      }
+      return err(toTrackerError(response));
+    },
+  },
+
+  ui: {
+    projectUrl: (settings) => tableUrl(larkSettings(settings)),
+    workItemNoun: "Lark record",
+  },
 };
+
+function isOkResult(value: unknown): value is { ok: true; value: unknown } {
+  return typeof value === "object" && value !== null && (value as { ok?: unknown }).ok === true;
+}
+
+function isErrResult(value: unknown): value is { ok: false; error: unknown } {
+  return typeof value === "object" && value !== null && (value as { ok?: unknown }).ok === false;
+}
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;

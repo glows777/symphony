@@ -92,6 +92,29 @@ export async function fetchIssueStatesByIds(
   return batchGetByIds(lark, ids, routingAssigneeFilter(lark), opts);
 }
 
+// ---- state write-back ----------------------------------------------------------
+
+// Updates the state single-select field on one record (the stateUpdates
+// capability). `stateName` must be an option from the field's vocabulary;
+// unknown options surface as a Lark business error.
+export async function updateRecordState(
+  recordId: string,
+  stateName: string,
+  opts: RequestOpts = {},
+): Promise<Result<undefined, TrackerError>> {
+  const lark = larkSettings(settingsBang());
+  const table = requireTable(lark);
+  if (!table.ok) {
+    return err(table.error);
+  }
+  const path = `${tablePath(table.value)}/records/${encodeURIComponent(recordId)}`;
+  const response = await request("PUT", path, { fields: { [lark.fieldState]: stateName } }, opts);
+  if (!response.ok) {
+    return err(response.error);
+  }
+  return ok(undefined);
+}
+
 // ---- authenticated OpenAPI request (shared with the lark_api agent tool) -------
 
 // Sends one authenticated request against the configured Lark endpoint.
@@ -671,10 +694,15 @@ export const Client = {
   fetchCandidateIssues,
   fetchIssuesByStates,
   fetchIssueStatesByIds,
+  updateRecordState,
 };
 
 export type LarkClientModule = {
   fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>>;
   fetchIssuesByStates(states: string[]): Promise<Result<Issue[], TrackerError>>;
   fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], TrackerError>>;
+  updateRecordState(
+    recordId: string,
+    stateName: string,
+  ): Promise<Result<undefined, unknown>> | Result<undefined, unknown>;
 };

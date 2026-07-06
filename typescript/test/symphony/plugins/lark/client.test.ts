@@ -8,6 +8,7 @@ import {
   normalizeRecordForTest,
   request,
   resetTokenCacheForTest,
+  updateRecordState,
 } from "../../../../src/symphony/plugins/lark/client.ts";
 import { workflowFilePath } from "../../../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow } from "../../../support/test-support.ts";
@@ -357,6 +358,41 @@ describe("Lark.Client", () => {
         "rec-1",
         "rec-gone",
       ]);
+    });
+  });
+
+  describe("updateRecordState", () => {
+    test("PUTs the state single-select field on the record", async () => {
+      const calls: Call[] = [];
+      const requestFun = fakeTransport(calls, [
+        { status: 200, body: { code: 0, msg: "success", data: { record: {} } } },
+      ]);
+
+      const result = await updateRecordState("recAAA", "Done", { requestFun });
+      expect(result).toEqual({ ok: true, value: undefined });
+
+      const updateCall = calls.at(-1);
+      expect(updateCall?.method).toBe("PUT");
+      expect(updateCall?.url).toBe(
+        "https://open.feishu.cn/open-apis/bitable/v1/apps/bascnTEST/tables/tblTEST/records/recAAA",
+      );
+      expect(updateCall?.body).toEqual({ fields: { Status: "Done" } });
+    });
+
+    test("uses the configured state field name and propagates business errors", async () => {
+      writeLarkWorkflowFile(workflowFilePath(), { field_state: "状态" });
+      const calls: Call[] = [];
+      const requestFun = fakeTransport(calls, [
+        { status: 200, body: { code: 1254060, msg: "SingleSelectFieldConvFail" } },
+      ]);
+
+      const result = await updateRecordState("recBBB", "完成", { requestFun });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.tag).toBe("lark_api_error");
+        expect(result.error.code).toBe("provider_error");
+      }
+      expect((calls.at(-1)?.body as { fields: unknown }).fields).toEqual({ 状态: "完成" });
     });
   });
 

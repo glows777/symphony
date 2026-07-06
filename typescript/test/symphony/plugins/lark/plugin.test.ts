@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { putEnv } from "../../../../src/symphony/app-env.ts";
 import { settingsBang, validate } from "../../../../src/symphony/config.ts";
+import type { LarkClientModule } from "../../../../src/symphony/plugins/lark/client.ts";
 import { LarkPlugin } from "../../../../src/symphony/plugins/lark/plugin.ts";
 import { larkSettings } from "../../../../src/symphony/plugins/lark/settings.ts";
+import { newIssue } from "../../../../src/symphony/plugins/work-item.ts";
+import { err, ok } from "../../../../src/symphony/result.ts";
+import * as Tracker from "../../../../src/symphony/tracker/tracker.ts";
 import { workflowFilePath } from "../../../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow } from "../../../support/test-support.ts";
 import { writeLarkWorkflowFile } from "./lark-test-support.ts";
@@ -108,6 +113,91 @@ describe("Lark.Plugin", () => {
   describe("capabilities", () => {
     test("omits comments (no public record-comment API)", () => {
       expect(LarkPlugin.comments).toBeUndefined();
+    });
+
+    test("facade delegates reads and state updates to the injected client module", async () => {
+      writeLarkWorkflowFile(workflowFilePath());
+      const issue = newIssue({ id: "recAAA", identifier: "recAAA", state: "Todo" });
+      const updates: { recordId: string; stateName: string }[] = [];
+      const fake: LarkClientModule = {
+        fetchCandidateIssues: () => Promise.resolve(ok([issue])),
+        fetchIssuesByStates: (states) =>
+          Promise.resolve(states.includes("Todo") ? ok([issue]) : ok([])),
+        fetchIssueStatesByIds: (ids) =>
+          Promise.resolve(ids.includes("recAAA") ? ok([issue]) : ok([])),
+        updateRecordState: (recordId, stateName) => {
+          updates.push({ recordId, stateName });
+          return Promise.resolve(ok(undefined));
+        },
+      };
+      putEnv("lark_client_module", fake);
+
+      expect(Tracker.adapter()).toBe(LarkPlugin);
+      expect(await Tracker.fetchCandidateIssues()).toEqual(ok([issue]));
+      expect(await Tracker.fetchIssuesByStates(["Todo"])).toEqual(ok([issue]));
+      expect(await Tracker.fetchIssuesByStates(["Missing"])).toEqual(ok([]));
+      expect(await Tracker.fetchIssueStatesByIds(["recAAA"])).toEqual(ok([issue]));
+      expect(await Tracker.updateIssueState("recAAA", "Done")).toEqual(ok(undefined));
+      expect(updates).toEqual([{ recordId: "recAAA", stateName: "Done" }]);
+    });
+
+    test("facade reports comments as unsupported instead of faking success", async () => {
+      writeLarkWorkflowFile(workflowFilePath());
+      const result = await Tracker.createComment("recAAA", "hello");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toEqual({
+          tag: "tracker_capability_unsupported",
+          code: "unsupported_operation",
+          message: "tracker 'lark' does not support comments",
+        });
+      }
+    });
+
+    test("normalizes foreign errors from the injected module", async () => {
+      writeLarkWorkflowFile(workflowFilePath());
+      const fake: LarkClientModule = {
+        fetchCandidateIssues: () => Promise.resolve(ok([])),
+        fetchIssuesByStates: () => Promise.resolve(ok([])),
+        fetchIssueStatesByIds: () => Promise.resolve(ok([])),
+        updateRecordState: () => Promise.resolve(err("boom")),
+      };
+      putEnv("lark_client_module", fake);
+
+      expect(await Tracker.updateIssueState("recAAA", "Done")).toEqual(
+        err({
+          tag: "tracker_error",
+          code: "unknown",
+          message: "Tracker operation failed: :boom",
+          detail: "boom",
+        }),
+      );
+    });
+  });
+
+  describe("ui", () => {
+    test("projectUrl renders the Bitable table URL on the web domain", () => {
+      writeLarkWorkflowFile(workflowFilePath());
+      expect(LarkPlugin.ui?.projectUrl?.(settingsBang())).toBe(
+        "https://feishu.cn/base/bascnTEST?table=tblTEST",
+      );
+
+      writeLarkWorkflowFile(workflowFilePath(), {
+        endpoint: "https://open.larksuite.com",
+      });
+      expect(LarkPlugin.ui?.projectUrl?.(settingsBang())).toBe(
+        "https://larksuite.com/base/bascnTEST?table=tblTEST",
+      );
+
+      writeLarkWorkflowFile(workflowFilePath(), { app_token: undefined });
+      expect(LarkPlugin.ui?.projectUrl?.(settingsBang())).toBeNull();
+    });
+
+    test("uses the 'Lark record' noun and no plugin prompt template", () => {
+      expect(LarkPlugin.ui?.workItemNoun).toBe("Lark record");
+      // No plugin template: WORKFLOW.md-less prompts fall back to the
+      // provider-neutral "work item" copy.
+      expect(LarkPlugin.ui?.defaultPromptTemplate).toBeUndefined();
     });
   });
 });
