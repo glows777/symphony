@@ -175,6 +175,173 @@ describe("Lark.Plugin", () => {
     });
   });
 
+  describe("agentTools", () => {
+    type ApiCall = { method: string; path: string; body: unknown };
+
+    function recordingApiClient(result: unknown, calls: ApiCall[]) {
+      return (method: string, path: string, body: unknown) => {
+        calls.push({ method, path, body });
+        return result as never;
+      };
+    }
+
+    const guardClient = () => {
+      throw new Error("lark client should not be called");
+    };
+
+    test("advertises the lark_api input contract", () => {
+      const specs = LarkPlugin.agentTools?.listAgentTools() ?? [];
+      expect(specs).toHaveLength(1);
+      const spec = specs[0];
+      expect(spec?.name).toBe("lark_api");
+      const schema = spec?.inputSchema as Record<string, unknown>;
+      expect(schema.type).toBe("object");
+      expect(schema.required).toEqual(["method", "path"]);
+      expect(Object.keys(schema.properties as object)).toEqual(["method", "path", "body"]);
+      expect(spec?.description).toContain("Lark");
+    });
+
+    test("lark_api returns successful responses and normalizes the method", async () => {
+      const calls: ApiCall[] = [];
+      const outcome = await LarkPlugin.agentTools?.executeAgentTool(
+        "lark_api",
+        {
+          method: "post",
+          path: "/open-apis/bitable/v1/apps/bascnTEST/tables/tblTEST/records/search",
+          body: { filter: { conjunction: "or", conditions: [] } },
+        },
+        {
+          larkClient: recordingApiClient(
+            ok({ code: 0, msg: "success", data: { items: [] } }),
+            calls,
+          ),
+        },
+      );
+
+      expect(calls).toEqual([
+        {
+          method: "POST",
+          path: "/open-apis/bitable/v1/apps/bascnTEST/tables/tblTEST/records/search",
+          body: { filter: { conjunction: "or", conditions: [] } },
+        },
+      ]);
+      expect(outcome?.success).toBe(true);
+      expect(outcome?.payload).toEqual({ code: 0, msg: "success", data: { items: [] } });
+    });
+
+    test("lark_api surfaces Lark business errors as failures", async () => {
+      const outcome = await LarkPlugin.agentTools?.executeAgentTool(
+        "lark_api",
+        { method: "PUT", path: "/open-apis/bitable/v1/apps/a/tables/t/records/r" },
+        {
+          larkClient: () =>
+            err({
+              tag: "lark_api_error",
+              code: "provider_error",
+              message: "Lark API returned error code 1254045: FieldNameNotFound",
+              detail: { code: 1254045, msg: "FieldNameNotFound" },
+            }),
+        },
+      );
+      expect(outcome?.success).toBe(false);
+      expect(outcome?.payload).toEqual({
+        error: {
+          message: "Lark API returned error code 1254045: FieldNameNotFound",
+          code: 1254045,
+          msg: "FieldNameNotFound",
+        },
+      });
+    });
+
+    test("lark_api validates arguments before calling Lark", async () => {
+      const cases: [unknown, string][] = [
+        ["not an object", "`lark_api` expects an object"],
+        [{ path: "/open-apis/x" }, "requires a `method` string"],
+        [{ method: "TRACE", path: "/open-apis/x" }, "must be one of GET, POST, PUT, PATCH"],
+        [{ method: "GET" }, "requires a non-empty `path` string"],
+        [
+          { method: "GET", path: "https://evil.example/open-apis/x" },
+          "must start with `/open-apis/`",
+        ],
+        [{ method: "GET", path: "/v1/other" }, "must start with `/open-apis/`"],
+        [{ method: "GET", path: "/open-apis/x", body: ["bad"] }, "must be a JSON object"],
+      ];
+
+      for (const [args, fragment] of cases) {
+        const outcome = await LarkPlugin.agentTools?.executeAgentTool("lark_api", args, {
+          larkClient: guardClient,
+        });
+        expect(outcome?.success).toBe(false);
+        const payload = outcome?.payload as { error: { message: string } };
+        expect(payload.error.message).toContain(fragment);
+      }
+    });
+
+    test("lark_api formats auth, status, and transport failures", async () => {
+      const missingAuth = await LarkPlugin.agentTools?.executeAgentTool(
+        "lark_api",
+        { method: "GET", path: "/open-apis/x" },
+        { larkClient: () => err({ tag: "missing_lark_app_credentials" }) },
+      );
+      expect((missingAuth?.payload as { error: { message: string } }).error.message).toContain(
+        "LARK_APP_SECRET",
+      );
+
+      const status = await LarkPlugin.agentTools?.executeAgentTool(
+        "lark_api",
+        { method: "GET", path: "/open-apis/x" },
+        { larkClient: () => err({ tag: "lark_api_status", status: 503 }) },
+      );
+      expect(status?.payload).toEqual({
+        error: { message: "Lark API request failed with HTTP 503.", status: 503 },
+      });
+
+      const transport = await LarkPlugin.agentTools?.executeAgentTool(
+        "lark_api",
+        { method: "GET", path: "/open-apis/x" },
+        { larkClient: () => err({ tag: "lark_api_request", reason: "timeout" }) },
+      );
+      expect(transport?.payload).toEqual({
+        error: {
+          message: "Lark API request failed before receiving a response.",
+          reason: ":timeout",
+        },
+      });
+
+      const unexpected = await LarkPlugin.agentTools?.executeAgentTool(
+        "lark_api",
+        { method: "GET", path: "/open-apis/x" },
+        { larkClient: () => err("boom") },
+      );
+      expect(unexpected?.payload).toEqual({
+        error: { message: "Lark API tool execution failed.", reason: ":boom" },
+      });
+    });
+
+    test("lark_api reports missing credentials through the default client", async () => {
+      Reflect.deleteProperty(process.env, "LARK_APP_SECRET");
+      writeLarkWorkflowFile(workflowFilePath(), { app_secret: undefined });
+      const outcome = await LarkPlugin.agentTools?.executeAgentTool("lark_api", {
+        method: "GET",
+        path: "/open-apis/x",
+      });
+      expect(outcome?.success).toBe(false);
+      expect((outcome?.payload as { error: { message: string } }).error.message).toContain(
+        "missing Lark auth",
+      );
+    });
+
+    test("unknown tool names fail without dispatching", async () => {
+      const outcome = await LarkPlugin.agentTools?.executeAgentTool("linear_graphql", {
+        query: "query { viewer { id } }",
+      });
+      expect(outcome?.success).toBe(false);
+      expect(outcome?.payload).toEqual({
+        error: { message: 'Unsupported dynamic tool: "linear_graphql".' },
+      });
+    });
+  });
+
   describe("ui", () => {
     test("projectUrl renders the Bitable table URL on the web domain", () => {
       writeLarkWorkflowFile(workflowFilePath());

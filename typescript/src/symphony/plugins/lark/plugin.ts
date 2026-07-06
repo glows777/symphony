@@ -17,6 +17,7 @@ import {
   trackerError,
 } from "../types.ts";
 import type { Issue } from "../work-item.ts";
+import { LARK_API_TOOL, executeLarkApi, larkApiToolSpec } from "./api-tool.ts";
 import { Client, type LarkClientModule, tableUrl } from "./client.ts";
 import {
   DEFAULT_LARK_ASSIGNEE_FIELD,
@@ -139,6 +140,19 @@ export const LarkPlugin: TrackerPlugin = {
         return err(toTrackerError(response.error));
       }
       return err(toTrackerError(response));
+    },
+  },
+
+  agentTools: {
+    listAgentTools: () => [larkApiToolSpec],
+    executeAgentTool: (tool, args, opts) => {
+      if (tool !== LARK_API_TOOL) {
+        return Promise.resolve({
+          success: false,
+          payload: { error: { message: `Unsupported dynamic tool: ${JSON.stringify(tool)}.` } },
+        });
+      }
+      return executeLarkApi(args, opts);
     },
   },
 
