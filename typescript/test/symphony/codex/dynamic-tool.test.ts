@@ -1,10 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   type LinearClientFn,
   execute,
   toolSpecs,
 } from "../../../src/symphony/codex/dynamic-tool.ts";
 import { err, ok } from "../../../src/symphony/result.ts";
+import { workflowFilePath } from "../../../src/symphony/workflow.ts";
+import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../../support/test-support.ts";
 
 type Call = { query: string; variables: Record<string, unknown>; opts: unknown[] };
 
@@ -15,8 +17,33 @@ function recordingClient(result: ReturnType<LinearClientFn>, calls: Call[]): Lin
   };
 }
 
-// Translated from dynamic_tool_test.exs.
+// Translated from dynamic_tool_test.exs. The dispatcher resolves the active
+// plugin's agent tools from WORKFLOW.md, so each test runs against the default
+// linear-kind workflow fixture.
 describe("Codex.DynamicTool", () => {
+  let root: string;
+
+  beforeEach(() => {
+    ({ root } = setupWorkflow());
+  });
+
+  afterEach(() => {
+    teardownWorkflow(root);
+  });
+
+  test("advertises no tools when the active plugin has none", async () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_kind: "memory" });
+    expect(toolSpecs()).toEqual([]);
+
+    const response = await execute("linear_graphql", { query: "query { viewer { id } }" });
+    expect(response.success).toBe(false);
+    expect(JSON.parse(response.output)).toEqual({
+      error: {
+        message: 'Unsupported dynamic tool: "linear_graphql".',
+        supportedTools: [],
+      },
+    });
+  });
   test("tool_specs advertises the linear_graphql input contract", () => {
     const specs = toolSpecs();
     expect(specs).toHaveLength(1);

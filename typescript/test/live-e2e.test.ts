@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { type AppHandle, startApp, stopApp } from "../src/app.ts";
 import { putEnv } from "../src/symphony/app-env.ts";
-import { newIssue } from "../src/symphony/linear/issue.ts";
+import { newIssue } from "../src/symphony/plugins/work-item.ts";
 import { workflowFilePath } from "../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "./support/test-support.ts";
 

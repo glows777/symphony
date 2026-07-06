@@ -1,12 +1,14 @@
 // Literal port of `symphony_elixir/prompt_builder.ts`.
 //
-// Builds agent prompts from Linear issue data. Elixir uses Solid (Liquid); the
-// TS port uses liquidjs with strict variables/filters. Issue struct fields are
-// projected back to the snake_case names the Liquid templates reference.
+// Builds agent prompts from work item data. Elixir uses Solid (Liquid); the
+// TS port uses liquidjs with strict variables/filters. Work item fields are
+// projected back to the snake_case names the Liquid templates reference —
+// the `issue.*` scope is a user contract (WORKFLOW.md templates) and never
+// changes; `issue.metadata.*` exposes the plugin-private extension slot.
 
 import { Liquid, type Template } from "liquidjs";
 import { workflowPrompt } from "./config.ts";
-import type { Issue } from "./linear/issue.ts";
+import type { Issue } from "./plugins/work-item.ts";
 import { current as workflowCurrent } from "./workflow.ts";
 
 const engine = new Liquid({ strictVariables: true, strictFilters: true });
@@ -53,6 +55,7 @@ function issueScope(issue: Issue): Record<string, unknown> {
     assigned_to_worker: issue.assignedToWorker,
     created_at: issue.createdAt,
     updated_at: issue.updatedAt,
+    metadata: issue.metadata,
   });
 }
 

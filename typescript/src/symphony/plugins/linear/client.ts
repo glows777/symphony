@@ -1,12 +1,16 @@
-// Literal port of `symphony_elixir/linear/client.ex`.
+// Originally a literal port of `symphony_elixir/linear/client.ex`; moved into
+// plugins/linear for the tracker plugin architecture (see MIGRATION.md ->
+// Post-cutover divergence).
 //
 // Thin Linear GraphQL client. Elixir's Req calls are blocking; the TS port uses
 // `fetch`, so `graphql` and the fetch helpers are async (Promise-returning).
 
-import { settingsBang } from "../config.ts";
-import { logger } from "../logger.ts";
-import { type Result, err, ok } from "../result.ts";
-import { type Blocker, type Issue, newIssue } from "./issue.ts";
+import { settingsBang } from "../../config.ts";
+import { logger } from "../../logger.ts";
+import { type Result, err, ok } from "../../result.ts";
+import type { TrackerError } from "../types.ts";
+import { type Blocker, type Issue, newIssue } from "../work-item.ts";
+import { linearSettings } from "./settings.ts";
 
 const ISSUE_PAGE_SIZE = 50;
 const MAX_ERROR_BODY_LOG_BYTES = 1_000;
@@ -58,44 +62,49 @@ export type GraphqlOpts = { operationName?: string; requestFun?: RequestFun };
 export type GraphqlFun = (
   query: string,
   variables: JsonObject,
-) => Result<unknown, unknown> | Promise<Result<unknown, unknown>>;
+) => Result<unknown, TrackerError> | Promise<Result<unknown, TrackerError>>;
 
 type JsonObject = Record<string, unknown>;
 
-export async function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> {
-  const tracker = settingsBang().tracker;
-  const projectSlug = tracker.projectSlug;
+export async function fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>> {
+  const settings = settingsBang();
+  const linear = linearSettings(settings);
+  const projectSlug = linear.projectSlug;
 
-  if (tracker.apiKey === null) {
-    return err({ tag: "missing_linear_api_token" });
+  if (linear.apiKey === null) {
+    return err(missingApiTokenError());
   }
   if (projectSlug === null) {
-    return err({ tag: "missing_linear_project_slug" });
+    return err(missingProjectSlugError());
   }
   const assigneeFilter = await routingAssigneeFilter();
   if (!assigneeFilter.ok) {
     return err(assigneeFilter.error);
   }
-  return doFetchByStates(projectSlug, tracker.activeStates, assigneeFilter.value);
+  return doFetchByStates(projectSlug, settings.tracker.activeStates, assigneeFilter.value);
 }
 
-export async function fetchIssuesByStates(stateNames: string[]): Promise<Result<Issue[], unknown>> {
+export async function fetchIssuesByStates(
+  stateNames: string[],
+): Promise<Result<Issue[], TrackerError>> {
   const normalizedStates = [...new Set(stateNames.map(String))];
   if (normalizedStates.length === 0) {
     return ok([]);
   }
-  const tracker = settingsBang().tracker;
-  const projectSlug = tracker.projectSlug;
-  if (tracker.apiKey === null) {
-    return err({ tag: "missing_linear_api_token" });
+  const linear = linearSettings(settingsBang());
+  const projectSlug = linear.projectSlug;
+  if (linear.apiKey === null) {
+    return err(missingApiTokenError());
   }
   if (projectSlug === null) {
-    return err({ tag: "missing_linear_project_slug" });
+    return err(missingProjectSlugError());
   }
   return doFetchByStates(projectSlug, normalizedStates, null);
 }
 
-export async function fetchIssueStatesByIds(issueIds: string[]): Promise<Result<Issue[], unknown>> {
+export async function fetchIssueStatesByIds(
+  issueIds: string[],
+): Promise<Result<Issue[], TrackerError>> {
   const ids = [...new Set(issueIds)];
   if (ids.length === 0) {
     return ok([]);
@@ -111,7 +120,7 @@ export async function graphql(
   query: string,
   variables: JsonObject = {},
   opts: GraphqlOpts = {},
-): Promise<Result<unknown, unknown>> {
+): Promise<Result<unknown, TrackerError>> {
   const payload = buildGraphqlPayload(query, variables, opts.operationName);
   const requestFun = opts.requestFun ?? postGraphqlRequest;
 
@@ -128,10 +137,20 @@ export async function graphql(
     logger.error(
       `Linear GraphQL request failed status=${response.value.status}${linearErrorContext(payload, response.value)}`,
     );
-    return err({ tag: "linear_api_status", status: response.value.status });
+    return err({
+      tag: "linear_api_status",
+      code: "provider_status",
+      message: `Linear GraphQL request failed with HTTP ${response.value.status}`,
+      status: response.value.status,
+    });
   }
   logger.error(`Linear GraphQL request failed: ${inspect(response.error)}`);
-  return err({ tag: "linear_api_request", reason: response.error });
+  return err({
+    tag: "linear_api_request",
+    code: "transport_failed",
+    message: "Linear GraphQL request failed before receiving a response",
+    reason: response.error,
+  });
 }
 
 // ---- test seams (mirror the *_for_test helpers) ----------------------------
@@ -145,7 +164,7 @@ export function normalizeIssueForTest(issue: JsonObject, assignee?: string | nul
   return normalizeIssue(issue, assigneeFilter);
 }
 
-export function nextPageCursorForTest(pageInfo: PageInfo): Result<string, unknown> | "done" {
+export function nextPageCursorForTest(pageInfo: PageInfo): Result<string, TrackerError> | "done" {
   return nextPageCursor(pageInfo);
 }
 
@@ -156,7 +175,7 @@ export function mergeIssuePagesForTest(issuePages: Issue[][]): Issue[] {
 export function fetchIssueStatesByIdsForTest(
   issueIds: string[],
   graphqlFun: GraphqlFun,
-): Promise<Result<Issue[], unknown>> {
+): Promise<Result<Issue[], TrackerError>> {
   const ids = [...new Set(issueIds)];
   if (ids.length === 0) {
     return Promise.resolve(ok([]));
@@ -170,7 +189,7 @@ function doFetchByStates(
   projectSlug: string,
   stateNames: string[],
   assigneeFilter: AssigneeFilter,
-): Promise<Result<Issue[], unknown>> {
+): Promise<Result<Issue[], TrackerError>> {
   return doFetchByStatesPage(projectSlug, stateNames, assigneeFilter, null, []);
 }
 
@@ -180,7 +199,7 @@ async function doFetchByStatesPage(
   assigneeFilter: AssigneeFilter,
   afterCursor: string | null,
   accIssues: Issue[],
-): Promise<Result<Issue[], unknown>> {
+): Promise<Result<Issue[], TrackerError>> {
   const body = await graphql(QUERY, {
     projectSlug,
     stateNames,
@@ -221,7 +240,7 @@ function doFetchIssueStates(
   ids: string[],
   assigneeFilter: AssigneeFilter,
   graphqlFun: GraphqlFun,
-): Promise<Result<Issue[], unknown>> {
+): Promise<Result<Issue[], TrackerError>> {
   return doFetchIssueStatesPage(ids, assigneeFilter, graphqlFun, [], issueOrderIndex(ids));
 }
 
@@ -231,7 +250,7 @@ async function doFetchIssueStatesPage(
   graphqlFun: GraphqlFun,
   accIssues: Issue[],
   orderIndex: Map<string, number>,
-): Promise<Result<Issue[], unknown>> {
+): Promise<Result<Issue[], TrackerError>> {
   if (ids.length === 0) {
     return ok(sortIssuesByRequestedIds(finalizePaginatedIssues(accIssues), orderIndex));
   }
@@ -302,10 +321,10 @@ function truncateErrorBody(body: string): string {
   return body;
 }
 
-function graphqlHeaders(): Result<Record<string, string>, unknown> {
-  const token = settingsBang().tracker.apiKey;
+function graphqlHeaders(): Result<Record<string, string>, TrackerError> {
+  const token = linearSettings(settingsBang()).apiKey;
   if (token === null) {
-    return err({ tag: "missing_linear_api_token" });
+    return err(missingApiTokenError());
   }
   return ok({ Authorization: token, "Content-Type": "application/json" });
 }
@@ -315,7 +334,7 @@ async function postGraphqlRequest(
   headers: Record<string, string>,
 ): Promise<Result<RequestResponse, unknown>> {
   try {
-    const response = await fetch(settingsBang().tracker.endpoint, {
+    const response = await fetch(linearSettings(settingsBang()).endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
@@ -335,7 +354,7 @@ type PageInfo = { hasNextPage: boolean; endCursor: unknown };
 function decodeLinearResponse(
   body: unknown,
   assigneeFilter: AssigneeFilter,
-): Result<Issue[], unknown> {
+): Result<Issue[], TrackerError> {
   const nodes = getIn(body, ["data", "issues", "nodes"]);
   if (Array.isArray(nodes)) {
     const issues = nodes
@@ -345,15 +364,24 @@ function decodeLinearResponse(
   }
   const errors = getIn(body, ["errors"]);
   if (errors !== undefined) {
-    return err({ tag: "linear_graphql_errors", errors });
+    return err({
+      tag: "linear_graphql_errors",
+      code: "provider_error",
+      message: "Linear GraphQL response contained errors",
+      errors,
+    });
   }
-  return err({ tag: "linear_unknown_payload" });
+  return err({
+    tag: "linear_unknown_payload",
+    code: "invalid_payload",
+    message: "Linear GraphQL response had an unexpected shape",
+  });
 }
 
 function decodeLinearPageResponse(
   body: unknown,
   assigneeFilter: AssigneeFilter,
-): Result<{ issues: Issue[]; pageInfo: PageInfo }, unknown> {
+): Result<{ issues: Issue[]; pageInfo: PageInfo }, TrackerError> {
   const nodes = getIn(body, ["data", "issues", "nodes"]);
   const pageInfo = getIn(body, ["data", "issues", "pageInfo"]);
   if (
@@ -379,12 +407,16 @@ function decodeLinearPageResponse(
   return ok({ issues: fallback.value, pageInfo: { hasNextPage: false, endCursor: null } });
 }
 
-function nextPageCursor(pageInfo: PageInfo): Result<string, unknown> | "done" {
+function nextPageCursor(pageInfo: PageInfo): Result<string, TrackerError> | "done" {
   if (pageInfo.hasNextPage === true) {
     if (typeof pageInfo.endCursor === "string" && pageInfo.endCursor.length > 0) {
       return ok(pageInfo.endCursor);
     }
-    return err({ tag: "linear_missing_end_cursor" });
+    return err({
+      tag: "linear_missing_end_cursor",
+      code: "invalid_payload",
+      message: "Linear pagination response is missing endCursor",
+    });
   }
   return "done";
 }
@@ -427,15 +459,17 @@ function assignedToWorker(assignee: unknown, assigneeFilter: AssigneeFilter): bo
   return false;
 }
 
-async function routingAssigneeFilter(): Promise<Result<AssigneeFilter, unknown>> {
-  const assignee = settingsBang().tracker.assignee;
+async function routingAssigneeFilter(): Promise<Result<AssigneeFilter, TrackerError>> {
+  const assignee = linearSettings(settingsBang()).assignee;
   if (assignee === null) {
     return ok(null);
   }
   return buildAssigneeFilter(assignee);
 }
 
-async function buildAssigneeFilter(assignee: string): Promise<Result<AssigneeFilter, unknown>> {
+async function buildAssigneeFilter(
+  assignee: string,
+): Promise<Result<AssigneeFilter, TrackerError>> {
   const normalized = normalizeAssigneeMatchValue(assignee);
   if (normalized === null) {
     return ok(null);
@@ -447,18 +481,18 @@ async function buildAssigneeFilter(assignee: string): Promise<Result<AssigneeFil
 }
 
 // Synchronous variant used by the normalize_issue_for_test seam (no viewer).
-function buildAssigneeFilterSync(assignee: string): Result<AssigneeFilter, unknown> {
+function buildAssigneeFilterSync(assignee: string): Result<AssigneeFilter, TrackerError> {
   const normalized = normalizeAssigneeMatchValue(assignee);
   if (normalized === null) {
     return ok(null);
   }
   if (normalized === "me") {
-    return err({ tag: "missing_linear_viewer_identity" });
+    return err(missingViewerIdentityError());
   }
   return ok({ configuredAssignee: assignee, matchValues: new Set([normalized]) });
 }
 
-async function resolveViewerAssigneeFilter(): Promise<Result<AssigneeFilter, unknown>> {
+async function resolveViewerAssigneeFilter(): Promise<Result<AssigneeFilter, TrackerError>> {
   const response = await graphql(VIEWER_QUERY, {});
   if (!response.ok) {
     return err(response.error);
@@ -467,11 +501,11 @@ async function resolveViewerAssigneeFilter(): Promise<Result<AssigneeFilter, unk
   if (isObject(viewer)) {
     const viewerId = normalizeAssigneeMatchValue(viewer.id);
     if (viewerId === null) {
-      return err({ tag: "missing_linear_viewer_identity" });
+      return err(missingViewerIdentityError());
     }
     return ok({ configuredAssignee: "me", matchValues: new Set([viewerId]) });
   }
-  return err({ tag: "missing_linear_viewer_identity" });
+  return err(missingViewerIdentityError());
 }
 
 function normalizeAssigneeMatchValue(value: unknown): string | null {
@@ -532,6 +566,35 @@ function parsePriority(priority: unknown): number | null {
   return typeof priority === "number" && Number.isInteger(priority) ? priority : null;
 }
 
+// ---- error constructors ------------------------------------------------------
+// Legacy tags are preserved verbatim; `code`/`message` follow the TrackerError
+// convention from plugins/types.ts (extra fields like `status` stay top-level
+// for compatibility with existing consumers).
+
+function missingApiTokenError() {
+  return {
+    tag: "missing_linear_api_token",
+    code: "missing_credentials",
+    message: "Linear API token missing in WORKFLOW.md",
+  } as const;
+}
+
+function missingProjectSlugError() {
+  return {
+    tag: "missing_linear_project_slug",
+    code: "missing_config",
+    message: "Linear project slug missing in WORKFLOW.md",
+  } as const;
+}
+
+function missingViewerIdentityError() {
+  return {
+    tag: "missing_linear_viewer_identity",
+    code: "missing_config",
+    message: 'Unable to resolve the Linear viewer identity for assignee "me"',
+  } as const;
+}
+
 // ---- helpers ---------------------------------------------------------------
 
 function isObject(value: unknown): value is JsonObject {
@@ -565,9 +628,9 @@ export const Client = {
 };
 
 export type LinearClientModule = {
-  fetchCandidateIssues(): Promise<Result<Issue[], unknown>>;
-  fetchIssuesByStates(states: string[]): Promise<Result<Issue[], unknown>>;
-  fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], unknown>>;
+  fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>>;
+  fetchIssuesByStates(states: string[]): Promise<Result<Issue[], TrackerError>>;
+  fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], TrackerError>>;
   graphql(
     query: string,
     variables?: JsonObject,

@@ -1,9 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { labelNames, newIssue, routable } from "../../../src/symphony/linear/issue.ts";
+import {
+  isIssue,
+  isWorkItem,
+  labelNames,
+  newIssue,
+  newWorkItem,
+  routable,
+} from "../../../src/symphony/plugins/work-item.ts";
 
 // Translated from the "linear issue helpers" / "linear issue routing" tests in
-// workspace_and_config_test.exs.
-describe("Linear.Issue", () => {
+// workspace_and_config_test.exs; extended for the WorkItem generalization.
+describe("Plugins.WorkItem", () => {
   test("issue helpers expose labels and assignment", () => {
     const issue = newIssue({
       id: "abc",
@@ -35,5 +42,17 @@ describe("Linear.Issue", () => {
     expect(issue.blockedBy).toEqual([]);
     expect(issue.id).toBeNull();
     expect(issue.createdAt).toBeNull();
+    expect(issue.metadata).toEqual({});
+  });
+
+  test("newWorkItem brands items and carries plugin metadata", () => {
+    const item = newWorkItem({ id: "slack-1", metadata: { channel: "C123", thread_ts: "1.2" } });
+    expect(isWorkItem(item)).toBe(true);
+    expect(item.metadata).toEqual({ channel: "C123", thread_ts: "1.2" });
+
+    // The legacy aliases are the same functions, not copies.
+    expect(isIssue).toBe(isWorkItem);
+    expect(isWorkItem({ ...item })).toBe(false);
+    expect(isWorkItem({ id: "slack-1" })).toBe(false);
   });
 });

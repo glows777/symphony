@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { logger } from "../../../../src/symphony/logger.ts";
 import {
   type GraphqlFun,
   type RequestFun,
@@ -7,11 +8,11 @@ import {
   graphql,
   mergeIssuePagesForTest,
   normalizeIssueForTest,
-} from "../../../src/symphony/linear/client.ts";
-import { newIssue } from "../../../src/symphony/linear/issue.ts";
-import { logger } from "../../../src/symphony/logger.ts";
-import { ok } from "../../../src/symphony/result.ts";
-import { setupWorkflow, teardownWorkflow } from "../../support/test-support.ts";
+} from "../../../../src/symphony/plugins/linear/client.ts";
+import type { TrackerError } from "../../../../src/symphony/plugins/types.ts";
+import { newIssue } from "../../../../src/symphony/plugins/work-item.ts";
+import { ok } from "../../../../src/symphony/result.ts";
+import { setupWorkflow, teardownWorkflow } from "../../../support/test-support.ts";
 
 // Translated from the Linear client cases in workspace_and_config_test.exs.
 describe("Linear.Client", () => {
@@ -145,7 +146,12 @@ describe("Linear.Client", () => {
       const result = await graphql("query Viewer { viewer { id } }", {}, { requestFun });
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.error).toEqual({ tag: "linear_api_status", status: 400 });
+        expect(result.error).toEqual({
+          tag: "linear_api_status",
+          code: "provider_status",
+          message: "Linear GraphQL request failed with HTTP 400",
+          status: 400,
+        } as TrackerError);
       }
 
       const logged = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");

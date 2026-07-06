@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { putEnv } from "../../src/symphony/app-env.ts";
-import { newIssue } from "../../src/symphony/linear/issue.ts";
 import {
   Orchestrator,
   type RunningEntry,
@@ -10,6 +9,7 @@ import {
   type State,
   nowMs,
 } from "../../src/symphony/orchestrator.ts";
+import { newIssue } from "../../src/symphony/plugins/work-item.ts";
 import { workflowFilePath } from "../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";
 

@@ -1,4 +1,6 @@
-// Literal port of `symphony_elixir/tracker/memory.ex`.
+// Originally a literal port of `symphony_elixir/tracker/memory.ex`; moved into
+// plugins/memory for the tracker plugin architecture (see MIGRATION.md ->
+// Post-cutover divergence).
 //
 // In-memory tracker adapter for tests/local dev. Issues and an optional event
 // recipient are injected via app-env. The Elixir version `send/2`s tuples to a
@@ -11,21 +13,22 @@
 // in-process app-env injection. App-env issues still win and are listed first;
 // behavior is unchanged when no `seed_issues` key is present.
 
-import { getEnv } from "../app-env.ts";
-import type { JsonMap } from "../config/schema.ts";
-import { type Issue, isIssue, newIssue } from "../linear/issue.ts";
-import { type Result, ok } from "../result.ts";
-import { current as currentWorkflow } from "../workflow.ts";
+import { getEnv } from "../../app-env.ts";
+import { settings } from "../../config.ts";
+import type { JsonMap } from "../../config/schema.ts";
+import { type Result, ok } from "../../result.ts";
+import type { TrackerError } from "../types.ts";
+import { type Issue, isIssue, newIssue } from "../work-item.ts";
 
 export type MemoryEvent =
   | { tag: "memory_tracker_comment"; issueId: string; body: string }
   | { tag: "memory_tracker_state_update"; issueId: string; stateName: string };
 
-export function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> {
+export function fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>> {
   return Promise.resolve(ok(issueEntries()));
 }
 
-export function fetchIssuesByStates(stateNames: unknown[]): Promise<Result<Issue[], unknown>> {
+export function fetchIssuesByStates(stateNames: unknown[]): Promise<Result<Issue[], TrackerError>> {
   const normalizedStates = new Set(stateNames.map(normalizeState));
   const issues = issueEntries().filter((issue) =>
     normalizedStates.has(normalizeState(issue.state)),
@@ -33,13 +36,16 @@ export function fetchIssuesByStates(stateNames: unknown[]): Promise<Result<Issue
   return Promise.resolve(ok(issues));
 }
 
-export function fetchIssueStatesByIds(issueIds: string[]): Promise<Result<Issue[], unknown>> {
+export function fetchIssueStatesByIds(issueIds: string[]): Promise<Result<Issue[], TrackerError>> {
   const wantedIds = new Set(issueIds);
   const issues = issueEntries().filter((issue) => issue.id !== null && wantedIds.has(issue.id));
   return Promise.resolve(ok(issues));
 }
 
-export function createComment(issueId: string, body: string): Promise<Result<undefined, unknown>> {
+export function createComment(
+  issueId: string,
+  body: string,
+): Promise<Result<undefined, TrackerError>> {
   sendEvent({ tag: "memory_tracker_comment", issueId, body });
   return Promise.resolve(ok(undefined));
 }
@@ -47,7 +53,7 @@ export function createComment(issueId: string, body: string): Promise<Result<und
 export function updateIssueState(
   issueId: string,
   stateName: string,
-): Promise<Result<undefined, unknown>> {
+): Promise<Result<undefined, TrackerError>> {
   sendEvent({ tag: "memory_tracker_state_update", issueId, stateName });
   return Promise.resolve(ok(undefined));
 }
@@ -60,19 +66,16 @@ function issueEntries(): Issue[] {
   return [...configuredIssues().filter(isIssue), ...seededIssues()];
 }
 
-// Reads `tracker.seed_issues` from the active WORKFLOW.md (the raw, snake_cased
-// config map) and brands each entry as an `Issue`. Unknown/blank entries are
-// skipped. The config schema ignores this key, so it does not affect parsing.
+// Reads `tracker.seed_issues` from the memory plugin's config section
+// (claimed by its configSchema cast; entries keep their raw snake_cased
+// shape) and brands each entry as an `Issue`. Unknown/blank entries are
+// skipped.
 function seededIssues(): Issue[] {
-  const workflow = currentWorkflow();
-  if (!workflow.ok) {
+  const config = settings();
+  if (!config.ok) {
     return [];
   }
-  const tracker = workflow.value.config.tracker;
-  if (!isMap(tracker)) {
-    return [];
-  }
-  const seeds = tracker.seed_issues;
+  const seeds = config.value.tracker.plugin.seed_issues;
   if (!Array.isArray(seeds)) {
     return [];
   }

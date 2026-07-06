@@ -8,9 +8,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { settingsBang } from "./config.ts";
-import type { Issue } from "./linear/issue.ts";
 import { logger } from "./logger.ts";
 import { canonicalize } from "./path-safety.ts";
+import type { Issue } from "./plugins/work-item.ts";
 import { type Result, err, ok } from "./result.ts";
 import * as SSH from "./ssh.ts";
 

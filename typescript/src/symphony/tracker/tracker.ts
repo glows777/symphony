@@ -1,45 +1,96 @@
-// Literal port of `symphony_elixir/tracker.ex`.
-//
-// Adapter boundary for issue tracker reads/writes. Selects the memory or Linear
-// adapter from config and delegates.
+// Adapter boundary for issue tracker reads/writes. Originally a literal port
+// of `symphony_elixir/tracker.ex` (memory/linear hardcoded two-way switch);
+// now resolves the active tracker plugin from the registry by
+// `settings.tracker.kind` and delegates. Write operations are optional plugin
+// capabilities — when the active plugin does not provide one, the facade
+// returns a structured `unsupported_operation` error instead of a silent
+// no-op, so callers can detect and degrade.
+
+// Side-effect import: guarantees built-in plugins are registered before any
+// facade call resolves a kind.
+import "../plugins/index.ts";
 
 import { settingsBang } from "../config.ts";
-import * as LinearAdapter from "../linear/adapter.ts";
-import type { Issue } from "../linear/issue.ts";
-import type { Result } from "../result.ts";
-import * as Memory from "./memory.ts";
+import { trackerPlugin } from "../plugins/registry.ts";
+import { type TrackerError, type TrackerPlugin, trackerError } from "../plugins/types.ts";
+import type { Issue } from "../plugins/work-item.ts";
+import { type Result, err } from "../result.ts";
 
-export type TrackerAdapter = {
-  fetchCandidateIssues(): Promise<Result<Issue[], unknown>>;
-  fetchIssuesByStates(states: string[]): Promise<Result<Issue[], unknown>>;
-  fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], unknown>>;
-  createComment(issueId: string, body: string): Promise<Result<undefined, unknown>>;
-  updateIssueState(issueId: string, stateName: string): Promise<Result<undefined, unknown>>;
-};
-
-export function adapter(): TrackerAdapter {
-  return settingsBang().tracker.kind === "memory" ? Memory : LinearAdapter;
+// Resolves the active plugin from the current WORKFLOW.md config. Fails with
+// `missing_tracker_kind` / `unsupported_tracker_kind` (same tags config
+// validation uses) when the kind cannot be resolved.
+export function activePlugin(): Result<TrackerPlugin, TrackerError> {
+  return trackerPlugin(settingsBang().tracker.kind);
 }
 
-export function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> {
-  return adapter().fetchCandidateIssues();
+// Identity accessor kept for tests and introspection; throws when the
+// configured kind is not registered.
+export function adapter(): TrackerPlugin {
+  const plugin = activePlugin();
+  if (!plugin.ok) {
+    throw new Error(plugin.error.message);
+  }
+  return plugin.value;
 }
 
-export function fetchIssuesByStates(states: string[]): Promise<Result<Issue[], unknown>> {
-  return adapter().fetchIssuesByStates(states);
+export function fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>> {
+  const plugin = activePlugin();
+  if (!plugin.ok) {
+    return Promise.resolve(err(plugin.error));
+  }
+  return plugin.value.fetchCandidateIssues();
 }
 
-export function fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], unknown>> {
-  return adapter().fetchIssueStatesByIds(ids);
+export function fetchIssuesByStates(states: string[]): Promise<Result<Issue[], TrackerError>> {
+  const plugin = activePlugin();
+  if (!plugin.ok) {
+    return Promise.resolve(err(plugin.error));
+  }
+  return plugin.value.fetchIssuesByStates(states);
 }
 
-export function createComment(issueId: string, body: string): Promise<Result<undefined, unknown>> {
-  return adapter().createComment(issueId, body);
+export function fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], TrackerError>> {
+  const plugin = activePlugin();
+  if (!plugin.ok) {
+    return Promise.resolve(err(plugin.error));
+  }
+  return plugin.value.fetchIssueStatesByIds(ids);
+}
+
+export function createComment(
+  issueId: string,
+  body: string,
+): Promise<Result<undefined, TrackerError>> {
+  const plugin = activePlugin();
+  if (!plugin.ok) {
+    return Promise.resolve(err(plugin.error));
+  }
+  const capability = plugin.value.comments;
+  if (capability === undefined) {
+    return Promise.resolve(err(unsupportedCapability(plugin.value, "comments")));
+  }
+  return capability.createComment(issueId, body);
 }
 
 export function updateIssueState(
   issueId: string,
   stateName: string,
-): Promise<Result<undefined, unknown>> {
-  return adapter().updateIssueState(issueId, stateName);
+): Promise<Result<undefined, TrackerError>> {
+  const plugin = activePlugin();
+  if (!plugin.ok) {
+    return Promise.resolve(err(plugin.error));
+  }
+  const capability = plugin.value.stateUpdates;
+  if (capability === undefined) {
+    return Promise.resolve(err(unsupportedCapability(plugin.value, "state updates")));
+  }
+  return capability.updateIssueState(issueId, stateName);
+}
+
+function unsupportedCapability(plugin: TrackerPlugin, capability: string): TrackerError {
+  return trackerError(
+    "tracker_capability_unsupported",
+    "unsupported_operation",
+    `tracker '${plugin.id}' does not support ${capability}`,
+  );
 }

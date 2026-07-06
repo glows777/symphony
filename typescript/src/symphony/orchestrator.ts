@@ -6,8 +6,8 @@
 
 import * as AgentRunner from "./agent-runner.ts";
 import { maxConcurrentAgentsForState, settingsBang, validate } from "./config.ts";
-import { type Issue, isIssue, routable } from "./linear/issue.ts";
 import { logger } from "./logger.ts";
+import { type Issue, isIssue, routable } from "./plugins/work-item.ts";
 import { notifyUpdate as notifyDashboard } from "./status-dashboard.ts";
 import * as Tracker from "./tracker/tracker.ts";
 import * as Workspace from "./workspace.ts";
@@ -1755,7 +1755,7 @@ export class Orchestrator {
     }
     const candidates = await Tracker.fetchCandidateIssues();
     if (!candidates.ok) {
-      logger.error(`Failed to fetch from Linear: ${inspectReason(candidates.error)}`);
+      logger.error(`Failed to fetch from tracker: ${inspectReason(candidates.error)}`);
       return next;
     }
     if (availableSlots(next) <= 0) {
@@ -2197,6 +2197,17 @@ function refreshRuntimeConfig(state: State): State {
 }
 
 function logDispatchError(error: unknown): void {
+  // TrackerError-shaped failures carry their own operator copy; the plugin
+  // supplies it so the core stays provider-agnostic.
+  if (
+    isObj(error) &&
+    typeof error.tag === "string" &&
+    typeof error.code === "string" &&
+    typeof error.message === "string"
+  ) {
+    logger.error(error.message);
+    return;
+  }
   const tag = isObj(error) && typeof error.tag === "string" ? error.tag : null;
   switch (tag) {
     case "missing_linear_api_token":

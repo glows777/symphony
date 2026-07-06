@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+// Side-effect import mirrors production entry points: schema casting delegates
+// the tracker plugin section to the registered plugin for the configured kind.
+import "../../../src/symphony/plugins/index.ts";
 import {
   type Settings,
   StringOrMap,
@@ -83,21 +86,47 @@ describe("Config.Schema.parse", () => {
 
   test("normalizes policy keys and env-backed fallbacks", () => {
     const settings = parseOk({
-      tracker: { api_key: `$${emptyEnv}` },
+      tracker: { kind: "linear", api_key: `$${emptyEnv}` },
       workspace: { root: `$${missingWorkspaceEnv}` },
       codex: { approval_policy: { reject: { sandbox_approval: true } } },
     });
 
-    expect(settings.tracker.apiKey).toBeNull();
+    expect(settings.tracker.plugin.api_key).toBeNull();
     expect(settings.workspace.root).toBe(DEFAULT_WORKSPACE_ROOT);
     expect(settings.codex.approvalPolicy).toEqual({ reject: { sandbox_approval: true } });
 
     const fallback = parseOk({
-      tracker: { api_key: `$${missingSecretEnv}` },
+      tracker: { kind: "linear", api_key: `$${missingSecretEnv}` },
       workspace: { root: "" },
     });
-    expect(fallback.tracker.apiKey).toBe("fallback-linear-token");
+    expect(fallback.tracker.plugin.api_key).toBe("fallback-linear-token");
     expect(fallback.workspace.root).toBe(DEFAULT_WORKSPACE_ROOT);
+  });
+
+  test("delegates the tracker plugin section by kind", () => {
+    const linear = parseOk({ tracker: { kind: "linear", project_slug: "proj" } });
+    expect(linear.tracker.plugin).toEqual({
+      endpoint: "https://api.linear.app/graphql",
+      api_key: "fallback-linear-token",
+      project_slug: "proj",
+      assignee: null,
+    });
+
+    const memory = parseOk({
+      tracker: { kind: "memory", seed_issues: [{ id: "seed-1" }], api_key: "ignored" },
+    });
+    expect(memory.tracker.plugin).toEqual({ seed_issues: [{ id: "seed-1" }] });
+
+    // Unregistered kinds pass the raw section through untouched; parse
+    // succeeds and config.validate() reports the unsupported kind.
+    const unknown = parseOk({ tracker: { kind: "jira", base_url: "https://example.test" } });
+    expect(unknown.tracker.plugin).toEqual({ kind: "jira", base_url: "https://example.test" });
+
+    const invalid = parse({ tracker: { kind: "linear", api_key: 123 } });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) {
+      expect(invalid.error.message).toContain("tracker.api_key");
+    }
   });
 
   test("reports invalid fields with their path", () => {

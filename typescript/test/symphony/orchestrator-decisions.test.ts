@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { newIssue } from "../../src/symphony/linear/issue.ts";
 import {
   type RunningTask,
   type State,
@@ -14,6 +13,7 @@ import {
   shouldDispatchIssueForTest,
   sortIssuesForDispatchForTest,
 } from "../../src/symphony/orchestrator.ts";
+import { newIssue } from "../../src/symphony/plugins/work-item.ts";
 import { ok } from "../../src/symphony/result.ts";
 import { workflowFilePath } from "../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";

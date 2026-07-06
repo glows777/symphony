@@ -5,8 +5,9 @@
 
 import * as AppServer from "./codex/app-server.ts";
 import { settingsBang } from "./config.ts";
-import { type Issue, routable } from "./linear/issue.ts";
 import { logger } from "./logger.ts";
+import { trackerPluginOrNull } from "./plugins/registry.ts";
+import { type Issue, routable } from "./plugins/work-item.ts";
 import { buildPrompt } from "./prompt-builder.ts";
 import { type Result, err, ok } from "./result.ts";
 import * as Tracker from "./tracker/tracker.ts";
@@ -211,7 +212,7 @@ function buildTurnPrompt(
   }
   return `Continuation guidance:
 
-- The previous Codex turn completed normally, but the Linear issue is still in an active state.
+- The previous Codex turn completed normally, but the ${workItemNoun()} is still in an active state.
 - This is continuation turn #${turnNumber} of ${maxTurns} for the current agent run.
 - Resume from the current workspace and workpad state instead of restarting from scratch.
 - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
@@ -238,6 +239,12 @@ async function continueWithIssue(
     return { kind: "continue", issue: refreshed };
   }
   return { kind: "done", issue: refreshed };
+}
+
+// Noun used in agent-facing copy, contributed by the active plugin
+// ("Linear issue"); provider-neutral fallback otherwise.
+function workItemNoun(): string {
+  return trackerPluginOrNull(settingsBang().tracker.kind)?.ui?.workItemNoun ?? "work item";
 }
 
 function activeIssueState(stateName: unknown): boolean {

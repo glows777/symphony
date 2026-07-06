@@ -1,13 +1,16 @@
-// Literal port of `symphony_elixir/linear/adapter.ex`.
+// Originally a literal port of `symphony_elixir/linear/adapter.ex`; moved into
+// plugins/linear for the tracker plugin architecture (see MIGRATION.md ->
+// Post-cutover divergence).
 //
 // Linear-backed tracker adapter. Reads delegate to the configured client module
 // (overridable via the `linear_client_module` app-env, default Client);
 // mutations validate the GraphQL response.
 
-import { getEnv } from "../app-env.ts";
-import { type Result, err, ok } from "../result.ts";
+import { getEnv } from "../../app-env.ts";
+import { type Result, err, ok } from "../../result.ts";
+import { type TrackerError, toTrackerError } from "../types.ts";
+import type { Issue } from "../work-item.ts";
 import { Client, type LinearClientModule } from "./client.ts";
-import type { Issue } from "./issue.ts";
 
 const CREATE_COMMENT_MUTATION = `mutation SymphonyCreateComment($issueId: String!, $body: String!) {
   commentCreate(input: {issueId: $issueId, body: $body}) {
@@ -37,37 +40,37 @@ function clientModule(): LinearClientModule {
   return getEnv<LinearClientModule>("linear_client_module", Client);
 }
 
-export function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> {
+export function fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>> {
   return Promise.resolve(clientModule().fetchCandidateIssues());
 }
 
-export function fetchIssuesByStates(states: string[]): Promise<Result<Issue[], unknown>> {
+export function fetchIssuesByStates(states: string[]): Promise<Result<Issue[], TrackerError>> {
   return Promise.resolve(clientModule().fetchIssuesByStates(states));
 }
 
-export function fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], unknown>> {
+export function fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], TrackerError>> {
   return Promise.resolve(clientModule().fetchIssueStatesByIds(ids));
 }
 
 export async function createComment(
   issueId: string,
   body: string,
-): Promise<Result<undefined, unknown>> {
+): Promise<Result<undefined, TrackerError>> {
   const response = await clientModule().graphql(CREATE_COMMENT_MUTATION, { issueId, body });
   if (isOkResult(response)) {
     const success = getInPath(response.value, ["data", "commentCreate", "success"]) === true;
-    return success ? ok(undefined) : err({ tag: "comment_create_failed" });
+    return success ? ok(undefined) : err(commentCreateFailedError());
   }
   if (isErrResult(response)) {
-    return err(response.error);
+    return err(toTrackerError(response.error));
   }
-  return err({ tag: "comment_create_failed" });
+  return err(commentCreateFailedError());
 }
 
 export async function updateIssueState(
   issueId: string,
   stateName: string,
-): Promise<Result<undefined, unknown>> {
+): Promise<Result<undefined, TrackerError>> {
   const stateId = await resolveStateId(issueId, stateName);
   if (!stateId.ok) {
     return err(stateId.error);
@@ -78,21 +81,21 @@ export async function updateIssueState(
   });
   if (isOkResult(response)) {
     const success = getInPath(response.value, ["data", "issueUpdate", "success"]) === true;
-    return success ? ok(undefined) : err({ tag: "issue_update_failed" });
+    return success ? ok(undefined) : err(issueUpdateFailedError());
   }
   if (isErrResult(response)) {
-    return err(response.error);
+    return err(toTrackerError(response.error));
   }
-  return err({ tag: "issue_update_failed" });
+  return err(issueUpdateFailedError());
 }
 
 async function resolveStateId(
   issueId: string,
   stateName: string,
-): Promise<Result<string, unknown>> {
+): Promise<Result<string, TrackerError>> {
   const response = await clientModule().graphql(STATE_LOOKUP_QUERY, { issueId, stateName });
   if (isErrResult(response)) {
-    return err(response.error);
+    return err(toTrackerError(response.error));
   }
   if (isOkResult(response)) {
     const stateId = getInPath(response.value, [
@@ -108,7 +111,30 @@ async function resolveStateId(
       return ok(stateId);
     }
   }
-  return err({ tag: "state_not_found" });
+  return err({
+    tag: "state_not_found",
+    code: "provider_error",
+    message: `Linear workflow state ${JSON.stringify(stateName)} not found`,
+  });
+}
+
+// Legacy tags preserved; `code`/`message` follow the TrackerError convention
+// from plugins/types.ts.
+
+function commentCreateFailedError() {
+  return {
+    tag: "comment_create_failed",
+    code: "provider_error",
+    message: "Linear comment creation failed",
+  } as const;
+}
+
+function issueUpdateFailedError() {
+  return {
+    tag: "issue_update_failed",
+    code: "provider_error",
+    message: "Linear issue state update failed",
+  } as const;
 }
 
 function isOkResult(value: unknown): value is { ok: true; value: unknown } {

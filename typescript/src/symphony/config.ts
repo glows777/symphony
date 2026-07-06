@@ -2,6 +2,10 @@
 //
 // Runtime configuration loaded from WORKFLOW.md.
 
+// Side-effect import: built-in tracker plugins must be registered before
+// settings are parsed (schema casting delegates the tracker plugin section).
+import "./plugins/index.ts";
+
 import { getEnv } from "./app-env.ts";
 import {
   type JsonMap,
@@ -10,10 +14,14 @@ import {
   parse as parseSchema,
   resolveRuntimeTurnSandboxPolicy,
 } from "./config/schema.ts";
+import { trackerPlugin, trackerPluginOrNull } from "./plugins/registry.ts";
 import { type Result, err, ok } from "./result.ts";
 import { current as workflowCurrent } from "./workflow.ts";
 
-const DEFAULT_PROMPT_TEMPLATE = `You are working on a Linear issue.
+// Provider-neutral fallback; plugins may contribute their own copy via the
+// ui.defaultPromptTemplate capability (the Linear plugin restores the
+// original "Linear issue" wording).
+const GENERIC_PROMPT_TEMPLATE = `You are working on a work item.
 
 Identifier: {{ issue.identifier }}
 Title: {{ issue.title }}
@@ -71,9 +79,18 @@ export function workflowPrompt(): string {
   const workflow = workflowCurrent();
   if (workflow.ok) {
     const prompt = workflow.value.promptTemplate;
-    return prompt.trim() === "" ? DEFAULT_PROMPT_TEMPLATE : prompt;
+    return prompt.trim() === "" ? defaultPromptTemplate() : prompt;
   }
-  return DEFAULT_PROMPT_TEMPLATE;
+  return defaultPromptTemplate();
+}
+
+function defaultPromptTemplate(): string {
+  const config = settings();
+  if (!config.ok) {
+    return GENERIC_PROMPT_TEMPLATE;
+  }
+  const plugin = trackerPluginOrNull(config.value.tracker.kind);
+  return plugin?.ui?.defaultPromptTemplate ?? GENERIC_PROMPT_TEMPLATE;
 }
 
 export function serverPort(): number | null {
@@ -112,20 +129,15 @@ export function codexRuntimeSettings(
 }
 
 function validateSemantics(settings: Settings): Result<undefined, unknown> {
-  const { kind, apiKey, projectSlug } = settings.tracker;
-  if (kind === null) {
-    return err({ tag: "missing_tracker_kind" });
+  const plugin = trackerPlugin(settings.tracker.kind);
+  if (!plugin.ok) {
+    return err(plugin.error);
   }
-  if (kind !== "linear" && kind !== "memory") {
-    return err({ tag: "unsupported_tracker_kind", value: kind });
+  const schema = plugin.value.configSchema;
+  if (schema === undefined) {
+    return ok(undefined);
   }
-  if (kind === "linear" && typeof apiKey !== "string") {
-    return err({ tag: "missing_linear_api_token" });
-  }
-  if (kind === "linear" && typeof projectSlug !== "string") {
-    return err({ tag: "missing_linear_project_slug" });
-  }
-  return ok(undefined);
+  return schema.validate(settings);
 }
 
 function formatConfigError(reason: unknown): string {

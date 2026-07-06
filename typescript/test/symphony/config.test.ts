@@ -9,6 +9,7 @@ import {
   validate,
 } from "../../src/symphony/config.ts";
 import { canonicalize } from "../../src/symphony/path-safety.ts";
+import { linearSettings } from "../../src/symphony/plugins/linear/settings.ts";
 import { workflowFilePath } from "../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";
 
@@ -56,9 +57,9 @@ describe("Config", () => {
     });
 
     const config = settingsBang();
-    expect(config.tracker.endpoint).toBe("https://api.linear.app/graphql");
-    expect(config.tracker.apiKey).toBeNull();
-    expect(config.tracker.projectSlug).toBeNull();
+    expect(linearSettings(config).endpoint).toBe("https://api.linear.app/graphql");
+    expect(linearSettings(config).apiKey).toBeNull();
+    expect(linearSettings(config).projectSlug).toBeNull();
     expect(config.tracker.requiredLabels).toEqual([]);
     expect(config.workspace.root).toBe(DEFAULT_WORKSPACE_ROOT);
     expect(config.worker.maxConcurrentAgentsPerHost).toBeNull();
@@ -123,6 +124,28 @@ describe("Config", () => {
     }
   });
 
+  test("validates the tracker kind through the plugin registry", () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_kind: "memory", tracker_api_token: null });
+    expect(validate().ok).toBe(true);
+
+    writeWorkflowFile(workflowFilePath(), { tracker_kind: "jira" });
+    const unsupported = validate();
+    expect(unsupported.ok).toBe(false);
+    if (!unsupported.ok) {
+      const error = unsupported.error as { tag: string; message: string };
+      expect(error.tag).toBe("unsupported_tracker_kind");
+      expect(error.message).toContain('"jira"');
+    }
+
+    Reflect.deleteProperty(process.env, "LINEAR_API_KEY");
+    writeWorkflowFile(workflowFilePath(), { tracker_kind: "linear", tracker_api_token: null });
+    const missingToken = validate();
+    expect(missingToken.ok).toBe(false);
+    if (!missingToken.ok) {
+      expect((missingToken.error as { tag: string }).tag).toBe("missing_linear_api_token");
+    }
+  });
+
   test("empty codex strings are accepted; future policies pass through", () => {
     writeWorkflowFile(workflowFilePath(), { codex_approval_policy: "" });
     expect(validate().ok).toBe(true);
@@ -159,7 +182,7 @@ describe("Config", () => {
         codex_command: "~/bin/codex app-server",
       });
       const config = settingsBang();
-      expect(config.tracker.apiKey).toBe("resolved-secret");
+      expect(linearSettings(config).apiKey).toBe("resolved-secret");
       expect(config.workspace.root).toBe(path.resolve(workspaceRoot));
       expect(config.codex.command).toBe("~/bin/codex app-server");
     } finally {
@@ -174,7 +197,7 @@ describe("Config", () => {
       workspace_root: "env:SOME_ROOT",
     });
     const config = settingsBang();
-    expect(config.tracker.apiKey).toBe("env:SOME_KEY");
+    expect(linearSettings(config).apiKey).toBe("env:SOME_KEY");
     expect(config.workspace.root).toBe("env:SOME_ROOT");
   });
 
