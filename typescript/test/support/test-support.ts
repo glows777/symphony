@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { deleteEnv } from "../../src/symphony/app-env.ts";
+import { resetTokenCacheForTest as resetLarkTokenCache } from "../../src/symphony/plugins/lark/client.ts";
 import { getRunningStore } from "../../src/symphony/workflow-store.ts";
 import { setWorkflowFilePath } from "../../src/symphony/workflow.ts";
 
@@ -238,5 +239,6 @@ export function teardownWorkflow(root: string): void {
   deleteEnv("linear_client_module");
   deleteEnv("lark_client_module");
   deleteEnv("tracker_plugin_overrides");
+  resetLarkTokenCache();
   fs.rmSync(root, { recursive: true, force: true });
 }
