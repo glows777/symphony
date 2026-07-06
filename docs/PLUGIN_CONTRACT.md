@@ -217,11 +217,13 @@ type PluginConfigSchema = {
 |---|---|
 | `tracker_plugin_overrides` | Map of kind → plugin; shadows registered plugins for a test. |
 | `linear_client_module` | Injects a fake Linear GraphQL client under the Linear plugin. |
+| `lark_client_module` | Injects a fake Lark Bitable client under the Lark plugin. |
 | `memory_tracker_issues` / `memory_tracker_recipient` | Memory plugin's item source / write-back event sink. |
 
-`test/support/test-support.ts` clears all of these in `teardownWorkflow`.
-Plugin-specific seams live inside the plugin; new plugins SHOULD follow the
-same pattern (an app-env key holding an injectable module).
+`test/support/test-support.ts` clears all of these in `teardownWorkflow` (it
+also resets the Lark plugin's module-level tenant-token cache). Plugin-specific
+seams live inside the plugin; new plugins SHOULD follow the same pattern (an
+app-env key holding an injectable module).
 
 ## 9. Built-in plugins (reference)
 
@@ -245,6 +247,35 @@ schema); writes replay to the `memory_tracker_recipient` callback. It
 implements every capability except `agentTools` and `ui`, making it the
 minimal example of capability-based degradation: memory-kind sessions
 advertise no dynamic tools and render "n/a" for the project line.
+
+### 9.3 `lark`
+
+Lark (Feishu) Bitable-backed tracker (`plugins/lark/`): one Bitable table is
+one board, and a work item is a record in that table. Reads map onto
+`records/search` (per-state `is` conditions under an `or` conjunction,
+`page_token` pagination) and `records/batch_get` (100-id batches); the state
+vocabulary (§3.1) is the options of the configured state single-select field,
+so workflow authors set `active_states`/`terminal_states` to match their
+options. Auth is a short-lived `tenant_access_token`, cached module-level
+with a refresh margin and re-acquired once on invalid-token responses.
+
+Capabilities: `stateUpdates` (record update on the state field), the
+`lark_api` agent tool (raw OpenAPI requests with Symphony's auth; the path
+MUST start with `/open-apis/` and the host is always the configured
+endpoint), and `ui` (Bitable table URL, "Lark record" noun, no plugin prompt
+template). `comments` is omitted — Bitable records have no public
+record-comment open API — so the facade returns the §5 structured error.
+
+Config keys claimed by its schema: `endpoint` (default
+`https://open.feishu.cn`; Lark international tenants use
+`https://open.larksuite.com`), `app_id`, `app_secret` (canonical env
+`LARK_APP_SECRET`), `app_token` (required), `table_id` (required), `assignee`
+(an open_id; the app identity has no viewer, so `"me"` is not supported), and
+the field-name mappings `field_state`/`field_title`/`field_description`/
+`field_labels`/`field_assignee` (defaults `Status`/`Title`/`Description`/
+`Labels`/`Assignee`) plus `field_identifier` (null → `record_id`) and
+`field_priority` (null → priority unmapped). `blockedBy` is not mapped in v1
+(empty, disabling the blocking gate per §3).
 
 ## 10. Writing a new plugin (checklist)
 
