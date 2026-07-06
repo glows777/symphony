@@ -307,7 +307,10 @@ without touching the core. TS-native design, no Elixir counterpart.
   the active plugin's `agentTools`; the `linear_graphql` implementation moved
   verbatim to `plugins/linear/graphql-tool.ts`. Divergence: plugins without
   agent tools (memory) advertise an empty `dynamicTools` list instead of
-  always exposing `linear_graphql`.
+  always exposing `linear_graphql`; the same applies when settings are
+  unavailable or unparseable (e.g. the harness replay path with no
+  WORKFLOW.md), where the old dispatcher still advertised `linear_graphql`.
+  The plugin contract itself is documented in `docs/PLUGIN_CONTRACT.md`.
 - **UI contributions:** the dashboard Project URL, default prompt template,
   and continuation-guidance noun come from the plugin `ui` capability; Linear
   output is byte-identical, other kinds fall back to neutral copy ("n/a",
