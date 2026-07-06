@@ -7,6 +7,7 @@ import { LinearPlugin } from "../../src/symphony/plugins/linear/plugin.ts";
 import type { MemoryEvent } from "../../src/symphony/plugins/memory/adapter.ts";
 import * as Memory from "../../src/symphony/plugins/memory/adapter.ts";
 import { MemoryPlugin } from "../../src/symphony/plugins/memory/plugin.ts";
+import type { TrackerError } from "../../src/symphony/plugins/types.ts";
 import type { Issue } from "../../src/symphony/plugins/work-item.ts";
 import { newIssue } from "../../src/symphony/plugins/work-item.ts";
 import { type Result, err, ok } from "../../src/symphony/result.ts";
@@ -73,13 +74,13 @@ describe("Tracker", () => {
     putEnv("linear_client_module", fake);
 
     expect(await Adapter.fetchCandidateIssues()).toEqual(
-      ok(["candidate"]) as unknown as Result<Issue[], unknown>,
+      ok(["candidate"]) as unknown as Result<Issue[], TrackerError>,
     );
     expect(await Adapter.fetchIssuesByStates(["Todo"])).toEqual(
-      ok(["Todo"]) as unknown as Result<Issue[], unknown>,
+      ok(["Todo"]) as unknown as Result<Issue[], TrackerError>,
     );
     expect(await Adapter.fetchIssueStatesByIds(["issue-1"])).toEqual(
-      ok(["issue-1"]) as unknown as Result<Issue[], unknown>,
+      ok(["issue-1"]) as unknown as Result<Issue[], TrackerError>,
     );
 
     graphqlResult = ok({ data: { commentCreate: { success: true } } });
@@ -98,7 +99,14 @@ describe("Tracker", () => {
     );
 
     graphqlResult = err("boom");
-    expect(await Adapter.createComment("issue-1", "boom")).toEqual(err("boom"));
+    expect(await Adapter.createComment("issue-1", "boom")).toEqual(
+      err({
+        tag: "tracker_error",
+        code: "unknown",
+        message: "Tracker operation failed: :boom",
+        detail: "boom",
+      }),
+    );
 
     graphqlResult = ok({ data: {} });
     expect(await Adapter.createComment("issue-1", "weird")).toEqual(
@@ -138,7 +146,14 @@ describe("Tracker", () => {
     );
 
     graphqlResults = [err("boom")];
-    expect(await Adapter.updateIssueState("issue-1", "Boom")).toEqual(err("boom"));
+    expect(await Adapter.updateIssueState("issue-1", "Boom")).toEqual(
+      err({
+        tag: "tracker_error",
+        code: "unknown",
+        message: "Tracker operation failed: :boom",
+        detail: "boom",
+      }),
+    );
 
     graphqlResults = [ok({ data: {} })];
     expect(await Adapter.updateIssueState("issue-1", "Missing")).toEqual(

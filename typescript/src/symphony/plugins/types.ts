@@ -47,6 +47,53 @@ export function trackerError(
   return detail === undefined ? { tag, code, message } : { tag, code, message, detail };
 }
 
+const TRACKER_ERROR_CODES: ReadonlySet<string> = new Set([
+  "missing_credentials",
+  "missing_config",
+  "transport_failed",
+  "provider_status",
+  "provider_error",
+  "invalid_payload",
+  "unsupported_operation",
+  "unknown",
+]);
+
+export function isTrackerError(value: unknown): value is TrackerError {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof (value as { tag?: unknown }).tag === "string" &&
+    typeof (value as { message?: unknown }).message === "string" &&
+    typeof (value as { code?: unknown }).code === "string" &&
+    TRACKER_ERROR_CODES.has((value as { code: string }).code)
+  );
+}
+
+// Normalization boundary for errors entering the plugin contract from
+// untyped seams (e.g. an injected client module): conforming errors pass
+// through untouched, anything else is wrapped with the original value in
+// `detail`.
+export function toTrackerError(value: unknown): TrackerError {
+  if (isTrackerError(value)) {
+    return value;
+  }
+  return {
+    tag: "tracker_error",
+    code: "unknown",
+    message: `Tracker operation failed: ${inspectReason(value)}`,
+    detail: value,
+  };
+}
+
+// Elixir `inspect` convention: string reasons render as atoms (`:timeout`).
+function inspectReason(reason: unknown): string {
+  if (typeof reason === "string") {
+    return `:${reason}`;
+  }
+  return JSON.stringify(reason) ?? String(reason);
+}
+
 // ---- agent-facing dynamic tools ------------------------------------------------
 
 export type AgentToolSpec = { name: string; description: string; inputSchema: JsonMap };
@@ -69,11 +116,11 @@ export type AgentToolCapability = {
 // ---- write-path capabilities ---------------------------------------------------
 
 export type CommentCapability = {
-  createComment(issueId: string, body: string): Promise<Result<undefined, unknown>>;
+  createComment(issueId: string, body: string): Promise<Result<undefined, TrackerError>>;
 };
 
 export type StateUpdateCapability = {
-  updateIssueState(issueId: string, stateName: string): Promise<Result<undefined, unknown>>;
+  updateIssueState(issueId: string, stateName: string): Promise<Result<undefined, TrackerError>>;
 };
 
 // ---- UI contributions ----------------------------------------------------------
@@ -114,9 +161,11 @@ export type TrackerPlugin = {
   configSchema?: PluginConfigSchema;
 
   // Required core: the three read operations the orchestrator depends on.
-  fetchCandidateIssues(): Promise<Result<Issue[], unknown>>;
-  fetchIssuesByStates(states: string[]): Promise<Result<Issue[], unknown>>;
-  fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], unknown>>;
+  // Errors must be TrackerError-shaped; wrap foreign errors with
+  // `toTrackerError` at the plugin's own seams.
+  fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>>;
+  fetchIssuesByStates(states: string[]): Promise<Result<Issue[], TrackerError>>;
+  fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], TrackerError>>;
 
   // Optional capabilities.
   comments?: CommentCapability;

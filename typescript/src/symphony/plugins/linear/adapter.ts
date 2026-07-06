@@ -8,6 +8,7 @@
 
 import { getEnv } from "../../app-env.ts";
 import { type Result, err, ok } from "../../result.ts";
+import { type TrackerError, toTrackerError } from "../types.ts";
 import type { Issue } from "../work-item.ts";
 import { Client, type LinearClientModule } from "./client.ts";
 
@@ -39,29 +40,29 @@ function clientModule(): LinearClientModule {
   return getEnv<LinearClientModule>("linear_client_module", Client);
 }
 
-export function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> {
+export function fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>> {
   return Promise.resolve(clientModule().fetchCandidateIssues());
 }
 
-export function fetchIssuesByStates(states: string[]): Promise<Result<Issue[], unknown>> {
+export function fetchIssuesByStates(states: string[]): Promise<Result<Issue[], TrackerError>> {
   return Promise.resolve(clientModule().fetchIssuesByStates(states));
 }
 
-export function fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], unknown>> {
+export function fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], TrackerError>> {
   return Promise.resolve(clientModule().fetchIssueStatesByIds(ids));
 }
 
 export async function createComment(
   issueId: string,
   body: string,
-): Promise<Result<undefined, unknown>> {
+): Promise<Result<undefined, TrackerError>> {
   const response = await clientModule().graphql(CREATE_COMMENT_MUTATION, { issueId, body });
   if (isOkResult(response)) {
     const success = getInPath(response.value, ["data", "commentCreate", "success"]) === true;
     return success ? ok(undefined) : err(commentCreateFailedError());
   }
   if (isErrResult(response)) {
-    return err(response.error);
+    return err(toTrackerError(response.error));
   }
   return err(commentCreateFailedError());
 }
@@ -69,7 +70,7 @@ export async function createComment(
 export async function updateIssueState(
   issueId: string,
   stateName: string,
-): Promise<Result<undefined, unknown>> {
+): Promise<Result<undefined, TrackerError>> {
   const stateId = await resolveStateId(issueId, stateName);
   if (!stateId.ok) {
     return err(stateId.error);
@@ -83,7 +84,7 @@ export async function updateIssueState(
     return success ? ok(undefined) : err(issueUpdateFailedError());
   }
   if (isErrResult(response)) {
-    return err(response.error);
+    return err(toTrackerError(response.error));
   }
   return err(issueUpdateFailedError());
 }
@@ -91,10 +92,10 @@ export async function updateIssueState(
 async function resolveStateId(
   issueId: string,
   stateName: string,
-): Promise<Result<string, unknown>> {
+): Promise<Result<string, TrackerError>> {
   const response = await clientModule().graphql(STATE_LOOKUP_QUERY, { issueId, stateName });
   if (isErrResult(response)) {
-    return err(response.error);
+    return err(toTrackerError(response.error));
   }
   if (isOkResult(response)) {
     const stateId = getInPath(response.value, [

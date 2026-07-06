@@ -8,6 +8,7 @@
 import { settingsBang } from "../../config.ts";
 import { logger } from "../../logger.ts";
 import { type Result, err, ok } from "../../result.ts";
+import type { TrackerError } from "../types.ts";
 import { type Blocker, type Issue, newIssue } from "../work-item.ts";
 import { linearSettings } from "./settings.ts";
 
@@ -61,11 +62,11 @@ export type GraphqlOpts = { operationName?: string; requestFun?: RequestFun };
 export type GraphqlFun = (
   query: string,
   variables: JsonObject,
-) => Result<unknown, unknown> | Promise<Result<unknown, unknown>>;
+) => Result<unknown, TrackerError> | Promise<Result<unknown, TrackerError>>;
 
 type JsonObject = Record<string, unknown>;
 
-export async function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> {
+export async function fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>> {
   const settings = settingsBang();
   const linear = linearSettings(settings);
   const projectSlug = linear.projectSlug;
@@ -83,7 +84,9 @@ export async function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> 
   return doFetchByStates(projectSlug, settings.tracker.activeStates, assigneeFilter.value);
 }
 
-export async function fetchIssuesByStates(stateNames: string[]): Promise<Result<Issue[], unknown>> {
+export async function fetchIssuesByStates(
+  stateNames: string[],
+): Promise<Result<Issue[], TrackerError>> {
   const normalizedStates = [...new Set(stateNames.map(String))];
   if (normalizedStates.length === 0) {
     return ok([]);
@@ -99,7 +102,9 @@ export async function fetchIssuesByStates(stateNames: string[]): Promise<Result<
   return doFetchByStates(projectSlug, normalizedStates, null);
 }
 
-export async function fetchIssueStatesByIds(issueIds: string[]): Promise<Result<Issue[], unknown>> {
+export async function fetchIssueStatesByIds(
+  issueIds: string[],
+): Promise<Result<Issue[], TrackerError>> {
   const ids = [...new Set(issueIds)];
   if (ids.length === 0) {
     return ok([]);
@@ -115,7 +120,7 @@ export async function graphql(
   query: string,
   variables: JsonObject = {},
   opts: GraphqlOpts = {},
-): Promise<Result<unknown, unknown>> {
+): Promise<Result<unknown, TrackerError>> {
   const payload = buildGraphqlPayload(query, variables, opts.operationName);
   const requestFun = opts.requestFun ?? postGraphqlRequest;
 
@@ -159,7 +164,7 @@ export function normalizeIssueForTest(issue: JsonObject, assignee?: string | nul
   return normalizeIssue(issue, assigneeFilter);
 }
 
-export function nextPageCursorForTest(pageInfo: PageInfo): Result<string, unknown> | "done" {
+export function nextPageCursorForTest(pageInfo: PageInfo): Result<string, TrackerError> | "done" {
   return nextPageCursor(pageInfo);
 }
 
@@ -170,7 +175,7 @@ export function mergeIssuePagesForTest(issuePages: Issue[][]): Issue[] {
 export function fetchIssueStatesByIdsForTest(
   issueIds: string[],
   graphqlFun: GraphqlFun,
-): Promise<Result<Issue[], unknown>> {
+): Promise<Result<Issue[], TrackerError>> {
   const ids = [...new Set(issueIds)];
   if (ids.length === 0) {
     return Promise.resolve(ok([]));
@@ -184,7 +189,7 @@ function doFetchByStates(
   projectSlug: string,
   stateNames: string[],
   assigneeFilter: AssigneeFilter,
-): Promise<Result<Issue[], unknown>> {
+): Promise<Result<Issue[], TrackerError>> {
   return doFetchByStatesPage(projectSlug, stateNames, assigneeFilter, null, []);
 }
 
@@ -194,7 +199,7 @@ async function doFetchByStatesPage(
   assigneeFilter: AssigneeFilter,
   afterCursor: string | null,
   accIssues: Issue[],
-): Promise<Result<Issue[], unknown>> {
+): Promise<Result<Issue[], TrackerError>> {
   const body = await graphql(QUERY, {
     projectSlug,
     stateNames,
@@ -235,7 +240,7 @@ function doFetchIssueStates(
   ids: string[],
   assigneeFilter: AssigneeFilter,
   graphqlFun: GraphqlFun,
-): Promise<Result<Issue[], unknown>> {
+): Promise<Result<Issue[], TrackerError>> {
   return doFetchIssueStatesPage(ids, assigneeFilter, graphqlFun, [], issueOrderIndex(ids));
 }
 
@@ -245,7 +250,7 @@ async function doFetchIssueStatesPage(
   graphqlFun: GraphqlFun,
   accIssues: Issue[],
   orderIndex: Map<string, number>,
-): Promise<Result<Issue[], unknown>> {
+): Promise<Result<Issue[], TrackerError>> {
   if (ids.length === 0) {
     return ok(sortIssuesByRequestedIds(finalizePaginatedIssues(accIssues), orderIndex));
   }
@@ -316,7 +321,7 @@ function truncateErrorBody(body: string): string {
   return body;
 }
 
-function graphqlHeaders(): Result<Record<string, string>, unknown> {
+function graphqlHeaders(): Result<Record<string, string>, TrackerError> {
   const token = linearSettings(settingsBang()).apiKey;
   if (token === null) {
     return err(missingApiTokenError());
@@ -349,7 +354,7 @@ type PageInfo = { hasNextPage: boolean; endCursor: unknown };
 function decodeLinearResponse(
   body: unknown,
   assigneeFilter: AssigneeFilter,
-): Result<Issue[], unknown> {
+): Result<Issue[], TrackerError> {
   const nodes = getIn(body, ["data", "issues", "nodes"]);
   if (Array.isArray(nodes)) {
     const issues = nodes
@@ -376,7 +381,7 @@ function decodeLinearResponse(
 function decodeLinearPageResponse(
   body: unknown,
   assigneeFilter: AssigneeFilter,
-): Result<{ issues: Issue[]; pageInfo: PageInfo }, unknown> {
+): Result<{ issues: Issue[]; pageInfo: PageInfo }, TrackerError> {
   const nodes = getIn(body, ["data", "issues", "nodes"]);
   const pageInfo = getIn(body, ["data", "issues", "pageInfo"]);
   if (
@@ -402,7 +407,7 @@ function decodeLinearPageResponse(
   return ok({ issues: fallback.value, pageInfo: { hasNextPage: false, endCursor: null } });
 }
 
-function nextPageCursor(pageInfo: PageInfo): Result<string, unknown> | "done" {
+function nextPageCursor(pageInfo: PageInfo): Result<string, TrackerError> | "done" {
   if (pageInfo.hasNextPage === true) {
     if (typeof pageInfo.endCursor === "string" && pageInfo.endCursor.length > 0) {
       return ok(pageInfo.endCursor);
@@ -454,7 +459,7 @@ function assignedToWorker(assignee: unknown, assigneeFilter: AssigneeFilter): bo
   return false;
 }
 
-async function routingAssigneeFilter(): Promise<Result<AssigneeFilter, unknown>> {
+async function routingAssigneeFilter(): Promise<Result<AssigneeFilter, TrackerError>> {
   const assignee = linearSettings(settingsBang()).assignee;
   if (assignee === null) {
     return ok(null);
@@ -462,7 +467,9 @@ async function routingAssigneeFilter(): Promise<Result<AssigneeFilter, unknown>>
   return buildAssigneeFilter(assignee);
 }
 
-async function buildAssigneeFilter(assignee: string): Promise<Result<AssigneeFilter, unknown>> {
+async function buildAssigneeFilter(
+  assignee: string,
+): Promise<Result<AssigneeFilter, TrackerError>> {
   const normalized = normalizeAssigneeMatchValue(assignee);
   if (normalized === null) {
     return ok(null);
@@ -474,7 +481,7 @@ async function buildAssigneeFilter(assignee: string): Promise<Result<AssigneeFil
 }
 
 // Synchronous variant used by the normalize_issue_for_test seam (no viewer).
-function buildAssigneeFilterSync(assignee: string): Result<AssigneeFilter, unknown> {
+function buildAssigneeFilterSync(assignee: string): Result<AssigneeFilter, TrackerError> {
   const normalized = normalizeAssigneeMatchValue(assignee);
   if (normalized === null) {
     return ok(null);
@@ -485,7 +492,7 @@ function buildAssigneeFilterSync(assignee: string): Result<AssigneeFilter, unkno
   return ok({ configuredAssignee: assignee, matchValues: new Set([normalized]) });
 }
 
-async function resolveViewerAssigneeFilter(): Promise<Result<AssigneeFilter, unknown>> {
+async function resolveViewerAssigneeFilter(): Promise<Result<AssigneeFilter, TrackerError>> {
   const response = await graphql(VIEWER_QUERY, {});
   if (!response.ok) {
     return err(response.error);
@@ -621,9 +628,9 @@ export const Client = {
 };
 
 export type LinearClientModule = {
-  fetchCandidateIssues(): Promise<Result<Issue[], unknown>>;
-  fetchIssuesByStates(states: string[]): Promise<Result<Issue[], unknown>>;
-  fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], unknown>>;
+  fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>>;
+  fetchIssuesByStates(states: string[]): Promise<Result<Issue[], TrackerError>>;
+  fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], TrackerError>>;
   graphql(
     query: string,
     variables?: JsonObject,

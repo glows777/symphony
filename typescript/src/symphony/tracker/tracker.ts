@@ -33,7 +33,7 @@ export function adapter(): TrackerPlugin {
   return plugin.value;
 }
 
-export function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> {
+export function fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>> {
   const plugin = activePlugin();
   if (!plugin.ok) {
     return Promise.resolve(err(plugin.error));
@@ -41,7 +41,7 @@ export function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> {
   return plugin.value.fetchCandidateIssues();
 }
 
-export function fetchIssuesByStates(states: string[]): Promise<Result<Issue[], unknown>> {
+export function fetchIssuesByStates(states: string[]): Promise<Result<Issue[], TrackerError>> {
   const plugin = activePlugin();
   if (!plugin.ok) {
     return Promise.resolve(err(plugin.error));
@@ -49,7 +49,7 @@ export function fetchIssuesByStates(states: string[]): Promise<Result<Issue[], u
   return plugin.value.fetchIssuesByStates(states);
 }
 
-export function fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], unknown>> {
+export function fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], TrackerError>> {
   const plugin = activePlugin();
   if (!plugin.ok) {
     return Promise.resolve(err(plugin.error));
@@ -57,7 +57,10 @@ export function fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], un
   return plugin.value.fetchIssueStatesByIds(ids);
 }
 
-export function createComment(issueId: string, body: string): Promise<Result<undefined, unknown>> {
+export function createComment(
+  issueId: string,
+  body: string,
+): Promise<Result<undefined, TrackerError>> {
   const plugin = activePlugin();
   if (!plugin.ok) {
     return Promise.resolve(err(plugin.error));
@@ -72,7 +75,7 @@ export function createComment(issueId: string, body: string): Promise<Result<und
 export function updateIssueState(
   issueId: string,
   stateName: string,
-): Promise<Result<undefined, unknown>> {
+): Promise<Result<undefined, TrackerError>> {
   const plugin = activePlugin();
   if (!plugin.ok) {
     return Promise.resolve(err(plugin.error));

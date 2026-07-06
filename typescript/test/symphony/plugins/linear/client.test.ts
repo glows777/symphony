@@ -9,6 +9,7 @@ import {
   mergeIssuePagesForTest,
   normalizeIssueForTest,
 } from "../../../../src/symphony/plugins/linear/client.ts";
+import type { TrackerError } from "../../../../src/symphony/plugins/types.ts";
 import { newIssue } from "../../../../src/symphony/plugins/work-item.ts";
 import { ok } from "../../../../src/symphony/result.ts";
 import { setupWorkflow, teardownWorkflow } from "../../../support/test-support.ts";
@@ -150,7 +151,7 @@ describe("Linear.Client", () => {
           code: "provider_status",
           message: "Linear GraphQL request failed with HTTP 400",
           status: 400,
-        });
+        } as TrackerError);
       }
 
       const logged = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");

@@ -282,9 +282,15 @@ without touching the core. TS-native design, no Elixir counterpart.
 - **WorkItem.metadata:** new plugin-private extension slot (`JsonMap`,
   defaults to `{}`). Core code never reads it; prompt templates can via
   `issue.metadata.*`.
-- **Errors:** plugin-originated errors carry `code` (normalized category) and
-  `message` (operator copy) alongside the legacy `tag` strings, which are
-  preserved verbatim (including extra fields like `status`/`reason`/`errors`).
+- **Errors:** the plugin contract's error channel is typed `TrackerError`
+  (`tag` + normalized `code` + operator `message`, optional `detail`); legacy
+  tag strings and extra fields (`status`/`reason`/`errors`) are preserved
+  verbatim. Errors entering a plugin from an untyped seam (e.g. an injected
+  `linear_client_module` whose mutations fail with arbitrary values) are
+  normalized via `toTrackerError`, which wraps non-conforming values as
+  `{ tag: "tracker_error", code: "unknown", detail: <original> }` instead of
+  passing them through raw. Production Linear errors always conform, so this
+  wrapping is observable only with injected fakes.
 - **Config:** `TrackerSettings` shrank to the core scheduling fields (`kind`,
   `required_labels`, `active_states`, `terminal_states`) plus an opaque
   `plugin` section cast/finalized/validated by the active plugin's

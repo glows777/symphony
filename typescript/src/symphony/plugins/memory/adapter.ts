@@ -17,17 +17,18 @@ import { getEnv } from "../../app-env.ts";
 import { settings } from "../../config.ts";
 import type { JsonMap } from "../../config/schema.ts";
 import { type Result, ok } from "../../result.ts";
+import type { TrackerError } from "../types.ts";
 import { type Issue, isIssue, newIssue } from "../work-item.ts";
 
 export type MemoryEvent =
   | { tag: "memory_tracker_comment"; issueId: string; body: string }
   | { tag: "memory_tracker_state_update"; issueId: string; stateName: string };
 
-export function fetchCandidateIssues(): Promise<Result<Issue[], unknown>> {
+export function fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>> {
   return Promise.resolve(ok(issueEntries()));
 }
 
-export function fetchIssuesByStates(stateNames: unknown[]): Promise<Result<Issue[], unknown>> {
+export function fetchIssuesByStates(stateNames: unknown[]): Promise<Result<Issue[], TrackerError>> {
   const normalizedStates = new Set(stateNames.map(normalizeState));
   const issues = issueEntries().filter((issue) =>
     normalizedStates.has(normalizeState(issue.state)),
@@ -35,13 +36,16 @@ export function fetchIssuesByStates(stateNames: unknown[]): Promise<Result<Issue
   return Promise.resolve(ok(issues));
 }
 
-export function fetchIssueStatesByIds(issueIds: string[]): Promise<Result<Issue[], unknown>> {
+export function fetchIssueStatesByIds(issueIds: string[]): Promise<Result<Issue[], TrackerError>> {
   const wantedIds = new Set(issueIds);
   const issues = issueEntries().filter((issue) => issue.id !== null && wantedIds.has(issue.id));
   return Promise.resolve(ok(issues));
 }
 
-export function createComment(issueId: string, body: string): Promise<Result<undefined, unknown>> {
+export function createComment(
+  issueId: string,
+  body: string,
+): Promise<Result<undefined, TrackerError>> {
   sendEvent({ tag: "memory_tracker_comment", issueId, body });
   return Promise.resolve(ok(undefined));
 }
@@ -49,7 +53,7 @@ export function createComment(issueId: string, body: string): Promise<Result<und
 export function updateIssueState(
   issueId: string,
   stateName: string,
-): Promise<Result<undefined, unknown>> {
+): Promise<Result<undefined, TrackerError>> {
   sendEvent({ tag: "memory_tracker_state_update", issueId, stateName });
   return Promise.resolve(ok(undefined));
 }
