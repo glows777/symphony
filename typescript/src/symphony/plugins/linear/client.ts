@@ -1,13 +1,15 @@
-// Literal port of `symphony_elixir/linear/client.ex`.
+// Originally a literal port of `symphony_elixir/linear/client.ex`; moved into
+// plugins/linear for the tracker plugin architecture (see MIGRATION.md ->
+// Post-cutover divergence).
 //
 // Thin Linear GraphQL client. Elixir's Req calls are blocking; the TS port uses
 // `fetch`, so `graphql` and the fetch helpers are async (Promise-returning).
 
-import { settingsBang } from "../config.ts";
-import { logger } from "../logger.ts";
-import { linearSettings } from "../plugins/linear/settings.ts";
-import { type Result, err, ok } from "../result.ts";
-import { type Blocker, type Issue, newIssue } from "./issue.ts";
+import { settingsBang } from "../../config.ts";
+import { logger } from "../../logger.ts";
+import { type Result, err, ok } from "../../result.ts";
+import { type Blocker, type Issue, newIssue } from "../work-item.ts";
+import { linearSettings } from "./settings.ts";
 
 const ISSUE_PAGE_SIZE = 50;
 const MAX_ERROR_BODY_LOG_BYTES = 1_000;

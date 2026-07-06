@@ -4,9 +4,9 @@
 // port of `symphony_elixir/codex/dynamic_tool.ex`); protocol encoding stays in
 // the dispatcher.
 
-import { graphql as clientGraphql } from "../../linear/client.ts";
 import { type Result, err, ok } from "../../result.ts";
 import type { AgentToolExecuteOpts, AgentToolOutcome, AgentToolSpec } from "../types.ts";
+import { graphql as clientGraphql } from "./client.ts";
 
 export const LINEAR_GRAPHQL_TOOL = "linear_graphql";
 const LINEAR_GRAPHQL_DESCRIPTION =

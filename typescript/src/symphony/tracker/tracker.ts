@@ -11,9 +11,9 @@
 import "../plugins/index.ts";
 
 import { settingsBang } from "../config.ts";
-import type { Issue } from "../linear/issue.ts";
 import { trackerPlugin } from "../plugins/registry.ts";
 import { type TrackerError, type TrackerPlugin, trackerError } from "../plugins/types.ts";
+import type { Issue } from "../plugins/work-item.ts";
 import { type Result, err } from "../result.ts";
 
 // Resolves the active plugin from the current WORKFLOW.md config. Fails with

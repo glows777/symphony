@@ -5,9 +5,9 @@
 
 import * as AppServer from "./codex/app-server.ts";
 import { settingsBang } from "./config.ts";
-import { type Issue, routable } from "./linear/issue.ts";
 import { logger } from "./logger.ts";
 import { trackerPluginOrNull } from "./plugins/registry.ts";
+import { type Issue, routable } from "./plugins/work-item.ts";
 import { buildPrompt } from "./prompt-builder.ts";
 import { type Result, err, ok } from "./result.ts";
 import * as Tracker from "./tracker/tracker.ts";

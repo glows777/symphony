@@ -1,4 +1,6 @@
-// Literal port of `symphony_elixir/tracker/memory.ex`.
+// Originally a literal port of `symphony_elixir/tracker/memory.ex`; moved into
+// plugins/memory for the tracker plugin architecture (see MIGRATION.md ->
+// Post-cutover divergence).
 //
 // In-memory tracker adapter for tests/local dev. Issues and an optional event
 // recipient are injected via app-env. The Elixir version `send/2`s tuples to a
@@ -11,11 +13,11 @@
 // in-process app-env injection. App-env issues still win and are listed first;
 // behavior is unchanged when no `seed_issues` key is present.
 
-import { getEnv } from "../app-env.ts";
-import { settings } from "../config.ts";
-import type { JsonMap } from "../config/schema.ts";
-import { type Issue, isIssue, newIssue } from "../linear/issue.ts";
-import { type Result, ok } from "../result.ts";
+import { getEnv } from "../../app-env.ts";
+import { settings } from "../../config.ts";
+import type { JsonMap } from "../../config/schema.ts";
+import { type Result, ok } from "../../result.ts";
+import { type Issue, isIssue, newIssue } from "../work-item.ts";
 
 export type MemoryEvent =
   | { tag: "memory_tracker_comment"; issueId: string; body: string }

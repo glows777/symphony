@@ -9,8 +9,8 @@
 // the tracker facade reports `unsupported_operation` instead of guessing.
 
 import type { JsonMap, Settings } from "../config/schema.ts";
-import type { Issue } from "../linear/issue.ts";
 import type { Result } from "../result.ts";
+import type { Issue } from "./work-item.ts";
 
 // ---- error model -------------------------------------------------------------
 

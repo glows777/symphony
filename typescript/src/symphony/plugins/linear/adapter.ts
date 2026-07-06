@@ -1,13 +1,15 @@
-// Literal port of `symphony_elixir/linear/adapter.ex`.
+// Originally a literal port of `symphony_elixir/linear/adapter.ex`; moved into
+// plugins/linear for the tracker plugin architecture (see MIGRATION.md ->
+// Post-cutover divergence).
 //
 // Linear-backed tracker adapter. Reads delegate to the configured client module
 // (overridable via the `linear_client_module` app-env, default Client);
 // mutations validate the GraphQL response.
 
-import { getEnv } from "../app-env.ts";
-import { type Result, err, ok } from "../result.ts";
+import { getEnv } from "../../app-env.ts";
+import { type Result, err, ok } from "../../result.ts";
+import type { Issue } from "../work-item.ts";
 import { Client, type LinearClientModule } from "./client.ts";
-import type { Issue } from "./issue.ts";
 
 const CREATE_COMMENT_MUTATION = `mutation SymphonyCreateComment($issueId: String!, $body: String!) {
   commentCreate(input: {issueId: $issueId, body: $body}) {

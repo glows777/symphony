@@ -6,8 +6,8 @@
 
 import type { JsonMap } from "../../config/schema.ts";
 import { ok } from "../../result.ts";
-import * as Memory from "../../tracker/memory.ts";
 import type { PluginFieldError, TrackerPlugin } from "../types.ts";
+import * as Memory from "./adapter.ts";
 
 export const MemoryPlugin: TrackerPlugin = {
   id: "memory",

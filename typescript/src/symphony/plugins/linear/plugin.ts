@@ -4,7 +4,6 @@
 // app-env injection).
 
 import type { JsonMap } from "../../config/schema.ts";
-import * as Adapter from "../../linear/adapter.ts";
 import { type Result, err, ok } from "../../result.ts";
 import { castPluginString, envOrNull, resolveSecretSetting } from "../config-helpers.ts";
 import {
@@ -13,6 +12,7 @@ import {
   type TrackerPlugin,
   trackerError,
 } from "../types.ts";
+import * as Adapter from "./adapter.ts";
 import {
   LINEAR_GRAPHQL_TOOL,
   executeLinearGraphql,

@@ -250,3 +250,64 @@ Run with `bun run oracle:record-api` / `bun run oracle:assert`.
 
 Mirror the Elixir gate (`make all`: format + lint + 100% coverage + dialyzer) with
 `bun run check` (typecheck + biome + `bun test --coverage`).
+
+## Post-cutover divergence
+
+The tables above are a historical record of the port; the module paths they
+list are the paths at cutover time. After cutover the TypeScript tree became
+canonical and the following deliberate divergences from the Elixir reference
+were introduced. Behavior for `tracker.kind: linear` and `tracker.kind:
+memory` is unchanged unless noted.
+
+### Tracker plugin architecture
+
+The hardcoded memory/linear tracker switch was generalized into a plugin
+registry so additional work-management tools (Slack, Lark, ...) can be added
+without touching the core. TS-native design, no Elixir counterpart.
+
+- **Contract & registry:** `src/symphony/plugins/types.ts` defines
+  `TrackerPlugin` — three required read operations (the SPEC §11.1 REQUIRED
+  set) plus optional capabilities (`comments`, `stateUpdates`, `agentTools`,
+  `ui`, `configSchema`). `plugins/registry.ts` resolves `tracker.kind` to a
+  registered plugin; built-ins register in `plugins/index.ts`. The tracker
+  facade (`tracker/tracker.ts`) returns a structured
+  `tracker_capability_unsupported` error when the active plugin omits a write
+  capability.
+- **Moved modules:** `linear/issue.ts` → `plugins/work-item.ts` (type renamed
+  `Issue` → `WorkItem`, with `Issue`/`newIssue`/`isIssue` kept as permanent
+  aliases; wire names — the Liquid `issue.*` scope, JSON-API fields, snapshot
+  output — are a user contract and did not change); `linear/client.ts` and
+  `linear/adapter.ts` → `plugins/linear/`; `tracker/memory.ts` →
+  `plugins/memory/adapter.ts`.
+- **WorkItem.metadata:** new plugin-private extension slot (`JsonMap`,
+  defaults to `{}`). Core code never reads it; prompt templates can via
+  `issue.metadata.*`.
+- **Errors:** plugin-originated errors carry `code` (normalized category) and
+  `message` (operator copy) alongside the legacy `tag` strings, which are
+  preserved verbatim (including extra fields like `status`/`reason`/`errors`).
+- **Config:** `TrackerSettings` shrank to the core scheduling fields (`kind`,
+  `required_labels`, `active_states`, `terminal_states`) plus an opaque
+  `plugin` section cast/finalized/validated by the active plugin's
+  `configSchema`. WORKFLOW.md keys, defaults, and the `LINEAR_API_KEY` /
+  `LINEAR_ASSIGNEE` env fallbacks are unchanged (owned by the Linear plugin);
+  `$VAR` resolution helpers live in `plugins/config-helpers.ts`. The memory
+  tracker's `seed_issues` extension (already a registered TS-only addition) is
+  now formally claimed by its plugin config schema. Divergence: provider
+  fields are only cast when the configured kind resolves to a plugin, so e.g.
+  `tracker.api_key: 123` under `kind: memory` no longer reports a cast error;
+  unregistered kinds still parse and fail `validate()` with
+  `unsupported_tracker_kind`.
+- **Agent dynamic tools:** `codex/dynamic-tool.ts` became a dispatcher over
+  the active plugin's `agentTools`; the `linear_graphql` implementation moved
+  verbatim to `plugins/linear/graphql-tool.ts`. Divergence: plugins without
+  agent tools (memory) advertise an empty `dynamicTools` list instead of
+  always exposing `linear_graphql`.
+- **UI contributions:** the dashboard Project URL, default prompt template,
+  and continuation-guidance noun come from the plugin `ui` capability; Linear
+  output is byte-identical, other kinds fall back to neutral copy ("n/a",
+  "work item"). Divergence: `kind: memory` with a stray `project_slug` renders
+  "n/a" instead of a Linear URL.
+- **Test seams:** `linear_client_module`, `memory_tracker_issues`, and
+  `memory_tracker_recipient` app-env keys are unchanged; new
+  `tracker_plugin_overrides` key (map of kind → plugin) shadows registered
+  plugins for tests.

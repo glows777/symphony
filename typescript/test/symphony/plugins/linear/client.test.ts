@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { logger } from "../../../../src/symphony/logger.ts";
 import {
   type GraphqlFun,
   type RequestFun,
@@ -7,11 +8,10 @@ import {
   graphql,
   mergeIssuePagesForTest,
   normalizeIssueForTest,
-} from "../../../src/symphony/linear/client.ts";
-import { newIssue } from "../../../src/symphony/linear/issue.ts";
-import { logger } from "../../../src/symphony/logger.ts";
-import { ok } from "../../../src/symphony/result.ts";
-import { setupWorkflow, teardownWorkflow } from "../../support/test-support.ts";
+} from "../../../../src/symphony/plugins/linear/client.ts";
+import { newIssue } from "../../../../src/symphony/plugins/work-item.ts";
+import { ok } from "../../../../src/symphony/result.ts";
+import { setupWorkflow, teardownWorkflow } from "../../../support/test-support.ts";
 
 // Translated from the Linear client cases in workspace_and_config_test.exs.
 describe("Linear.Client", () => {
