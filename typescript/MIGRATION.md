@@ -320,3 +320,20 @@ without touching the core. TS-native design, no Elixir counterpart.
   `memory_tracker_recipient` app-env keys are unchanged; new
   `tracker_plugin_overrides` key (map of kind → plugin) shadows registered
   plugins for tests.
+
+### Lark tracker plugin
+
+New built-in `tracker.kind: lark` (`src/symphony/plugins/lark/`), the first
+plugin added on top of the architecture above; TS-native, no Elixir
+counterpart, and no behavior change for the linear/memory kinds. Work items
+are records in one Bitable table (`app_token` + `table_id`), read via
+`records/search`/`records/batch_get` and normalized through `newWorkItem`
+with WORKFLOW.md-configurable field-name mappings. Auth is a cached
+`tenant_access_token` (`LARK_APP_SECRET` canonical env fallback for
+`app_secret`). Capabilities: `stateUpdates`, the `lark_api` agent tool
+(OpenAPI proxy restricted to `/open-apis/` paths on the configured endpoint),
+and `ui`; `comments` is omitted (no public record-comment API), so the facade
+reports `unsupported_operation`. `blockedBy` is not mapped in v1 (blocking
+gate disabled). Test seam: `lark_client_module` app-env key, mirroring
+`linear_client_module`; `teardownWorkflow` also resets the token cache. See
+`docs/PLUGIN_CONTRACT.md` §9.3.
