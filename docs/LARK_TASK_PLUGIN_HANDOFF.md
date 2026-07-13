@@ -253,3 +253,40 @@ typescript/test/symphony/plugins/lark-task/
 6. **`assignee: "me"`**:应用身份无 viewer,v1 不支持,配置文档写明只收 open_id。
 </content>
 </invoke>
+
+---
+
+## 附录:§2 核实结论(实现时填写,2026-07-13)
+
+文档站(open.feishu.cn / open.larksuite.com)对本环境的抓取仍返回 403;改用
+**官方 SDK `@larksuiteoapi/node-sdk` 1.70.0 的生成代码**作为可核查事实源
+(每个端点的路径、HTTP 方法、参数与响应类型都由官方从 API 定义生成)。逐条对应 §2:
+
+| # | 结论 |
+|---|---|
+| 1 | `GET /open-apis/task/v2/tasklists/{guid}/tasks`,参数 `page_size`/`page_token`/`completed`/`created_from`/`created_to`/`user_id_type`。**响应是任务摘要**(`guid`/`summary`/`completed_at`/`start`/`due`/`members`/`subtask_count`),无 description/url/时间戳/自定义字段/section 归属 |
+| 2 | **无服务端自定义字段过滤**(仅 `completed` 与创建时间范围),复核成立 |
+| 3 | section 三能力**全部存在**:`GET /sections?resource_type=tasklist&resource_id=`(列分组,含 `is_default`)、`GET /sections/{guid}/tasks`(列分组任务)、`POST /tasks/{guid}/add_tasklist` 带 `section_guid`(移动分组) |
+| 4 | 自定义字段存在(`GET /custom_fields` 给出定义与单选 options 的 guid/name;任务详情带值;`PATCH /tasks/{guid}` 可写)。但**列表接口不返回字段值**,用它建状态机会退化为全表逐个 detail get |
+| 5 | **无 batch-get**。`fetchIssueStatesByIds` = 每 id 一次 `GET /tasks/{guid}` |
+| 6 | `GET /tasks/{guid}` 返回完整任务:`description`、`members`(role=assignee/follower)、`completed_at`、`tasklists: [{tasklist_guid, section_guid}]`(section 归属)、`created_at`/`updated_at`(毫秒字符串)、`status`、`url`、`custom_fields`、`dependencies` |
+| 7 | `POST /open-apis/task/v2/comments`,body `{content, resource_type: "task", resource_id}` ✅ |
+| 8 | 依赖读写存在(任务详情 `dependencies` + `add/remove_dependencies`);v1 仍按计划置空 `blockedBy`,记 v2 开放项 |
+| 9 | Task v2 与 Bitable 同用 `tenant_access_token`(SDK 单一 token 管理器)。**具体 scope 名未能离线核实**——部署时按开发者后台/API Explorer 为应用开通任务读写权限 |
+| 10 | **QPS 上限未能离线核实**;HTTP 429 由共享请求层映射为 `provider_status`(orchestrator 跳过本 tick),行为已固化在共享层 |
+
+**§3 定案:方案 A(section = 状态列)。** 依据:#3 三能力齐备;#1/#4 表明方案 B
+的列表无字段值,候选拉取会放大成全表 detail get,请求数不可接受。方案 B 记为
+不采用(非 v2 开放项)。
+
+**实现偏差(相对本文 §4/§7 的预估,均由核实结果驱动):**
+
+- 摘要项的 `description`/`url`/时间戳为 null(列表接口不返回);orchestrator
+  派发前会经 `fetchIssueStatesByIds` 重取详情,prompt 拿到的是完整字段。
+- `labels`/`priority`/`field_identifier` 在方案 A 下无载体,v1 不映射
+  (identifier = task guid)。
+- `projectUrl` 用清单 applink(`https://applink.{domain}/client/todo/task_list?guid=`,
+  与 tasklist API 返回的 `url` 字段格式一致);此拼法来自官方文档示例,
+  离线未能直接核实——首次真实运行时确认,错了只影响 dashboard 链接。
+- 共享层落位 `plugins/lark-common/`(http.ts + api-tool.ts),token 缓存按
+  `endpoint|app_id` 键控(两插件共享,teardown 一处清理);`lark` 插件对外行为不变。

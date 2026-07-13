@@ -218,12 +218,13 @@ type PluginConfigSchema = {
 | `tracker_plugin_overrides` | Map of kind → plugin; shadows registered plugins for a test. |
 | `linear_client_module` | Injects a fake Linear GraphQL client under the Linear plugin. |
 | `lark_client_module` | Injects a fake Lark Bitable client under the Lark plugin. |
+| `lark_task_client_module` | Injects a fake Lark task-center client under the lark-task plugin. |
 | `memory_tracker_issues` / `memory_tracker_recipient` | Memory plugin's item source / write-back event sink. |
 
 `test/support/test-support.ts` clears all of these in `teardownWorkflow` (it
-also resets the Lark plugin's module-level tenant-token cache). Plugin-specific
-seams live inside the plugin; new plugins SHOULD follow the same pattern (an
-app-env key holding an injectable module).
+also resets the lark-family plugins' shared module-level tenant-token cache).
+Plugin-specific seams live inside the plugin; new plugins SHOULD follow the
+same pattern (an app-env key holding an injectable module).
 
 ## 9. Built-in plugins (reference)
 
@@ -276,6 +277,37 @@ the field-name mappings `field_state`/`field_title`/`field_description`/
 `Labels`/`Assignee`) plus `field_identifier` (null → `record_id`) and
 `field_priority` (null → priority unmapped). `blockedBy` is not mapped in v1
 (empty, disabling the blocking gate per §3).
+
+### 9.4 `lark-task`
+
+Lark (Feishu) task-center (Task v2) tracker (`plugins/lark-task/`), parallel
+to — not replacing — the Bitable-backed `lark` plugin: one tasklist is one
+board, a work item is a task in that tasklist, and the state vocabulary
+(§3.1) is the tasklist's **section** names (one section = one board column).
+Candidate reads list the tasks of each active-state section
+(`sections/{guid}/tasks` with `completed=false`, `page_token` pagination);
+the by-ids read is one `tasks/{guid}` detail get per id (Task v2 has no batch
+get), deriving the fresh state from the detail's `tasklists` section
+membership; a state update moves the task via `add_tasklist` with the target
+section's guid. Section listings return summaries without
+description/url/timestamps — those degrade to null and are filled in by the
+detail-backed by-ids read the orchestrator runs right before dispatch. Auth,
+the request layer, and the `lark_api` agent tool are shared with the `lark`
+plugin (`plugins/lark-common/`); error tags use the `lark_task_*` prefix.
+
+Capabilities: every optional one — `stateUpdates` (section move), `comments`
+(the task center has a native comment API, closing the Bitable plugin's gap),
+the shared `lark_api` agent tool, and `ui` (tasklist applink URL, "Lark task"
+noun, no plugin prompt template). `blockedBy` is not mapped in v1 even though
+Task v2 has native dependencies (open item; empty disables the blocking
+gate).
+
+Config keys claimed by its schema: `endpoint` (default
+`https://open.feishu.cn`), `app_id`, `app_secret` (canonical env
+`LARK_APP_SECRET`, shared with the Bitable plugin), `tasklist_guid`
+(required), and `assignee` (an open_id; `"me"` is not supported). No
+field-name mappings: the state vocabulary is the section names, so workflow
+authors set `active_states`/`terminal_states` to match their sections.
 
 ## 10. Writing a new plugin (checklist)
 
