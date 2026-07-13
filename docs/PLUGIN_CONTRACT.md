@@ -308,6 +308,8 @@ Config keys claimed by its schema: `endpoint` (default
 (required), and `assignee` (an open_id; `"me"` is not supported). No
 field-name mappings: the state vocabulary is the section names, so workflow
 authors set `active_states`/`terminal_states` to match their sections.
+Because tasks carry no labels in v1, its validate hook rejects a non-empty
+`tracker.required_labels` (which would otherwise silently route nothing).
 
 ## 10. Writing a new plugin (checklist)
 

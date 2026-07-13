@@ -74,6 +74,18 @@ export const LarkTaskPlugin: TrackerPlugin = {
           ),
         );
       }
+      // v1 maps no labels (tasks carry none), so a non-empty required_labels
+      // would silently filter every candidate out of the dispatch pool
+      // (routable() requires labels ⊇ required_labels). Fail loudly instead.
+      if (settings.tracker.requiredLabels.length > 0) {
+        return err(
+          trackerError(
+            "lark_task_required_labels_unsupported",
+            "unsupported_operation",
+            "tracker.required_labels is not supported by the lark-task tracker (tasks carry no labels); remove it or use a tracker that maps labels",
+          ),
+        );
+      }
       return ok(undefined);
     },
   },

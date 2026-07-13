@@ -100,6 +100,18 @@ describe("LarkTask.Plugin", () => {
         }
       }
     });
+
+    test("validate rejects required_labels (lark-task maps no labels)", () => {
+      writeLarkTaskWorkflowFile(workflowFilePath(), { required_labels: ["backend"] });
+      const result = validate();
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        const error = result.error as { tag: string; code: string; message: string };
+        expect(error.tag).toBe("lark_task_required_labels_unsupported");
+        expect(error.code).toBe("unsupported_operation");
+        expect(error.message).toContain("required_labels");
+      }
+    });
   });
 
   describe("capabilities", () => {
