@@ -7,6 +7,7 @@ import {
 import { err, ok } from "../../../src/symphony/result.ts";
 import { workflowFilePath } from "../../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../../support/test-support.ts";
+import { writeLarkTaskWorkflowFile } from "../plugins/lark-task/lark-task-test-support.ts";
 import { writeLarkWorkflowFile } from "../plugins/lark/lark-test-support.ts";
 
 type Call = { query: string; variables: Record<string, unknown>; opts: unknown[] };
@@ -47,6 +48,20 @@ describe("Codex.DynamicTool", () => {
   });
   test("advertises lark_api for lark-kind workflows without dispatcher changes", async () => {
     writeLarkWorkflowFile(workflowFilePath());
+    const specs = toolSpecs();
+    expect(specs.map((spec) => spec.name)).toEqual(["lark_api"]);
+
+    const response = await execute("linear_graphql", { query: "query { viewer { id } }" });
+    expect(response.success).toBe(false);
+    expect(JSON.parse(response.output)).toEqual({
+      error: {
+        message: 'Unsupported dynamic tool: "linear_graphql".',
+        supportedTools: ["lark_api"],
+      },
+    });
+  });
+  test("advertises lark_api for lark-task-kind workflows without dispatcher changes", async () => {
+    writeLarkTaskWorkflowFile(workflowFilePath());
     const specs = toolSpecs();
     expect(specs.map((spec) => spec.name)).toEqual(["lark_api"]);
 
