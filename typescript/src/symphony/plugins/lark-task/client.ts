@@ -189,7 +189,38 @@ export async function updateTaskState(
   if (!response.ok) {
     return err(response.error);
   }
+  // The "re-adding to a tasklist moves the section" semantics could not be
+  // verified offline, so the response's own membership echo is checked: a
+  // no-op would report success while still carrying the old section_guid,
+  // and that must surface as an error rather than a silent non-update.
+  if (!sectionMoveConfirmed(response.value, board.value, target.guid)) {
+    return err({
+      tag: "lark_task_state_update_unconfirmed",
+      code: "provider_error",
+      message: `Lark add_tasklist reported success but the task did not land in section ${JSON.stringify(target.name)}`,
+    });
+  }
   return ok(undefined);
+}
+
+// Inspects the add_tasklist response's `data.task.tasklists` membership.
+// Inconclusive shapes (no membership echo, or an entry without a
+// section_guid — e.g. the tasklist's default section) count as confirmed to
+// avoid false failures; a present-but-different section_guid, or a missing
+// tasklist entry, means the move did not land.
+function sectionMoveConfirmed(body: unknown, tasklistGuid: string, sectionGuid: string): boolean {
+  const memberships = getIn(body, ["data", "task", "tasklists"]);
+  if (!Array.isArray(memberships)) {
+    return true;
+  }
+  const entry = memberships.find(
+    (candidate) => isObject(candidate) && stringOrNull(candidate.tasklist_guid) === tasklistGuid,
+  );
+  if (entry === undefined || !isObject(entry)) {
+    return false;
+  }
+  const echoed = stringOrNull(entry.section_guid);
+  return echoed === null || echoed === sectionGuid;
 }
 
 // Creates a task comment (the comments capability — the task center has a

@@ -269,6 +269,53 @@ describe("LarkTask.Client", () => {
       expect(calls.filter((call) => call.url.endsWith(TOKEN_URL_SUFFIX))).toHaveLength(1);
     });
 
+    test("applies the configured assignee open_id as the routing filter", async () => {
+      writeLarkTaskWorkflowFile(workflowFilePath(), {
+        assignee: "ou_me",
+        active_states: ["Todo"],
+      });
+      const transport = fakeTransport(
+        [],
+        [
+          listResponse([section("sec-todo", "Todo")]),
+          listResponse([
+            summary("guid-1", "Mine", [assignee("ou_me")]),
+            summary("guid-2", "Theirs", [assignee("ou_other")]),
+            summary("guid-3", "Unassigned"),
+          ]),
+        ],
+      );
+
+      const result = await fetchCandidateIssues({ requestFun: transport });
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        return;
+      }
+      expect(result.value.map((issue) => [issue.id, issue.assignedToWorker])).toEqual([
+        ["guid-1", true],
+        ["guid-2", false],
+        ["guid-3", false],
+      ]);
+    });
+
+    test("a whitespace-only assignee disables routing", async () => {
+      writeLarkTaskWorkflowFile(workflowFilePath(), { assignee: "  ", active_states: ["Todo"] });
+      const transport = fakeTransport(
+        [],
+        [
+          listResponse([section("sec-todo", "Todo")]),
+          listResponse([summary("guid-1", "Anyone", [assignee("ou_other")])]),
+        ],
+      );
+
+      const result = await fetchCandidateIssues({ requestFun: transport });
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        return;
+      }
+      expect(result.value.map((issue) => issue.assignedToWorker)).toEqual([true]);
+    });
+
     test("drains section-task pagination with the page_token cursor", async () => {
       const calls: Call[] = [];
       const transport = fakeTransport(calls, [
@@ -488,6 +535,44 @@ describe("LarkTask.Client", () => {
       expect(move?.method).toBe("POST");
       expect(move?.url).toContain("/open-apis/task/v2/tasks/guid-1/add_tasklist");
       expect(move?.body).toEqual({ tasklist_guid: "tlg-TEST", section_guid: "sec-done" });
+    });
+
+    test("accepts a response echo that confirms the section move", async () => {
+      const transport = fakeTransport(
+        [],
+        [
+          listResponse([section("sec-done", "Done")]),
+          taskResponse({
+            guid: "guid-1",
+            tasklists: [{ tasklist_guid: "tlg-TEST", section_guid: "sec-done" }],
+          }),
+        ],
+      );
+
+      expect(await updateTaskState("guid-1", "Done", { requestFun: transport })).toEqual({
+        ok: true,
+        value: undefined,
+      });
+    });
+
+    test("fails when the response echo shows the task still in the old section", async () => {
+      const transport = fakeTransport(
+        [],
+        [
+          listResponse([section("sec-todo", "Todo"), section("sec-done", "Done")]),
+          taskResponse({
+            guid: "guid-1",
+            tasklists: [{ tasklist_guid: "tlg-TEST", section_guid: "sec-todo" }],
+          }),
+        ],
+      );
+
+      const result = await updateTaskState("guid-1", "Done", { requestFun: transport });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.tag).toBe("lark_task_state_update_unconfirmed");
+        expect(result.error.code).toBe("provider_error");
+      }
     });
 
     test("matches section names case-insensitively when no exact match exists", async () => {

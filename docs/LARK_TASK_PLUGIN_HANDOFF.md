@@ -284,7 +284,14 @@ typescript/test/symphony/plugins/lark-task/
 - 摘要项的 `description`/`url`/时间戳为 null(列表接口不返回);orchestrator
   派发前会经 `fetchIssueStatesByIds` 重取详情,prompt 拿到的是完整字段。
 - `labels`/`priority`/`field_identifier` 在方案 A 下无载体,v1 不映射
-  (identifier = task guid)。
+  (identifier = task guid);因此 `tracker.required_labels` 非空时 validate
+  直接报错(`lark_task_required_labels_unsupported`),否则会静默路由不到任何任务。
+- 状态写回(add_tasklist 移动分组)会校验响应回显的 `tasklists` 归属:若回显仍在
+  旧分组则返回 `lark_task_state_update_unconfirmed` 而非假成功——"对已在清单中的
+  任务再次 add_tasklist 会移动分组"这一语义离线未能直接核实,靠该校验兜底。
+- 已删除任务的判定假设 `GET /tasks/{guid}` 返回 HTTP 404(`isNotFound`);若某些
+  租户/版本改为 HTTP 200 + 业务错误码,需把该 not-found 业务码补进 `isNotFound`
+  ——首次真实运行时删一个任务核实一次。
 - `projectUrl` 用清单 applink(`https://applink.{domain}/client/todo/task_list?guid=`,
   与 tasklist API 返回的 `url` 字段格式一致);此拼法来自官方文档示例,
   离线未能直接核实——首次真实运行时确认,错了只影响 dashboard 链接。
