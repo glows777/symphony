@@ -289,7 +289,11 @@ Candidate reads list the tasks of each active-state section
 the by-ids read is one `tasks/{guid}` detail get per id (Task v2 has no batch
 get), deriving the fresh state from the detail's `tasklists` section
 membership; a state update moves the task via `add_tasklist` with the target
-section's guid. Section listings return summaries without
+section's guid. Checkbox completion is orthogonal to sections and treated as
+"off the board": the by-ids read normalizes completed tasks to absent, so
+dispatch revalidation skips them and a running worker whose task was checked
+off winds down like a deleted task (only the by-states cleanup read applies
+no completed filter). Section listings return summaries without
 description/url/timestamps — those degrade to null and are filled in by the
 detail-backed by-ids read the orchestrator runs right before dispatch. Auth,
 the request layer, and the `lark_api` agent tool are shared with the `lark`

@@ -204,6 +204,20 @@ describe("LarkTask.Client", () => {
       });
     });
 
+    test("treats checkbox-completed tasks as absent", () => {
+      // Completed while still in an active section: the detail refresh backs
+      // dispatch revalidation, so the task must not resurface as active.
+      expect(
+        normalizeTaskDetailForTest(detail({ completed_at: "1767398400000" }), sections),
+      ).toBeNull();
+      // "0", empty, and absent all mean not completed.
+      expect(normalizeTaskDetailForTest(detail({ completed_at: "0" }), sections)).not.toBeNull();
+      expect(normalizeTaskDetailForTest(detail({ completed_at: "" }), sections)).not.toBeNull();
+      expect(
+        normalizeTaskDetailForTest(detail({ completed_at: undefined }), sections),
+      ).not.toBeNull();
+    });
+
     test("treats tasks that left the configured tasklist as absent", () => {
       const gone = normalizeTaskDetailForTest(
         detail({ tasklists: [{ tasklist_guid: "tlg-OTHER", section_guid: "sec-x" }] }),
@@ -488,6 +502,34 @@ describe("LarkTask.Client", () => {
       }
       expect(result.value.map((issue) => issue.id)).toEqual(["guid-3"]);
       errorSpy.mockRestore();
+    });
+
+    test("skips checkbox-completed tasks so revalidation cannot redispatch them", async () => {
+      const transport = fakeTransport(
+        [],
+        [
+          listResponse([section("sec-todo", "Todo")]),
+          taskResponse({
+            guid: "guid-1",
+            summary: "Checked off in an active section",
+            completed_at: "1767398400000",
+            tasklists: [{ tasklist_guid: "tlg-TEST", section_guid: "sec-todo" }],
+          }),
+          taskResponse({
+            guid: "guid-2",
+            summary: "Still open",
+            completed_at: "0",
+            tasklists: [{ tasklist_guid: "tlg-TEST", section_guid: "sec-todo" }],
+          }),
+        ],
+      );
+
+      const result = await fetchIssueStatesByIds(["guid-1", "guid-2"], { requestFun: transport });
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        return;
+      }
+      expect(result.value.map((issue) => issue.id)).toEqual(["guid-2"]);
     });
 
     test("propagates non-404 failures instead of dropping live items", async () => {

@@ -28,10 +28,13 @@
 // - `POST /open-apis/task/v2/comments` with
 //   `{content, resource_type: "task", resource_id}` creates a task comment.
 //
-// Candidate listing passes `completed=false` so checkbox-completed tasks
-// (completion is orthogonal to sections in the task center) never re-enter
-// the dispatch pool; the by-states read used for terminal-state cleanup
-// applies no completed filter.
+// Checkbox completion is orthogonal to sections in the task center, and
+// Symphony treats a checked-off task as off the board: candidate listing
+// passes `completed=false`, and the by-ids detail read normalizes completed
+// tasks to absent (dispatch revalidation skips them; a running worker whose
+// task was checked off is wound down like a deleted task). Only the
+// by-states read used for terminal-state cleanup applies no completed
+// filter, so finished work in terminal sections is still swept.
 
 import { settingsBang } from "../../config.ts";
 import { type Result, err, ok } from "../../result.ts";
@@ -442,6 +445,15 @@ function normalizeTaskDetail(
   if (guid === null) {
     return null;
   }
+  // Checkbox completion is orthogonal to sections, so a task completed while
+  // still sitting in an active section would otherwise refresh as active —
+  // and this read backs dispatch revalidation and running reconciliation.
+  // Completed tasks are treated as absent, mirroring the candidate listing's
+  // `completed=false` filter: revalidation skips them and the orchestrator
+  // winds down a running worker whose task was checked off.
+  if (taskCompleted(task.completed_at)) {
+    return null;
+  }
   const membership = boardMembership(task.tasklists, tasklistGuid);
   if (membership === null) {
     return null;
@@ -470,6 +482,18 @@ function normalizeTaskDetail(
       section_guid: membership.sectionGuid,
     },
   });
+}
+
+// `completed_at` is an epoch-ms string ("0" — or absent — when the task is
+// not completed); numbers are accepted for shape tolerance.
+function taskCompleted(value: unknown): boolean {
+  if (typeof value === "number") {
+    return value > 0;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value)) {
+    return Number.parseInt(value, 10) > 0;
+  }
+  return false;
 }
 
 // Finds the task's membership entry for the configured tasklist inside the
