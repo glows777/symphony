@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { putEnv } from "../../../src/symphony/app-env.ts";
 // Side-effect import mirrors production entry points: built-ins registered.
 import "../../../src/symphony/plugins/index.ts";
-import { LarkTaskPlugin } from "../../../src/symphony/plugins/lark-task/plugin.ts";
 import { LarkPlugin } from "../../../src/symphony/plugins/lark/plugin.ts";
 import { LinearPlugin } from "../../../src/symphony/plugins/linear/plugin.ts";
 import { MemoryPlugin } from "../../../src/symphony/plugins/memory/plugin.ts";
@@ -21,8 +20,7 @@ describe("Plugins.Registry", () => {
     expect(trackerPlugin("linear")).toEqual(ok(LinearPlugin));
     expect(trackerPlugin("memory")).toEqual(ok(MemoryPlugin));
     expect(trackerPlugin("lark")).toEqual(ok(LarkPlugin));
-    expect(trackerPlugin("lark-task")).toEqual(ok(LarkTaskPlugin));
-    expect(registeredTrackerKinds()).toEqual(["linear", "memory", "lark", "lark-task"]);
+    expect(registeredTrackerKinds()).toEqual(["linear", "memory", "lark"]);
   });
 
   test("reports missing and unsupported kinds with stable tags", () => {

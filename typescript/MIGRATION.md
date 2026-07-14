@@ -337,22 +337,3 @@ reports `unsupported_operation`. `blockedBy` is not mapped in v1 (blocking
 gate disabled). Test seam: `lark_client_module` app-env key, mirroring
 `linear_client_module`; `teardownWorkflow` also resets the token cache. See
 `docs/PLUGIN_CONTRACT.md` §9.3.
-
-### Lark task-center tracker plugin
-
-New built-in `tracker.kind: lark-task` (`src/symphony/plugins/lark-task/`),
-parallel to the Bitable `lark` kind; TS-native, no Elixir counterpart, and no
-behavior change for the existing kinds. Work items are tasks in one Task v2
-tasklist (`tasklist_guid`) and state is modeled on the tasklist's sections
-(one section = one board column): candidate reads list active-state sections
-(`completed=false`), the by-ids read is one task-detail get per id (Task v2
-has no batch get), and a state update moves the task via `add_tasklist`. The
-resource-agnostic transport (shared tenant-token cache keyed by
-endpoint+app_id, authenticated request layer) and the `lark_api` agent tool
-were extracted to `src/symphony/plugins/lark-common/` and are shared with the
-`lark` plugin, whose external behavior is unchanged. Capabilities: all of
-them — `stateUpdates`, `comments` (native Task v2 comment API), `agentTools`
-(`lark_api`), and `ui`. `blockedBy` is not mapped in v1 (blocking gate
-disabled). Error tags use the `lark_task_*` prefix. Test seam:
-`lark_task_client_module` app-env key, mirroring `lark_client_module`. See
-`docs/PLUGIN_CONTRACT.md` §9.4.

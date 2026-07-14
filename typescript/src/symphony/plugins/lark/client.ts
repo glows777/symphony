@@ -1,41 +1,50 @@
 // Lark (Feishu) Bitable HTTP client. Work items are records in one Bitable
 // table; the three tracker reads map onto records/search (server-side state
-// filter + pagination) and records/batch_get (batched id refresh). The
-// resource-agnostic transport — tenant_access_token lifecycle, authenticated
-// request layer, JSON helpers — lives in ../lark-common/http.ts and is shared
-// with the task-center plugin; this module owns everything Bitable-specific
-// (paths, filter grammar, record normalization). Tests inject a fake
-// transport via the `requestFun` option and reset the shared token cache
-// through `resetTokenCacheForTest` (wired into teardownWorkflow).
+// filter + pagination) and records/batch_get (batched id refresh). Unlike
+// Linear's static API key, Lark auth is a short-lived tenant_access_token
+// (~2h): the token is cached module-level with a refresh margin and the
+// cache is dropped + re-acquired once when a request reports an invalid
+// token. Tests inject a fake transport via the `requestFun` option and reset
+// the cache through `resetTokenCacheForTest` (wired into teardownWorkflow).
 
 import { settingsBang } from "../../config.ts";
+import { logger } from "../../logger.ts";
 import { type Result, err, ok } from "../../result.ts";
-import {
-  type JsonObject,
-  type LarkApiContext,
-  type RequestOpts,
-  asObject,
-  getIn,
-  isObject,
-  larkApiErrorSet,
-  request as larkRequest,
-  parseTimestamp,
-  stringOrNull,
-  webDomain,
-} from "../lark-common/http.ts";
 import type { TrackerError } from "../types.ts";
 import { type Issue, newIssue } from "../work-item.ts";
 import { type LarkSettings, larkSettings } from "./settings.ts";
 
-export type { RequestFun, RequestOpts } from "../lark-common/http.ts";
-export { resetTokenCacheForTest } from "../lark-common/http.ts";
-
+const TENANT_TOKEN_PATH = "/open-apis/auth/v3/tenant_access_token/internal";
 const SEARCH_PAGE_SIZE = 500; // records/search hard page cap
 const BATCH_GET_LIMIT = 100; // records/batch_get hard record_ids cap
+const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
+const MAX_ERROR_BODY_LOG_BYTES = 1_000;
+
+// Lark business codes signalling an expired/invalid access token; the request
+// layer treats them (and HTTP 401) as "drop the cached token and retry once".
+const TOKEN_INVALID_CODES: ReadonlySet<number> = new Set([99991661, 99991663]);
+
+type JsonObject = Record<string, unknown>;
+type RequestResponse = { status: number; body: unknown };
+export type RequestFun = (
+  method: string,
+  url: string,
+  headers: Record<string, string>,
+  body: JsonObject | null,
+) => Result<RequestResponse, unknown> | Promise<Result<RequestResponse, unknown>>;
+export type RequestOpts = { requestFun?: RequestFun };
 
 // A configured `tracker.assignee` open_id (the app identity has no viewer
 // concept, so unlike Linear there is no "me" resolution).
 type AssigneeFilter = string | null;
+
+// ---- token cache -------------------------------------------------------------
+
+let tokenCache: { token: string; expiresAt: number } | null = null;
+
+export function resetTokenCacheForTest(): void {
+  tokenCache = null;
+}
 
 // ---- required reads ----------------------------------------------------------
 
@@ -108,24 +117,120 @@ export async function updateRecordState(
 
 // ---- authenticated OpenAPI request (shared with the lark_api agent tool) -------
 
-// The Bitable plugin's binding of the shared request layer: auth comes from
-// the current lark settings, errors carry the `lark_api_*` tags.
+// Sends one authenticated request against the configured Lark endpoint.
+// Success means HTTP 2xx AND Lark business `code === 0`; the full response
+// body is returned so callers keep `data`/`msg` context.
 export async function request(
   method: string,
   path: string,
   body: JsonObject | null = null,
   opts: RequestOpts = {},
 ): Promise<Result<unknown, TrackerError>> {
-  return larkRequest(apiContext(larkSettings(settingsBang())), method, path, body, opts);
+  const requestFun = opts.requestFun ?? httpRequest;
+  return doRequest(method, path, body, requestFun, true);
 }
 
-const larkErrors = larkApiErrorSet("lark", missingCredentialsError);
+async function doRequest(
+  method: string,
+  path: string,
+  body: JsonObject | null,
+  requestFun: RequestFun,
+  retryOnInvalidToken: boolean,
+): Promise<Result<unknown, TrackerError>> {
+  const lark = larkSettings(settingsBang());
+  const token = await tenantAccessToken(lark, requestFun);
+  if (!token.ok) {
+    return err(token.error);
+  }
+  const response = await requestFun(
+    method,
+    `${lark.endpoint}${path}`,
+    authHeaders(token.value),
+    body,
+  );
+  if (!response.ok) {
+    logger.error(`Lark API request failed: ${inspect(response.error)}`);
+    return err(transportError(response.error));
+  }
+  const { status, body: responseBody } = response.value;
+  if (retryOnInvalidToken && tokenInvalid(status, responseBody)) {
+    tokenCache = null;
+    return doRequest(method, path, body, requestFun, false);
+  }
+  if (status < 200 || status >= 300) {
+    logger.error(
+      `Lark API request failed status=${status} path=${path} body=${summarizeErrorBody(responseBody)}`,
+    );
+    return err(statusError(status));
+  }
+  return decodeLarkBody(responseBody);
+}
 
-function apiContext(lark: LarkSettings): LarkApiContext {
-  return {
-    auth: { endpoint: lark.endpoint, appId: lark.appId, appSecret: lark.appSecret },
-    errors: larkErrors,
-  };
+function decodeLarkBody(body: unknown): Result<JsonObject, TrackerError> {
+  if (!isObject(body) || typeof body.code !== "number") {
+    return err(unknownPayloadError());
+  }
+  if (body.code !== 0) {
+    return err(apiError(body.code, body.msg));
+  }
+  return ok(body);
+}
+
+// ---- tenant_access_token lifecycle ---------------------------------------------
+
+async function tenantAccessToken(
+  lark: LarkSettings,
+  requestFun: RequestFun,
+): Promise<Result<string, TrackerError>> {
+  if (lark.appId === null || lark.appSecret === null) {
+    return err(missingCredentialsError());
+  }
+  const now = Date.now();
+  if (tokenCache !== null && now < tokenCache.expiresAt - TOKEN_REFRESH_MARGIN_MS) {
+    return ok(tokenCache.token);
+  }
+  const response = await requestFun(
+    "POST",
+    `${lark.endpoint}${TENANT_TOKEN_PATH}`,
+    { "Content-Type": "application/json" },
+    { app_id: lark.appId, app_secret: lark.appSecret },
+  );
+  if (!response.ok) {
+    logger.error(`Lark tenant_access_token request failed: ${inspect(response.error)}`);
+    return err(transportError(response.error));
+  }
+  const { status, body } = response.value;
+  if (status < 200 || status >= 300) {
+    logger.error(
+      `Lark tenant_access_token request failed status=${status} body=${summarizeErrorBody(body)}`,
+    );
+    return err(statusError(status));
+  }
+  const decoded = decodeLarkBody(body);
+  if (!decoded.ok) {
+    return err(decoded.error);
+  }
+  const token = decoded.value.tenant_access_token;
+  if (typeof token !== "string" || token === "") {
+    return err(unknownPayloadError());
+  }
+  const expire = decoded.value.expire;
+  // Missing/invalid expire caches nothing (`expiresAt` in the past forces a
+  // refetch on the next call once the margin is applied).
+  const expiresAt = typeof expire === "number" && expire > 0 ? now + expire * 1_000 : now;
+  tokenCache = { token, expiresAt };
+  return ok(token);
+}
+
+function tokenInvalid(status: number, body: unknown): boolean {
+  if (status === 401) {
+    return true;
+  }
+  return isObject(body) && typeof body.code === "number" && TOKEN_INVALID_CODES.has(body.code);
+}
+
+function authHeaders(token: string): Record<string, string> {
+  return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
 // ---- records/search (state-filtered, paginated) ---------------------------------
@@ -390,7 +495,28 @@ function parsePriority(value: unknown): number | null {
   return null;
 }
 
+function parseTimestamp(value: unknown): Date | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value);
+  }
+  if (typeof value === "string" && /^\d+$/.test(value)) {
+    return new Date(Number.parseInt(value, 10));
+  }
+  return null;
+}
+
 // ---- URLs -----------------------------------------------------------------------
+
+// User-facing base URLs live on the tenant domain, not the OpenAPI host;
+// strip the `open.` prefix (open.feishu.cn -> feishu.cn).
+function webDomain(endpoint: string): string | null {
+  try {
+    const host = new URL(endpoint).host;
+    return host.startsWith("open.") ? host.slice("open.".length) : host;
+  } catch {
+    return null;
+  }
+}
 
 export function tableUrl(lark: LarkSettings): string | null {
   const domain = webDomain(lark.endpoint);
@@ -417,10 +543,8 @@ export function normalizeRecordForTest(record: JsonObject, assignee?: string | n
 }
 
 // ---- error constructors -------------------------------------------------------------
-// Request-layer errors (lark_api_status / lark_api_error / lark_api_request /
-// lark_unknown_payload) come from the shared larkApiErrorSet; the
-// config-shaped errors below stay local. All follow the TrackerError
-// convention from plugins/types.ts.
+// All tags follow the TrackerError convention from plugins/types.ts; `status`
+// stays top-level mirroring the Linear plugin's `linear_api_status` shape.
 
 function missingCredentialsError() {
   return {
@@ -446,6 +570,42 @@ function missingTableIdError() {
   } as const;
 }
 
+function statusError(status: number) {
+  return {
+    tag: "lark_api_status",
+    code: "provider_status",
+    message: `Lark API request failed with HTTP ${status}`,
+    status,
+  } as const;
+}
+
+function apiError(code: number, msg: unknown) {
+  const suffix = typeof msg === "string" && msg !== "" ? `: ${msg}` : "";
+  return {
+    tag: "lark_api_error",
+    code: "provider_error",
+    message: `Lark API returned error code ${code}${suffix}`,
+    detail: { code, msg: typeof msg === "string" ? msg : null },
+  } as const;
+}
+
+function transportError(reason: unknown) {
+  return {
+    tag: "lark_api_request",
+    code: "transport_failed",
+    message: "Lark API request failed before receiving a response",
+    reason,
+  } as const;
+}
+
+function unknownPayloadError() {
+  return {
+    tag: "lark_unknown_payload",
+    code: "invalid_payload",
+    message: "Lark API response had an unexpected shape",
+  } as const;
+}
+
 // ---- table addressing ----------------------------------------------------------------
 
 type TableRef = { appToken: string; tableId: string };
@@ -465,6 +625,68 @@ function requireTable(lark: LarkSettings): Result<TableRef, TrackerError> {
 
 function tablePath(table: TableRef): string {
   return `/open-apis/bitable/v1/apps/${table.appToken}/tables/${table.tableId}`;
+}
+
+// ---- transport ------------------------------------------------------------------------
+
+async function httpRequest(
+  method: string,
+  url: string,
+  headers: Record<string, string>,
+  body: JsonObject | null,
+): Promise<Result<RequestResponse, unknown>> {
+  try {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: body === null ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const parsed = await response.json();
+    return ok({ status: response.status, body: parsed });
+  } catch (error) {
+    return err(error);
+  }
+}
+
+// ---- helpers ---------------------------------------------------------------------------
+
+function isObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asObject(value: unknown): JsonObject | null {
+  return isObject(value) ? value : null;
+}
+
+function getIn(value: unknown, keys: string[]): unknown {
+  let current: unknown = value;
+  for (const key of keys) {
+    if (!isObject(current)) {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return current;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function summarizeErrorBody(body: unknown): string {
+  const rendered = typeof body === "string" ? body.replace(/\s+/g, " ").trim() : inspect(body);
+  if (Buffer.byteLength(rendered, "utf8") > MAX_ERROR_BODY_LOG_BYTES) {
+    return `${rendered.slice(0, MAX_ERROR_BODY_LOG_BYTES)}...<truncated>`;
+  }
+  return rendered;
+}
+
+function inspect(value: unknown): string {
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  return JSON.stringify(value) ?? String(value);
 }
 
 // Aggregate object used as the default Lark client module and for injection.
