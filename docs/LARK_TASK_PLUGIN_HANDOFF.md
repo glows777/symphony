@@ -292,6 +292,10 @@ typescript/test/symphony/plugins/lark-task/
 - 已删除任务的判定假设 `GET /tasks/{guid}` 返回 HTTP 404(`isNotFound`);若某些
   租户/版本改为 HTTP 200 + 业务错误码,需把该 not-found 业务码补进 `isNotFound`
   ——首次真实运行时删一个任务核实一次。
+- 勾选完成(checkbox)与分组正交,统一按"离板"处理:候选拉取带 `completed=false`,
+  **by-ids 详情刷新把已完成任务归一化为缺失**(PR #7 评审指出的派发重校验漏洞)——
+  重校验会跳过它,运行中被勾选完成的任务按缺失终止 worker;仅 terminal 清理用的
+  by-states 读不加 completed 过滤。
 - `projectUrl` 用清单 applink(`https://applink.{domain}/client/todo/task_list?guid=`,
   与 tasklist API 返回的 `url` 字段格式一致);此拼法来自官方文档示例,
   离线未能直接核实——首次真实运行时确认,错了只影响 dashboard 链接。
