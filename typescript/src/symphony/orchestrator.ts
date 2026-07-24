@@ -725,11 +725,19 @@ export type CodexUpdate = {
   payload?: unknown;
   raw?: unknown;
   sessionId?: string;
+  // Neutral pid from the normalized envelope; `codexAppServerPid` is the frozen
+  // codex-era alias, still emitted and still read as a fallback.
+  backendPid?: string;
   codexAppServerPid?: string | number | number[];
   usage?: unknown;
   rate_limits?: unknown;
   [key: string]: unknown;
 };
+
+// The envelope is agent-backend-neutral now; `codex_*` wire/state names are
+// frozen historical names (see MIGRATION.md). `AgentUpdate` is the forward name;
+// `CodexUpdate` remains its permanent alias.
+export type AgentUpdate = CodexUpdate;
 
 export type Info =
   | { tag: "tick"; token: symbol | null }
@@ -1106,7 +1114,8 @@ function sessionIdForUpdate(existing: string | null, update: CodexUpdate): strin
 }
 
 function codexAppServerPidForUpdate(existing: string | null, update: CodexUpdate): string | null {
-  const pid = update.codexAppServerPid;
+  // Prefer the neutral envelope alias; fall back to the frozen codex name.
+  const pid = update.backendPid ?? update.codexAppServerPid;
   if (typeof pid === "string") {
     return pid;
   }
@@ -1195,6 +1204,12 @@ function computeTokenDelta(
 }
 
 function extractTokenUsage(update: CodexUpdate): Record<string, unknown> {
+  // Normalized envelope: a flat cumulative token map on `update.usage` is
+  // authoritative (a backend that reports totals directly, e.g. claude-code's
+  // result.usage). The codex deep-path sniffing below is kept as a fallback.
+  if (isObj(update.usage) && integerTokenMap(update.usage)) {
+    return update.usage;
+  }
   const payloads = [update.usage, update.payload, update];
   for (const payload of payloads) {
     const found = absoluteTokenUsageFromPayload(payload);

@@ -272,4 +272,55 @@ describe("Plugins.Agents.CodexPlugin", () => {
     }
     expect(messages.some((m) => m.event === "turn_input_required")).toBe(true);
   });
+
+  test("normalizes messages: neutral backendPid alias and lifted rate_limits", async () => {
+    const workspace = workspaceFor("MT-205");
+    const rateLimits = {
+      limit_id: "gpt-5",
+      primary: { remaining: 10 },
+      secondary: null,
+      credits: { has_credits: true },
+    };
+    const tokenCount = JSON.stringify({
+      method: "codex/event/token_count",
+      params: {
+        msg: { type: "event_msg", payload: { type: "token_count", rate_limits: rateLimits } },
+      },
+    });
+    const cases = `  1)
+    printf '%s\\n' '{"id":1,"result":{}}'
+    ;;
+  2)
+    printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-205"}}}'
+    ;;
+  3)
+    printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-205"}}}'
+    ;;
+  4)
+    printf '%s\\n' '${tokenCount}'
+    printf '%s\\n' '{"method":"turn/completed"}'
+    exit 0
+    ;;`;
+    installCodex(codexScript(null, cases));
+
+    const messages: AgentMessage[] = [];
+    const started = await CodexPlugin.sessions.startSession(workspace, {
+      onMessage: (message) => messages.push(message),
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) {
+      return;
+    }
+    const turn = await CodexPlugin.sessions.runTurn(started.value, "go", turnContext("MT-205"));
+    CodexPlugin.sessions.stopSession(started.value);
+    expect(turn.ok).toBe(true);
+
+    // The neutral backendPid alias mirrors the frozen codexAppServerPid.
+    const withPid = messages.find((m) => typeof m.backendPid === "string");
+    expect(withPid?.backendPid).toBe(withPid?.codexAppServerPid as string);
+
+    // The token_count payload's rate limits are lifted onto the envelope.
+    const lifted = messages.find((m) => m.rate_limits !== undefined);
+    expect(lifted?.rate_limits).toEqual(rateLimits);
+  });
 });

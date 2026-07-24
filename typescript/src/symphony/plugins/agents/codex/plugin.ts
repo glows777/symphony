@@ -26,6 +26,7 @@ import type {
   TurnContext,
   TurnResult,
 } from "../types.ts";
+import { humanizeCodexMessage } from "./humanize.ts";
 
 type CodexHandle = {
   appSession: AppServer.Session;
@@ -86,10 +87,69 @@ function stopSession(session: AgentSession): void {
   AppServer.stopSession((session.handle as CodexHandle).appSession);
 }
 
-// P2: identity. AppServerMessage is a structural superset of AgentMessage and
-// already carries the frozen `codexAppServerPid` and cumulative `usage`.
+// AppServerMessage is a structural superset of AgentMessage and already carries
+// the frozen `codexAppServerPid` and cumulative `usage`. P3 adds two purely
+// additive fields:
+//   - the neutral `backendPid` alias (the frozen `codexAppServerPid` stays);
+//   - the envelope `rate_limits`, lifted out of the codex/event/token_count
+//     payload (the orchestrator keeps its own payload sniffing as a fallback).
 function normalizeCodexMessage(message: AppServer.AppServerMessage): AgentMessage {
-  return message as AgentMessage;
+  const normalized = { ...message } as AgentMessage;
+  const pid = message.codexAppServerPid;
+  if (typeof pid === "string" && normalized.backendPid === undefined) {
+    normalized.backendPid = pid;
+  }
+  if (normalized.rate_limits === undefined) {
+    const rateLimits = rateLimitsFromPayload(message.payload);
+    if (rateLimits !== null) {
+      normalized.rate_limits = rateLimits;
+    }
+  }
+  return normalized;
+}
+
+// Focused copy of the orchestrator's rate-limit sniffing: finds a
+// { limit_id|limit_name, primary|secondary|credits } map anywhere under the
+// codex payload. Kept independent of orchestrator.ts so the envelope lift and
+// the orchestrator's fallback stay decoupled but agree on the same shape.
+function rateLimitsFromPayload(payload: unknown): Record<string, unknown> | null {
+  if (Array.isArray(payload)) {
+    return firstRateLimits(payload);
+  }
+  if (!isObject(payload)) {
+    return null;
+  }
+  const direct = payload.rate_limits;
+  if (isRateLimitsMap(direct)) {
+    return direct;
+  }
+  if (isRateLimitsMap(payload)) {
+    return payload;
+  }
+  return firstRateLimits(Object.values(payload));
+}
+
+function firstRateLimits(values: unknown[]): Record<string, unknown> | null {
+  for (const value of values) {
+    const found = rateLimitsFromPayload(value);
+    if (found !== null) {
+      return found;
+    }
+  }
+  return null;
+}
+
+function isRateLimitsMap(payload: unknown): payload is Record<string, unknown> {
+  if (!isObject(payload)) {
+    return false;
+  }
+  const limitId = payload.limit_id ?? payload.limit_name;
+  const hasBuckets = ["primary", "secondary", "credits"].some((key) => key in payload);
+  return limitId !== null && limitId !== undefined && hasBuckets;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function toolExecutorFor(provider: ToolProvider): AppServer.ToolExecutor {
@@ -115,6 +175,10 @@ export const CodexPlugin: AgentBackendPlugin = {
     multiTurnSessions: true,
     remoteWorkers: true,
     rateLimitTelemetry: true,
+  },
+
+  ui: {
+    humanizeMessage: (message) => humanizeCodexMessage(message),
   },
 
   replay: {
