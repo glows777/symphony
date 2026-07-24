@@ -43,6 +43,9 @@ function defaults(): Overrides {
     codex_turn_timeout_ms: 3_600_000,
     codex_read_timeout_ms: 5_000,
     codex_stall_timeout_ms: 300_000,
+    // Emitted as a top-level `claude_code:` section only when set to a map
+    // (see claudeCodeYaml); absent by default so existing fixtures are unchanged.
+    claude_code: null,
     hook_after_create: null,
     hook_before_run: null,
     hook_after_run: null,
@@ -99,6 +102,7 @@ function workflowContent(overrides: Overrides): string {
     `  turn_timeout_ms: ${yamlValue(g("codex_turn_timeout_ms"))}`,
     `  read_timeout_ms: ${yamlValue(g("codex_read_timeout_ms"))}`,
     `  stall_timeout_ms: ${yamlValue(g("codex_stall_timeout_ms"))}`,
+    claudeCodeYaml(g("claude_code")),
     hooksYaml(
       g("hook_after_create"),
       g("hook_before_run"),
@@ -158,6 +162,26 @@ function agentBackendLine(backend: unknown): string | null {
     return null;
   }
   return `  backend: ${yamlValue(backend)}`;
+}
+
+// Emits the top-level `claude_code:` backend section as a YAML block, but only
+// when the override is a map (default null -> omitted, existing fixtures
+// unchanged). Keys are written verbatim (command, permission_mode, model,
+// allowed_tools, disallowed_tools, turn_timeout_ms, read_timeout_ms).
+function claudeCodeYaml(config: unknown): string | null {
+  if (
+    config === null ||
+    config === undefined ||
+    typeof config !== "object" ||
+    Array.isArray(config)
+  ) {
+    return null;
+  }
+  const lines = ["claude_code:"];
+  for (const [key, value] of Object.entries(config)) {
+    lines.push(`  ${key}: ${yamlValue(value)}`);
+  }
+  return lines.join("\n");
 }
 
 function workerYaml(sshHosts: unknown, maxPerHost: unknown): string | null {

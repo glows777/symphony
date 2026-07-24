@@ -152,13 +152,13 @@ describe("Config", () => {
     expect(validate().ok).toBe(true);
     expect(settingsBang().agent.backend).toBe("codex");
 
-    writeWorkflowFile(workflowFilePath(), { agent_backend: "claude_code" });
+    writeWorkflowFile(workflowFilePath(), { agent_backend: "gemini" });
     const unsupported = validate();
     expect(unsupported.ok).toBe(false);
     if (!unsupported.ok) {
       const error = unsupported.error as { tag: string; message: string };
       expect(error.tag).toBe("unsupported_agent_backend");
-      expect(error.message).toContain('"claude_code"');
+      expect(error.message).toContain('"gemini"');
     }
   });
 

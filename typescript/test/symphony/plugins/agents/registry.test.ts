@@ -27,7 +27,7 @@ const fakeBackend: AgentBackendPlugin = {
 describe("Plugins.Agents.Registry", () => {
   test("resolves the built-in codex backend by kind", () => {
     expect(agentBackend("codex")).toEqual(ok(CodexPlugin));
-    expect(registeredAgentBackendKinds()).toEqual(["codex"]);
+    expect(registeredAgentBackendKinds()).toEqual(["codex", "claude_code"]);
   });
 
   test("reports missing and unsupported kinds with stable tags", () => {
@@ -38,16 +38,16 @@ describe("Plugins.Agents.Registry", () => {
       expect(missing.error.message).toBe("Agent backend missing in WORKFLOW.md");
     }
 
-    const unsupported = agentBackend("claude_code");
+    const unsupported = agentBackend("gemini");
     expect(unsupported.ok).toBe(false);
     if (!unsupported.ok) {
       expect(unsupported.error.tag).toBe("unsupported_agent_backend");
-      expect(unsupported.error.message).toContain('"claude_code"');
+      expect(unsupported.error.message).toContain('"gemini"');
       expect(unsupported.error.message).toContain("codex");
-      expect(unsupported.error.detail).toEqual({ value: "claude_code" });
+      expect(unsupported.error.detail).toEqual({ value: "gemini" });
     }
 
-    expect(agentBackendOrNull("claude_code")).toBeNull();
+    expect(agentBackendOrNull("gemini")).toBeNull();
     expect(agentBackendOrNull(null)).toBeNull();
   });
 

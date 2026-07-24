@@ -189,10 +189,10 @@ describe("Config.Schema.parse", () => {
 
   test("an unregistered agent backend still parses with its section passed through", () => {
     const settings = parseOk({
-      agent: { backend: "claude_code" },
-      claude_code: { model: "opus" },
+      agent: { backend: "gemini" },
+      gemini: { model: "opus" },
     });
-    expect(settings.agent.backend).toBe("claude_code");
+    expect(settings.agent.backend).toBe("gemini");
     expect(settings.agent.backendConfig).toEqual({ model: "opus" });
   });
 
