@@ -188,4 +188,21 @@ describe("AgentRunner with a synthetic backend", () => {
     // Failed before starting any session.
     expect(backend.sessionCount()).toBe(0);
   });
+
+  test("does not start a fresh session when the prompt fails to build", async () => {
+    const backend = fakeBackend({ multiTurn: false });
+    putEnv("agent_backend_overrides", { codex: backend.plugin });
+    // strictVariables: an undefined template variable makes buildPrompt throw.
+    writeWorkflowFile(workflowFilePath(), {
+      workspace_root: workspaceRoot,
+      prompt: "{{ undefined_var }}",
+    });
+
+    await expect(
+      run(issue, null, { maxTurns: 1, issueStateFetcher: staysActive }),
+    ).rejects.toThrow();
+    // The prompt is built before startSession, so no session is opened (and
+    // therefore none is leaked).
+    expect(backend.sessionCount()).toBe(0);
+  });
 });

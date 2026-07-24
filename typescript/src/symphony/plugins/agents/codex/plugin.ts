@@ -38,6 +38,12 @@ async function startSession(
   workspace: string,
   opts: StartSessionOpts = {},
 ): Promise<Result<AgentSession, unknown>> {
+  // Tool-spec advertisement on thread/start comes from app-server's global
+  // DynamicTool.toolSpecs() (= trackerToolProvider().listSpecs()), which is the
+  // same provider agent-runner injects here, so specs and execution agree in
+  // production. Threading opts.toolProvider.listSpecs() through thread/start
+  // would require changing the frozen app-server startThread signature; that is
+  // deferred to the P5 ProcessTransport/app-server refactor.
   const started = await AppServer.startSession(workspace, {
     workerHost: opts.workerHost ?? null,
   });

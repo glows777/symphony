@@ -291,6 +291,10 @@ async function runFreshSessionTurns(
   turnNumber: number,
   maxTurns: number,
 ): Promise<Result<undefined, unknown>> {
+  // Build the prompt before opening a session: a Liquid render error here must
+  // not leak a started session (runSingleFreshTurn's finally only covers the
+  // turn itself).
+  const prompt = buildFullPrompt(issue, opts);
   const session = await backend.sessions.startSession(workspace, {
     workerHost,
     onMessage: agentMessageHandler(recipient, issue),
@@ -302,7 +306,7 @@ async function runFreshSessionTurns(
   const turn = await runSingleFreshTurn(
     backend,
     session.value,
-    buildFullPrompt(issue, opts),
+    prompt,
     issue,
     turnNumber,
     maxTurns,
