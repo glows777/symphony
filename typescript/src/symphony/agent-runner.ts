@@ -1,11 +1,28 @@
-// Literal port of `symphony_elixir/agent_runner.ex`.
+// Literal port of `symphony_elixir/agent_runner.ex`, generalized post-cutover to
+// the agent backend plugin surface (see MIGRATION.md -> Post-cutover
+// divergence).
 //
-// Executes a single Linear issue in its workspace with Codex. The Elixir
-// `send(pid, tuple)` recipient becomes a callback invoked with tagged updates.
+// Executes a single issue in its workspace with the configured agent backend.
+// The backend is resolved once at run start and pinned for the whole run —
+// sessions are stateful, so swapping backends mid-run would tear a session
+// apart. The Elixir `send(pid, tuple)` recipient becomes a callback invoked with
+// tagged updates.
 
-import * as AppServer from "./codex/app-server.ts";
+// Side-effect import: built-in agent backends must be registered before a run
+// resolves `agent.backend` (mirrors the tracker plugins/index.ts guarantee).
+import "./plugins/agents/index.ts";
+
 import { settingsBang } from "./config.ts";
 import { logger } from "./logger.ts";
+import { agentBackend } from "./plugins/agents/registry.ts";
+import { trackerToolProvider } from "./plugins/agents/tool-provider.ts";
+import type {
+  AgentBackendPlugin,
+  AgentMessage,
+  AgentSession,
+  OnAgentMessage,
+  ToolProvider,
+} from "./plugins/agents/types.ts";
 import { trackerPluginOrNull } from "./plugins/registry.ts";
 import { type Issue, routable } from "./plugins/work-item.ts";
 import { buildPrompt } from "./prompt-builder.ts";
@@ -14,7 +31,7 @@ import * as Tracker from "./tracker/tracker.ts";
 import * as Workspace from "./workspace.ts";
 
 export type WorkerUpdate =
-  | { tag: "codex_worker_update"; issueId: string; message: AppServer.AppServerMessage }
+  | { tag: "codex_worker_update"; issueId: string; message: AgentMessage }
   | {
       tag: "worker_runtime_info";
       issueId: string;
@@ -51,12 +68,26 @@ export async function run(
   recipient: UpdateRecipient = null,
   opts: RunOpts = {},
 ): Promise<void> {
+  // Resolve and pin the backend for the whole run (sessions are stateful).
+  const backend = agentBackend(settingsBang().agent.backend);
+  if (!backend.ok) {
+    logger.error(`Agent run failed for ${issueContext(issue)}: ${inspect(backend.error)}`);
+    throw new Error(`Agent run failed for ${issueContext(issue)}: ${inspect(backend.error)}`);
+  }
+
   const workerHost = selectedWorkerHost(opts.workerHost ?? null, settingsBang().worker.sshHosts);
+  // Capability guard: a backend that does not declare remoteWorkers cannot run
+  // over worker.ssh_hosts. Fail before any workspace/SSH work.
+  if (workerHost !== null && backend.value.capabilities?.remoteWorkers !== true) {
+    const error = { tag: "remote_workers_unsupported", backend: backend.value.id, workerHost };
+    logger.error(`Agent run failed for ${issueContext(issue)}: ${inspect(error)}`);
+    throw new Error(`Agent run failed for ${issueContext(issue)}: ${inspect(error)}`);
+  }
   logger.info(
     `Starting agent run for ${issueContext(issue)} worker_host=${workerHostForLog(workerHost)}`,
   );
 
-  const result = await runOnWorkerHost(issue, recipient, opts, workerHost);
+  const result = await runOnWorkerHost(issue, recipient, opts, workerHost, backend.value);
   if (!result.ok) {
     logger.error(`Agent run failed for ${issueContext(issue)}: ${inspect(result.error)}`);
     throw new Error(`Agent run failed for ${issueContext(issue)}: ${inspect(result.error)}`);
@@ -68,6 +99,7 @@ async function runOnWorkerHost(
   recipient: UpdateRecipient,
   opts: RunOpts,
   workerHost: string | null,
+  backend: AgentBackendPlugin,
 ): Promise<Result<undefined, unknown>> {
   logger.info(
     `Starting worker attempt for ${issueContext(issue)} worker_host=${workerHostForLog(workerHost)}`,
@@ -85,21 +117,19 @@ async function runOnWorkerHost(
     if (!beforeRun.ok) {
       return err(beforeRun.error);
     }
-    return await runCodexTurns(workspace, issue, recipient, opts, workerHost);
+    return await runAgentTurns(workspace, issue, recipient, opts, workerHost, backend);
   } finally {
     Workspace.runAfterRunHook(workspace, issue, workerHost);
   }
 }
 
-function codexMessageHandler(recipient: UpdateRecipient, issue: Issue): AppServer.OnMessage {
-  return (message) => sendCodexUpdate(recipient, issue, message);
+function agentMessageHandler(recipient: UpdateRecipient, issue: Issue): OnAgentMessage {
+  return (message) => sendAgentUpdate(recipient, issue, message);
 }
 
-function sendCodexUpdate(
-  recipient: UpdateRecipient,
-  issue: Issue,
-  message: AppServer.AppServerMessage,
-): void {
+function sendAgentUpdate(recipient: UpdateRecipient, issue: Issue, message: AgentMessage): void {
+  // Wire tag frozen as `codex_worker_update` (orchestrator entry, JSON-API,
+  // dashboard snapshot) — a historical name, now semantically "agent backend".
   if (typeof issue.id === "string" && typeof recipient === "function") {
     recipient({ tag: "codex_worker_update", issueId: issue.id, message });
   }
@@ -120,57 +150,102 @@ function sendWorkerRuntimeInfo(
   }
 }
 
-async function runCodexTurns(
+async function runAgentTurns(
   workspace: string,
   issue: Issue,
   recipient: UpdateRecipient,
   opts: RunOpts,
   workerHost: string | null,
+  backend: AgentBackendPlugin,
 ): Promise<Result<undefined, unknown>> {
   const maxTurns = opts.maxTurns ?? settingsBang().agent.maxTurns;
   const issueStateFetcher: IssueStateFetcher =
     opts.issueStateFetcher ?? ((ids) => Tracker.fetchIssueStatesByIds(ids));
+  const toolProvider = trackerToolProvider();
 
-  const session = await AppServer.startSession(workspace, { workerHost });
+  if (backend.capabilities?.multiTurnSessions === true) {
+    return runMultiTurnSession(
+      backend,
+      workspace,
+      issue,
+      recipient,
+      opts,
+      workerHost,
+      toolProvider,
+      issueStateFetcher,
+      maxTurns,
+    );
+  }
+  return runFreshSessionTurns(
+    backend,
+    workspace,
+    issue,
+    recipient,
+    opts,
+    workerHost,
+    toolProvider,
+    issueStateFetcher,
+    1,
+    maxTurns,
+  );
+}
+
+// Multi-turn backend (codex): one session spans the whole run, continuation
+// turns reuse the live thread with continuation guidance instead of the full
+// prompt.
+async function runMultiTurnSession(
+  backend: AgentBackendPlugin,
+  workspace: string,
+  issue: Issue,
+  recipient: UpdateRecipient,
+  opts: RunOpts,
+  workerHost: string | null,
+  toolProvider: ToolProvider,
+  issueStateFetcher: IssueStateFetcher,
+  maxTurns: number,
+): Promise<Result<undefined, unknown>> {
+  const session = await backend.sessions.startSession(workspace, {
+    workerHost,
+    onMessage: agentMessageHandler(recipient, issue),
+    toolProvider,
+  });
   if (!session.ok) {
     return err(session.error);
   }
   try {
-    return await doRunCodexTurns(
+    return await doRunMultiTurn(
+      backend,
       session.value,
       workspace,
       issue,
-      recipient,
       opts,
       issueStateFetcher,
       1,
       maxTurns,
     );
   } finally {
-    AppServer.stopSession(session.value);
+    backend.sessions.stopSession(session.value);
   }
 }
 
-async function doRunCodexTurns(
-  appSession: AppServer.Session,
+async function doRunMultiTurn(
+  backend: AgentBackendPlugin,
+  session: AgentSession,
   workspace: string,
   issue: Issue,
-  recipient: UpdateRecipient,
   opts: RunOpts,
   issueStateFetcher: IssueStateFetcher,
   turnNumber: number,
   maxTurns: number,
 ): Promise<Result<undefined, unknown>> {
-  const prompt = buildTurnPrompt(issue, opts, turnNumber, maxTurns);
+  const prompt = buildContinuationTurnPrompt(issue, opts, turnNumber, maxTurns);
 
-  const turnSession = await AppServer.runTurn(appSession, prompt, issue, {
-    onMessage: codexMessageHandler(recipient, issue),
-  });
-  if (!turnSession.ok) {
-    return err(turnSession.error);
+  const turn = await backend.sessions.runTurn(session, prompt, { issue, turnNumber, maxTurns });
+  if (!turn.ok) {
+    return err(turn.error);
   }
   logger.info(
-    `Completed agent run for ${issueContext(issue)} session_id=${turnSession.value.sessionId} workspace=${workspace} turn=${turnNumber}/${maxTurns}`,
+    `Completed agent run for ${issueContext(issue)} session_id=${turn.value.sessionId} workspace=${workspace} turn=${turnNumber}/${maxTurns}`,
   );
 
   const outcome = await continueWithIssue(issue, issueStateFetcher);
@@ -184,11 +259,11 @@ async function doRunCodexTurns(
     logger.info(
       `Continuing agent run for ${issueContext(outcome.issue)} after normal turn completion turn=${turnNumber}/${maxTurns}`,
     );
-    return doRunCodexTurns(
-      appSession,
+    return doRunMultiTurn(
+      backend,
+      session,
       workspace,
       outcome.issue,
-      recipient,
       opts,
       issueStateFetcher,
       turnNumber + 1,
@@ -201,14 +276,101 @@ async function doRunCodexTurns(
   return ok(undefined);
 }
 
-function buildTurnPrompt(
+// Single-turn backend fallback: a fresh session per turn, each rebuilt from the
+// full prompt (no live thread to resume, so continuation guidance would be a
+// lie).
+async function runFreshSessionTurns(
+  backend: AgentBackendPlugin,
+  workspace: string,
+  issue: Issue,
+  recipient: UpdateRecipient,
+  opts: RunOpts,
+  workerHost: string | null,
+  toolProvider: ToolProvider,
+  issueStateFetcher: IssueStateFetcher,
+  turnNumber: number,
+  maxTurns: number,
+): Promise<Result<undefined, unknown>> {
+  const session = await backend.sessions.startSession(workspace, {
+    workerHost,
+    onMessage: agentMessageHandler(recipient, issue),
+    toolProvider,
+  });
+  if (!session.ok) {
+    return err(session.error);
+  }
+  const turn = await runSingleFreshTurn(
+    backend,
+    session.value,
+    buildFullPrompt(issue, opts),
+    issue,
+    turnNumber,
+    maxTurns,
+  );
+  if (!turn.ok) {
+    return err(turn.error);
+  }
+  logger.info(
+    `Completed agent run for ${issueContext(issue)} session_id=${turn.value.sessionId} workspace=${workspace} turn=${turnNumber}/${maxTurns}`,
+  );
+
+  const outcome = await continueWithIssue(issue, issueStateFetcher);
+  if (outcome.kind === "error") {
+    return err(outcome.reason);
+  }
+  if (outcome.kind === "done") {
+    return ok(undefined);
+  }
+  if (turnNumber < maxTurns) {
+    logger.info(
+      `Continuing agent run for ${issueContext(outcome.issue)} after normal turn completion turn=${turnNumber}/${maxTurns}`,
+    );
+    return runFreshSessionTurns(
+      backend,
+      workspace,
+      outcome.issue,
+      recipient,
+      opts,
+      workerHost,
+      toolProvider,
+      issueStateFetcher,
+      turnNumber + 1,
+      maxTurns,
+    );
+  }
+  logger.info(
+    `Reached agent.max_turns for ${issueContext(outcome.issue)} with issue still active; returning control to orchestrator`,
+  );
+  return ok(undefined);
+}
+
+async function runSingleFreshTurn(
+  backend: AgentBackendPlugin,
+  session: AgentSession,
+  prompt: string,
+  issue: Issue,
+  turnNumber: number,
+  maxTurns: number,
+): Promise<Result<{ sessionId: string; [key: string]: unknown }, unknown>> {
+  try {
+    return await backend.sessions.runTurn(session, prompt, { issue, turnNumber, maxTurns });
+  } finally {
+    backend.sessions.stopSession(session);
+  }
+}
+
+function buildFullPrompt(issue: Issue, opts: RunOpts): string {
+  return buildPrompt(issue, { attempt: opts.attempt ?? null });
+}
+
+function buildContinuationTurnPrompt(
   issue: Issue,
   opts: RunOpts,
   turnNumber: number,
   maxTurns: number,
 ): string {
   if (turnNumber === 1) {
-    return buildPrompt(issue, { attempt: opts.attempt ?? null });
+    return buildFullPrompt(issue, opts);
   }
   return `Continuation guidance:
 
