@@ -9,6 +9,8 @@ import nodePath from "node:path";
 import { codexRuntimeSettings, settingsBang } from "../config.ts";
 import { logger } from "../logger.ts";
 import { canonicalize } from "../path-safety.ts";
+import { ProcessTransport } from "../plugins/agents/transport.ts";
+import type { LineEvent, Transport } from "../plugins/agents/transport.ts";
 import { type Result, err, ok } from "../result.ts";
 import * as SSH from "../ssh.ts";
 import * as DynamicTool from "./dynamic-tool.ts";
@@ -57,105 +59,13 @@ export type Session = {
 
 // ---- Transport -------------------------------------------------------------
 
-type LineEvent =
-  | { type: "line"; data: string }
-  | { type: "exit"; status: number }
-  | { type: "timeout" };
-
-export interface Transport {
-  send(message: JsonObject): void;
-  next(timeoutMs: number): Promise<LineEvent>;
-  close(): void;
-  osPid(): string | undefined;
-}
-
-class ProcessTransport implements Transport {
-  private queue: LineEvent[] = [];
-  private waiters: ((event: LineEvent) => void)[] = [];
-  private outBuffer = "";
-  private errBuffer = "";
-  private exitPushed = false;
-
-  constructor(private proc: Bun.Subprocess<"pipe", "pipe", "pipe">) {
-    void this.pump(proc.stdout, "out");
-    void this.pump(proc.stderr, "err");
-    void proc.exited.then((status) => this.pushExit(status ?? 0));
-  }
-
-  send(message: JsonObject): void {
-    const line = `${JSON.stringify(message)}\n`;
-    const stdin = this.proc.stdin;
-    stdin.write(line);
-    stdin.flush();
-  }
-
-  next(timeoutMs: number): Promise<LineEvent> {
-    const queued = this.queue.shift();
-    if (queued) {
-      return Promise.resolve(queued);
-    }
-    return new Promise<LineEvent>((resolve) => {
-      const timer = setTimeout(() => {
-        const idx = this.waiters.indexOf(deliver);
-        if (idx >= 0) {
-          this.waiters.splice(idx, 1);
-        }
-        resolve({ type: "timeout" });
-      }, timeoutMs);
-      const deliver = (event: LineEvent): void => {
-        clearTimeout(timer);
-        resolve(event);
-      };
-      this.waiters.push(deliver);
-    });
-  }
-
-  close(): void {
-    try {
-      this.proc.kill();
-    } catch {
-      // already exited
-    }
-  }
-
-  osPid(): string | undefined {
-    return this.proc.pid ? String(this.proc.pid) : undefined;
-  }
-
-  private async pump(stream: ReadableStream<Uint8Array>, which: "out" | "err"): Promise<void> {
-    const decoder = new TextDecoder();
-    for await (const chunk of stream) {
-      const text = (which === "out" ? this.outBuffer : this.errBuffer) + decoder.decode(chunk);
-      const lines = text.split("\n");
-      const remainder = lines.pop() ?? "";
-      if (which === "out") {
-        this.outBuffer = remainder;
-      } else {
-        this.errBuffer = remainder;
-      }
-      for (const line of lines) {
-        this.pushLine({ type: "line", data: line });
-      }
-    }
-  }
-
-  private pushLine(event: LineEvent): void {
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      waiter(event);
-    } else {
-      this.queue.push(event);
-    }
-  }
-
-  private pushExit(status: number): void {
-    if (this.exitPushed) {
-      return;
-    }
-    this.exitPushed = true;
-    this.pushLine({ type: "exit", status });
-  }
-}
+// The line-framed JSON transport moved to the shared plugins/agents module so
+// the claude-code backend reuses the exact same process client. Re-exported
+// here (with local bindings for internal use in startPort / signatures) to keep
+// app-server's existing import paths and public `Transport` type unchanged.
+// ReplayTransport (codex differential-oracle only) stays below.
+export { ProcessTransport };
+export type { LineEvent, Transport };
 
 class ReplayTransport implements Transport {
   private index = 0;
