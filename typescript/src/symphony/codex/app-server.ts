@@ -5,14 +5,13 @@
 // Bun.spawn (or SSH.startPort) process, or an in-memory replay used by the
 // differential oracle. All protocol I/O is async (stream-based).
 
-import nodePath from "node:path";
 import { codexRuntimeSettings, settingsBang } from "../config.ts";
 import { logger } from "../logger.ts";
-import { canonicalize } from "../path-safety.ts";
 import { ProcessTransport } from "../plugins/agents/transport.ts";
 import type { LineEvent, Transport } from "../plugins/agents/transport.ts";
 import { type Result, err, ok } from "../result.ts";
 import * as SSH from "../ssh.ts";
+import { type WorkspaceGuardViolation, guardWorkspacePath } from "../workspace-guard.ts";
 import * as DynamicTool from "./dynamic-tool.ts";
 
 const INITIALIZE_ID = 1;
@@ -254,75 +253,55 @@ export async function replayTranscript(serverMessages: unknown[]): Promise<unkno
 
 // ---- workspace cwd validation ----------------------------------------------
 
+// Delegates to the shared workspace guard (workspace-guard.ts) and maps each
+// violation back to codex's frozen `invalid_workspace_cwd` error family (tests
+// and logs consume the exact `reason`/`path` shapes below).
 function validateWorkspaceCwd(
   workspace: string,
   workerHost: string | null,
 ): Result<string, unknown> {
-  if (workerHost === null) {
-    const expandedWorkspace = pathExpand(workspace);
-    const expandedRoot = pathExpand(settingsBang().workspace.root);
-    const expandedRootPrefix = `${expandedRoot}/`;
+  const guard = guardWorkspacePath(workspace, settingsBang().workspace.root, workerHost);
+  if (guard.ok) {
+    return ok(guard.value);
+  }
+  return err(invalidWorkspaceCwd(guard.error, workerHost));
+}
 
-    const canonicalWorkspace = canonicalize(expandedWorkspace);
-    const canonicalRoot = canonicalize(expandedRoot);
-    if (!canonicalWorkspace.ok) {
-      const e = canonicalWorkspace.error;
-      return err({
+function invalidWorkspaceCwd(v: WorkspaceGuardViolation, workerHost: string | null): JsonObject {
+  switch (v.kind) {
+    case "path_unreadable":
+      return {
         tag: "invalid_workspace_cwd",
         reason: "path_unreadable",
-        path: e.expandedPath,
-        detail: e.reason,
-      });
-    }
-    if (!canonicalRoot.ok) {
-      const e = canonicalRoot.error;
-      return err({
-        tag: "invalid_workspace_cwd",
-        reason: "path_unreadable",
-        path: e.expandedPath,
-        detail: e.reason,
-      });
-    }
-    const canonicalRootPrefix = `${canonicalRoot.value}/`;
-
-    if (canonicalWorkspace.value === canonicalRoot.value) {
-      return err({
-        tag: "invalid_workspace_cwd",
-        reason: "workspace_root",
-        path: canonicalWorkspace.value,
-      });
-    }
-    if (`${canonicalWorkspace.value}/`.startsWith(canonicalRootPrefix)) {
-      return ok(canonicalWorkspace.value);
-    }
-    if (`${expandedWorkspace}/`.startsWith(expandedRootPrefix)) {
-      return err({
+        path: v.path,
+        detail: v.reason,
+      };
+    case "equals_root":
+      return { tag: "invalid_workspace_cwd", reason: "workspace_root", path: v.canonicalWorkspace };
+    case "symlink_escape":
+      return {
         tag: "invalid_workspace_cwd",
         reason: "symlink_escape",
-        path: expandedWorkspace,
-        root: canonicalRoot.value,
-      });
-    }
-    return err({
-      tag: "invalid_workspace_cwd",
-      reason: "outside_workspace_root",
-      path: canonicalWorkspace.value,
-      root: canonicalRoot.value,
-    });
+        path: v.expandedWorkspace,
+        root: v.canonicalRoot,
+      };
+    case "outside_root":
+      return {
+        tag: "invalid_workspace_cwd",
+        reason: "outside_workspace_root",
+        path: v.canonicalWorkspace,
+        root: v.canonicalRoot,
+      };
+    case "empty_remote":
+      return { tag: "invalid_workspace_cwd", reason: "empty_remote_workspace", workerHost };
+    case "invalid_remote_characters":
+      return {
+        tag: "invalid_workspace_cwd",
+        reason: "invalid_remote_workspace",
+        workerHost,
+        workspace: v.workspace,
+      };
   }
-
-  if (workspace.trim() === "") {
-    return err({ tag: "invalid_workspace_cwd", reason: "empty_remote_workspace", workerHost });
-  }
-  if (/[\n\r\0]/.test(workspace)) {
-    return err({
-      tag: "invalid_workspace_cwd",
-      reason: "invalid_remote_workspace",
-      workerHost,
-      workspace,
-    });
-  }
-  return ok(workspace);
 }
 
 // ---- process launch --------------------------------------------------------
@@ -1056,11 +1035,6 @@ function issueContext(issue: IssueLike): string {
 
 function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-
-function pathExpand(p: string): string {
-  // `Path.expand/1`: absolute + normalized relative to cwd.
-  return nodePath.resolve(p);
 }
 
 function isObject(value: unknown): value is JsonObject {
