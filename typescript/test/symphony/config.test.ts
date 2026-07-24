@@ -146,6 +146,22 @@ describe("Config", () => {
     }
   });
 
+  test("validates the agent backend through the registry", () => {
+    // Default WORKFLOW.md omits agent.backend => codex, and validate passes.
+    writeWorkflowFile(workflowFilePath(), {});
+    expect(validate().ok).toBe(true);
+    expect(settingsBang().agent.backend).toBe("codex");
+
+    writeWorkflowFile(workflowFilePath(), { agent_backend: "claude_code" });
+    const unsupported = validate();
+    expect(unsupported.ok).toBe(false);
+    if (!unsupported.ok) {
+      const error = unsupported.error as { tag: string; message: string };
+      expect(error.tag).toBe("unsupported_agent_backend");
+      expect(error.message).toContain('"claude_code"');
+    }
+  });
+
   test("empty codex strings are accepted; future policies pass through", () => {
     writeWorkflowFile(workflowFilePath(), { codex_approval_policy: "" });
     expect(validate().ok).toBe(true);

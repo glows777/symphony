@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-// Side-effect import mirrors production entry points: schema casting delegates
-// the tracker plugin section to the registered plugin for the configured kind.
+// Side-effect imports mirror production entry points: schema casting delegates
+// the tracker plugin section and the active agent backend's section to their
+// registered plugins.
 import "../../../src/symphony/plugins/index.ts";
+import "../../../src/symphony/plugins/agents/index.ts";
 import {
   type Settings,
   StringOrMap,
@@ -169,6 +171,29 @@ describe("Config.Schema.parse", () => {
       type: "futureSandbox",
       nested: { flag: true },
     });
+  });
+
+  test("defaults agent.backend to codex and passes its section through", () => {
+    const defaults = parseOk({});
+    expect(defaults.agent.backend).toBe("codex");
+
+    // The codex backend omits a configSchema, so its top-level section passes
+    // through untouched into backendConfig (typed values live in settings.codex).
+    const withCodex = parseOk({ codex: { command: "codex app-server", extra_flag: true } });
+    expect(withCodex.agent.backend).toBe("codex");
+    expect(withCodex.agent.backendConfig).toEqual({
+      command: "codex app-server",
+      extra_flag: true,
+    });
+  });
+
+  test("an unregistered agent backend still parses with its section passed through", () => {
+    const settings = parseOk({
+      agent: { backend: "claude_code" },
+      claude_code: { model: "opus" },
+    });
+    expect(settings.agent.backend).toBe("claude_code");
+    expect(settings.agent.backendConfig).toEqual({ model: "opus" });
   });
 
   test("per-state agent limits normalize and reject bad values", () => {

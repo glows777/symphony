@@ -29,6 +29,7 @@ function defaults(): Overrides {
     workspace_root: DEFAULT_WORKSPACE_ROOT,
     worker_ssh_hosts: [],
     worker_max_concurrent_agents_per_host: null,
+    agent_backend: null,
     max_concurrent_agents: 10,
     max_turns: 20,
     max_retry_backoff_ms: 300_000,
@@ -85,6 +86,7 @@ function workflowContent(overrides: Overrides): string {
     `  root: ${yamlValue(g("workspace_root"))}`,
     workerYaml(g("worker_ssh_hosts"), g("worker_max_concurrent_agents_per_host")),
     "agent:",
+    agentBackendLine(g("agent_backend")),
     `  max_concurrent_agents: ${yamlValue(g("max_concurrent_agents"))}`,
     `  max_turns: ${yamlValue(g("max_turns"))}`,
     `  max_retry_backoff_ms: ${yamlValue(g("max_retry_backoff_ms"))}`,
@@ -147,6 +149,15 @@ function yamlValue(value: unknown): string {
 
 function isBlank(value: unknown): boolean {
   return value === null || value === undefined || (Array.isArray(value) && value.length === 0);
+}
+
+// Emits `  backend: <value>` only when set, so the default WORKFLOW.md leaves
+// `agent.backend` absent (defaulting to codex, zero migration).
+function agentBackendLine(backend: unknown): string | null {
+  if (backend === null || backend === undefined) {
+    return null;
+  }
+  return `  backend: ${yamlValue(backend)}`;
 }
 
 function workerYaml(sshHosts: unknown, maxPerHost: unknown): string | null {
@@ -240,6 +251,7 @@ export function teardownWorkflow(root: string): void {
   deleteEnv("lark_client_module");
   deleteEnv("lark_task_client_module");
   deleteEnv("tracker_plugin_overrides");
+  deleteEnv("agent_backend_overrides");
   // The token cache is shared by the lark-family plugins (lark, lark-task).
   resetLarkTokenCache();
   fs.rmSync(root, { recursive: true, force: true });
