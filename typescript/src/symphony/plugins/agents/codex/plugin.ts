@@ -1,0 +1,123 @@
+// Codex app-server agent backend plugin. Wraps codex/app-server.ts (the
+// unchanged JSON-RPC 2.0 client) behind the AgentBackendPlugin contract:
+//
+//   - `sessions` forwards to AppServer.{startSession,runTurn,stopSession},
+//     storing the AppServer.Session plus the session-scoped onMessage /
+//     toolProvider in the opaque `handle`;
+//   - the ToolProvider is encoded into an AppServer.ToolExecutor at runTurn;
+//   - app-server's wrapped events already are the normalized envelope, so
+//     `normalizeCodexMessage` is the identity in P2 (P3 adds the neutral
+//     `backendPid` alias and the envelope `rate_limits` lift);
+//   - `replay` re-exports the differential-oracle seam.
+//
+// Module evaluation only builds an object literal (no AppServer call), keeping
+// the config <-> plugins <-> app-server ESM cycle side-effect free.
+
+import * as AppServer from "../../../codex/app-server.ts";
+import * as DynamicTool from "../../../codex/dynamic-tool.ts";
+import { type Result, err, ok } from "../../../result.ts";
+import type {
+  AgentBackendPlugin,
+  AgentMessage,
+  AgentSession,
+  OnAgentMessage,
+  StartSessionOpts,
+  ToolProvider,
+  TurnContext,
+  TurnResult,
+} from "../types.ts";
+
+type CodexHandle = {
+  appSession: AppServer.Session;
+  onMessage: OnAgentMessage | null;
+  toolProvider: ToolProvider | null;
+};
+
+async function startSession(
+  workspace: string,
+  opts: StartSessionOpts = {},
+): Promise<Result<AgentSession, unknown>> {
+  const started = await AppServer.startSession(workspace, {
+    workerHost: opts.workerHost ?? null,
+  });
+  if (!started.ok) {
+    return err(started.error);
+  }
+  const appSession = started.value;
+  const handle: CodexHandle = {
+    appSession,
+    onMessage: opts.onMessage ?? null,
+    toolProvider: opts.toolProvider ?? null,
+  };
+  const session: AgentSession = {
+    backendId: "codex",
+    workspace: appSession.workspace,
+    workerHost: appSession.workerHost,
+    handle,
+  };
+  const pid = codexPid(appSession);
+  if (pid !== undefined) {
+    session.backendPid = pid;
+  }
+  return ok(session);
+}
+
+async function runTurn(
+  session: AgentSession,
+  prompt: string,
+  context: TurnContext,
+): Promise<Result<TurnResult, unknown>> {
+  const handle = session.handle as CodexHandle;
+  const forward = handle.onMessage;
+  const runOpts: AppServer.RunOpts = {
+    onMessage: (message) => forward?.(normalizeCodexMessage(message)),
+  };
+  if (handle.toolProvider !== null) {
+    runOpts.toolExecutor = toolExecutorFor(handle.toolProvider);
+  }
+  const result = await AppServer.runTurn(handle.appSession, prompt, context.issue, runOpts);
+  if (!result.ok) {
+    return err(result.error);
+  }
+  return ok(result.value as TurnResult);
+}
+
+function stopSession(session: AgentSession): void {
+  AppServer.stopSession((session.handle as CodexHandle).appSession);
+}
+
+// P2: identity. AppServerMessage is a structural superset of AgentMessage and
+// already carries the frozen `codexAppServerPid` and cumulative `usage`.
+function normalizeCodexMessage(message: AppServer.AppServerMessage): AgentMessage {
+  return message as AgentMessage;
+}
+
+function toolExecutorFor(provider: ToolProvider): AppServer.ToolExecutor {
+  return async (tool, args) => DynamicTool.encodeToolOutcome(await provider.execute(tool, args));
+}
+
+function codexPid(appSession: AppServer.Session): string | undefined {
+  const pid = appSession.metadata.codexAppServerPid;
+  return typeof pid === "string" ? pid : undefined;
+}
+
+export const CodexPlugin: AgentBackendPlugin = {
+  id: "codex",
+  displayName: "Codex app-server",
+
+  sessions: {
+    startSession,
+    runTurn,
+    stopSession,
+  },
+
+  capabilities: {
+    multiTurnSessions: true,
+    remoteWorkers: true,
+    rateLimitTelemetry: true,
+  },
+
+  replay: {
+    replayTranscript: (serverMessages) => AppServer.replayTranscript(serverMessages),
+  },
+};
