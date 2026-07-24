@@ -356,3 +356,59 @@ them — `stateUpdates`, `comments` (native Task v2 comment API), `agentTools`
 disabled). Error tags use the `lark_task_*` prefix. Test seam:
 `lark_task_client_module` app-env key, mirroring `lark_client_module`. See
 `docs/PLUGIN_CONTRACT.md` §9.4.
+
+### Agent backend plugin architecture
+
+The hardcoded Codex app-server integration was generalized into an
+`AgentBackendPlugin` registry so other coding agents (a Claude Code CLI backend
+is planned) can be added without touching the runner/orchestrator/dashboard.
+TS-native design, no Elixir counterpart; no behavior change for the default
+`agent.backend: codex`. The contract is documented in
+`docs/AGENT_PLUGIN_CONTRACT.md`.
+
+- **Contract & registry:** `plugins/agents/types.ts` defines
+  `AgentBackendPlugin` — a required `sessions` API (start/runTurn/stop) plus
+  optional capabilities (`multiTurnSessions`, `remoteWorkers`,
+  `rateLimitTelemetry`, `ui.humanizeMessage`, `replay`, `configSchema`).
+  `plugins/agents/registry.ts` resolves `agent.backend`; built-ins register in
+  `plugins/agents/index.ts`. `codex/app-server.ts` is unchanged and wrapped by
+  `plugins/agents/codex/plugin.ts`.
+- **Resolution timing — divergence from the tracker contract:** the tracker
+  plugin is re-resolved per facade call, but the agent backend is resolved
+  **once at run start and pinned for the whole run** (sessions are stateful;
+  swapping backends mid-run would tear a session apart).
+- **Wire names — historical, semantics broadened:** the `codex_*` state and
+  snapshot keys (`codex_app_server_pid`, `codex_totals`, `codex_rate_limits`,
+  `codex_input/output/total_tokens`, `last_codex_event/message/timestamp`), the
+  `codex_worker_update` worker-update tag, and the JSON-API `last_event` /
+  `last_message` / `tokens.*` fields are **frozen**. They are now historical
+  names whose semantics are "the active agent backend", not "codex
+  specifically"; the orchestrator reads the neutral envelope
+  (`backendPid ?? codexAppServerPid`, a flat cumulative `usage` map, an
+  envelope `rate_limits` field) with the codex-payload sniffing kept as a
+  fallback.
+- **Event vocabulary frozen:** the 16 wrapped event names app-server emitted
+  (`session_started`, `turn_input_required`, ...) are the normalized layer
+  every backend must emit; renaming would break persisted orchestrator entries
+  and the dashboard snapshot fixtures.
+- **Config:** `agent.backend` (default `"codex"`, zero migration) selects the
+  backend; its settings live in a top-level section named after the backend id,
+  cast/finalized/validated by the backend's `configSchema`. The codex backend
+  omits a schema, so its `codex` section stays typed in core `schema.ts`
+  (`settings.codex`), frozen.
+- **Tool bridge:** `codex/dynamic-tool.ts` became a thin codex wire-encoder over
+  the neutral `trackerToolProvider()` (`plugins/agents/tool-provider.ts`), which
+  adapts the active tracker plugin's `agentTools` capability; the resolve /
+  dispatch / unsupported-tool semantics are unchanged.
+- **Humanize move:** the ~600-line `humanizeCodex*` subsystem moved verbatim
+  from `status-dashboard.ts` to `plugins/agents/codex/humanize.ts` behind the
+  `ui.humanizeMessage` capability; `status-dashboard.ts` `summarizeMessage` now
+  resolves the active backend's hook (generic fallback otherwise), and the
+  golden dashboard snapshot is byte-identical.
+- **Test seam:** new `agent_backend_overrides` app-env key (map of kind →
+  plugin) shadows registered backends for tests, mirroring
+  `tracker_plugin_overrides`.
+- **Not included (follow-up):** the claude-code backend implementation, sharing
+  `ProcessTransport` out of `app-server.ts`, unifying the two workspace-cwd
+  validators, and an `agent.stall_timeout_ms` override (codex's value is read
+  directly today).
