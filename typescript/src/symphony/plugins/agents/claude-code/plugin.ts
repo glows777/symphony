@@ -80,6 +80,7 @@ export const ClaudeCodePlugin: AgentBackendPlugin = {
           section,
           DEFAULT_TURN_TIMEOUT_MS,
           errors,
+          0,
         ),
         read_timeout_ms: castInteger(
           raw,
@@ -87,6 +88,7 @@ export const ClaudeCodePlugin: AgentBackendPlugin = {
           section,
           DEFAULT_READ_TIMEOUT_MS,
           errors,
+          0,
         ),
       };
       return { value, errors };
@@ -140,16 +142,23 @@ function castInteger(
   section: string,
   fallback: number,
   errors: PluginFieldError[],
+  minExclusive: number | null = null,
 ): number {
   if (!(key in raw)) {
     return fallback;
   }
   const value = raw[key];
-  if (typeof value === "number" && Number.isInteger(value)) {
-    return value;
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    errors.push({ path: `${section}.${key}`, message: "is invalid" });
+    return fallback;
   }
-  errors.push({ path: `${section}.${key}`, message: "is invalid" });
-  return fallback;
+  // Mirrors codex's validateGreaterThan for the timeout fields: a zero/negative
+  // budget makes setTimeout fire immediately, failing every turn.
+  if (minExclusive !== null && value <= minExclusive) {
+    errors.push({ path: `${section}.${key}`, message: `must be greater than ${minExclusive}` });
+    return fallback;
+  }
+  return value;
 }
 
 function castStringArray(

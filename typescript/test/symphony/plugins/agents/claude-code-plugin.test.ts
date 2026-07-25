@@ -166,7 +166,7 @@ describe("Plugins.Agents.ClaudeCodePlugin", () => {
       },
       { turn_timeout_ms: 400, read_timeout_ms: 2_000 },
     );
-    const { started } = await start(workspaceFor("CC-3"));
+    const { started, messages } = await start(workspaceFor("CC-3"));
     expect(started.ok).toBe(true);
     if (!started.ok) {
       return;
@@ -178,6 +178,9 @@ describe("Plugins.Agents.ClaudeCodePlugin", () => {
     if (!turn.ok) {
       expect((turn.error as { tag: string }).tag).toBe("turn_timeout");
     }
+    // A terminal event is emitted so the dashboard shows the failure, not a
+    // stale in-progress notification.
+    expect(messages.some((m) => m.event === "turn_ended_with_error")).toBe(true);
   });
 
   test("reports port_exit when the process exits mid-turn", async () => {
@@ -197,8 +200,9 @@ describe("Plugins.Agents.ClaudeCodePlugin", () => {
     if (!turn.ok) {
       expect((turn.error as { tag: string }).tag).toBe("port_exit");
     }
-    // session_started still fired before the exit.
+    // session_started fired before the exit, and a terminal event closes the turn.
     expect(messages.some((m) => m.event === "session_started")).toBe(true);
+    expect(messages.some((m) => m.event === "turn_ended_with_error")).toBe(true);
   });
 
   test("forwards a malformed protocol line as a malformed event", async () => {

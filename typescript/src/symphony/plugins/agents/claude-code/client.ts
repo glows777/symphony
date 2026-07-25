@@ -117,10 +117,10 @@ export async function runTurn(
       handle.rawSessionId === null ? handle.config.readTimeoutMs : handle.config.turnTimeoutMs;
     const event = await handle.transport.next(timeoutMs);
     if (event.type === "timeout") {
-      return err({ tag: "turn_timeout" });
+      return endWithError(handle, turnNumber, { tag: "turn_timeout" });
     }
     if (event.type === "exit") {
-      return err({ tag: "port_exit", status: event.status });
+      return endWithError(handle, turnNumber, { tag: "port_exit", status: event.status });
     }
 
     const line = event.data;
@@ -172,6 +172,23 @@ export function stopSession(session: AgentSession): void {
   const handle = session.handle as ClaudeHandle;
   handle.bridge?.close();
   handle.transport.close();
+}
+
+// Transport-level failures (turn_timeout, port_exit) have no CLI message to map,
+// so — mirroring codex's runTurn error path — emit a terminal
+// `turn_ended_with_error` before returning, so the orchestrator/dashboard record
+// the failure as the run's final event instead of a stale in-progress
+// notification.
+function endWithError(
+  handle: ClaudeHandle,
+  turnNumber: number,
+  error: Record<string, unknown>,
+): Result<TurnResult, unknown> {
+  emit(handle, "turn_ended_with_error", {
+    sessionId: derivedSessionId(handle.rawSessionId, turnNumber),
+    reason: error,
+  });
+  return err(error);
 }
 
 function finishTurn(
