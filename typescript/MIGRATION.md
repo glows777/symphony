@@ -408,7 +408,64 @@ TS-native design, no Elixir counterpart; no behavior change for the default
 - **Test seam:** new `agent_backend_overrides` app-env key (map of kind →
   plugin) shadows registered backends for tests, mirroring
   `tracker_plugin_overrides`.
-- **Not included (follow-up):** the claude-code backend implementation, sharing
-  `ProcessTransport` out of `app-server.ts`, unifying the two workspace-cwd
-  validators, and an `agent.stall_timeout_ms` override (codex's value is read
-  directly today).
+- **Not included (follow-up):** an `agent.stall_timeout_ms` override (codex's
+  value is read directly today). The claude-code backend, the shared
+  `ProcessTransport`, and the unified workspace guard shipped in P5 (below).
+
+### Claude Code agent backend (P5)
+
+The second built-in backend, `agent.backend: claude_code`, drives the Claude
+Code CLI as a long-lived stream-json subprocess
+(`claude -p --input-format stream-json --output-format stream-json --verbose`)
+— **not** the Agent SDK. Two prerequisite refactors landed first; all three are
+additive and leave the codex path byte-identical.
+
+- **Shared `ProcessTransport`:** the line-framed JSON `Transport` interface,
+  `LineEvent` type, and `ProcessTransport` class moved verbatim from
+  `codex/app-server.ts` to `plugins/agents/transport.ts`; `app-server.ts`
+  re-exports them (existing import paths and the public `Transport` type
+  unchanged). `ReplayTransport` (codex differential-oracle only) stays in
+  `app-server.ts`.
+- **Unified workspace guard:** the canonicalize / root-prefix / symlink-escape /
+  remote-character checks that were duplicated in
+  `codex/app-server.ts` (`validateWorkspaceCwd`, `invalid_workspace_cwd` family)
+  and `workspace.ts` (`validateWorkspacePath`, `workspace_*` family) now delegate
+  to one semantic core, `workspace-guard.ts` (`guardWorkspacePath` → ok(canonical)
+  / tagged violation). **Both error-tag families are unchanged** — each call site
+  maps the violation back to its own historical shape. The claude-code backend
+  guards its workspace through the same core and emits the `invalid_workspace_cwd`
+  family for parity with codex.
+- **CLI facts verified live (claude 2.1.218), not assumed:** `--mcp-config`
+  accepts an inline JSON string; there is no `--permission-prompt-tool`; and
+  **`result.usage` is per-turn, not session-cumulative** (correcting the earlier
+  planning guess). The plugin therefore accumulates input/output tokens itself
+  into the contract's cumulative-absolute envelope `usage` and derives
+  `total_tokens`. These facts are frozen into the `fake-claude` test script and
+  the plugin header comments.
+- **Capabilities:** `multiTurnSessions` (same process continues the
+  conversation). `remoteWorkers` is intentionally **omitted** — v1 is local-only
+  because the tool bridge is MCP-over-HTTP back to the symphony process, and
+  remote SSH reachability is a separate concern (the runner's fail-fast
+  `remote_workers_unsupported` guard covers it). `rateLimitTelemetry` and
+  `replay` are omitted (no CLI rate-limit analog; the differential oracle stays
+  codex-only). This corrects the P1–P4 handoff's "SSH remote comes for free"
+  note, which assumed tool traffic over stdio.
+- **Tool bridge:** `plugins/agents/claude-code/mcp-server.ts` serves the injected
+  `ToolProvider` as a localhost-only streamable HTTP MCP server (registered via
+  `--mcp-config`); it holds the injected provider directly, so it does not
+  reproduce the codex adapter's registered contract gap (advertising through the
+  global `DynamicTool.toolSpecs()`). Its lifecycle equals the session lifecycle.
+- **Session id:** the CLI `session_id` is constant across turns, so the plugin
+  derives a per-turn id `${session_id}-${turnNumber}` (mirroring codex
+  `${threadId}-${turnId}`) to keep the orchestrator's turn counter advancing.
+- **Config:** the top-level `claude_code:` section is cast/finalized/validated by
+  the plugin's `configSchema` (`command`, `permission_mode` `bypass`|`default`,
+  `model`, `allowed_tools`, `disallowed_tools`, `turn_timeout_ms`,
+  `read_timeout_ms`); `permission_mode` defaults to `bypass` because a
+  non-interactive orchestrator has no operator to answer prompts.
+- **Tests:** `test/harness/fake-claude.ts` is the scenario-driven stream-json
+  twin of `fake-codex.ts`; `test/symphony/plugins/agents/claude-code-plugin.test.ts`
+  exercises the full session API (lifecycle, turn_failed, turn_timeout,
+  port_exit, malformed, per-turn sessionId + cumulative usage, the MCP tool
+  round-trip's three outcomes, both permission modes, and the workspace guard).
+  No test depends on the real CLI.

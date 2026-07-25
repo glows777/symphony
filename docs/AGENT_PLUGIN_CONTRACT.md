@@ -278,6 +278,60 @@ the orchestrator's payload sniffing kept as a fallback). Capabilities:
 (the historical `humanizeCodex*` logic, moved verbatim to
 `plugins/agents/codex/humanize.ts`), and `replay`. It omits `configSchema` (§8).
 
+### 10.2 `claude_code`
+
+The second built-in (`plugins/agents/claude-code/`) drives the Claude Code CLI
+as a long-lived stream-json subprocess
+(`claude -p --input-format stream-json --output-format stream-json --verbose`) —
+**not** the Agent SDK. It reuses the shared `plugins/agents/transport.ts`
+`ProcessTransport` (line-framed JSON, structurally identical to codex) and guards
+its workspace through the shared `workspace-guard.ts` core (SPEC §17), emitting
+the `invalid_workspace_cwd` family for parity with codex.
+
+- **Capabilities:** `multiTurnSessions` (the same process continues the
+  conversation; a dead process could be rebuilt with `--resume <session_id>` as a
+  SHOULD follow-up). `remoteWorkers` is **omitted** — v1 is local-only because the
+  tool bridge is MCP-over-HTTP back to the symphony process and remote SSH
+  reachability of the orchestrator is a separate concern; the runner's fail-fast
+  `remote_workers_unsupported` guard handles a remote request. `rateLimitTelemetry`
+  and `replay` are omitted (no CLI rate-limit analog — the dashboard renders n/a;
+  the differential oracle stays codex-only).
+- **Config (`configSchema` claims the top-level `claude_code:` section):**
+  `command` (default `"claude"`, launched via `bash -lc`, cwd = workspace),
+  `permission_mode` (`"bypass"` default → CLI `bypassPermissions` ≈ codex
+  `approval_policy: never`; `"default"` → CLI default prompting), `model`
+  (`--model`), `allowed_tools` / `disallowed_tools` (`--allowedTools` /
+  `--disallowedTools`), `turn_timeout_ms` (turn stream budget),
+  `read_timeout_ms` (startup/init wait). `permission_mode` defaults to `"bypass"`
+  because a non-interactive orchestrator has no operator to answer prompts;
+  `validate` rejects any other value.
+- **Event mapping (onto the frozen vocabulary §3.1):** `{type:"system",
+  subtype:"init", session_id}` → `session_started`; `{type:"result",
+  subtype:"success"}` → `turn_completed` (+ `usage`); `subtype=error_*` /
+  `is_error` → `turn_failed`; `assistant` / `user` / other stream lines →
+  `notification` (raw payload passthrough); MCP tool calls →
+  `tool_call_completed` / `tool_call_failed` / `unsupported_tool_call` from the
+  bridge handler; a `{`-leading line that fails JSON decode → `malformed`. The
+  envelope carries `backendPid` (never the frozen codex alias
+  `codexAppServerPid`) and a session-derived `sessionId` of
+  `${session_id}-${turnNumber}` (the CLI session_id is constant across turns, so
+  the derived id keeps the orchestrator's turn counter advancing).
+- **usage (§3.2 MUST):** `result.usage` was verified live to be **per-turn**
+  (`input_tokens` / `output_tokens`, snake_case, no `total_tokens`), so the
+  plugin accumulates it into cumulative absolute totals and derives
+  `total_tokens = input + output`.
+- **Approval (§3.3 MUST, must not hang):** `permission_mode: "bypass"` maps to
+  the CLI's full-auto mode (no approval events). `permission_mode: "default"`
+  fails the turn: a non-empty `result.permission_denials` (a tool the headless
+  CLI could not auto-approve) is surfaced as `approval_required` +
+  `err({tag:"approval_required"})`. The observed CLI version has no
+  `--permission-prompt-tool`, so result-detection is the chosen mechanism.
+- **Tool bridge (§6):** `mcp-server.ts` serves the injected `ToolProvider` as a
+  localhost-only streamable HTTP MCP server named `symphony` (registered via
+  `--mcp-config`), encoding each outcome as MCP `content: [{type:"text", text}]`
+  with `isError = !success`. It holds the injected provider directly, so it does
+  not reproduce the codex adapter's registered contract gap.
+
 ## 11. Writing a new backend (checklist)
 
 Using the planned Claude Code CLI backend as the running example (driven by

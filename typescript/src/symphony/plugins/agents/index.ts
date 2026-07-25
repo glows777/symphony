@@ -4,7 +4,9 @@
 // Out-of-tree backends would call `registerAgentBackend` from their own entry
 // point.
 
+import { ClaudeCodePlugin } from "./claude-code/plugin.ts";
 import { CodexPlugin } from "./codex/plugin.ts";
 import { registerAgentBackend } from "./registry.ts";
 
 registerAgentBackend(CodexPlugin);
+registerAgentBackend(ClaudeCodePlugin);

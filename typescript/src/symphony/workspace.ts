@@ -13,6 +13,7 @@ import { canonicalize } from "./path-safety.ts";
 import type { Issue } from "./plugins/work-item.ts";
 import { type Result, err, ok } from "./result.ts";
 import * as SSH from "./ssh.ts";
+import { type WorkspaceGuardViolation, guardWorkspacePath } from "./workspace-guard.ts";
 
 const REMOTE_WORKSPACE_MARKER = "__SYMPHONY_WORKSPACE__";
 
@@ -347,58 +348,47 @@ function sanitizeHookOutputForLog(output: string, maxBytes = 2_048): string {
   return `${Buffer.from(output, "utf8").subarray(0, maxBytes).toString("utf8")}... (truncated)`;
 }
 
+// Delegates to the shared workspace guard (workspace-guard.ts) and maps each
+// violation back to this module's frozen `workspace_*` error family (tests and
+// logs consume the exact tags/shapes below).
 function validateWorkspacePath(
   workspace: string,
   workerHost: WorkerHost,
 ): Result<undefined, unknown> {
-  if (workerHost === null) {
-    const expandedWorkspace = path.resolve(workspace);
-    const expandedRoot = path.resolve(settingsBang().workspace.root);
-    const expandedRootPrefix = `${expandedRoot}/`;
+  const guard = guardWorkspacePath(workspace, settingsBang().workspace.root, workerHost);
+  if (guard.ok) {
+    return ok(undefined);
+  }
+  return err(workspacePathError(guard.error));
+}
 
-    const canonicalWorkspace = canonicalize(expandedWorkspace);
-    const canonicalRoot = canonicalize(expandedRoot);
-    if (!canonicalWorkspace.ok) {
-      const e = canonicalWorkspace.error;
-      return err({ tag: "workspace_path_unreadable", path: e.expandedPath, reason: e.reason });
-    }
-    if (!canonicalRoot.ok) {
-      const e = canonicalRoot.error;
-      return err({ tag: "workspace_path_unreadable", path: e.expandedPath, reason: e.reason });
-    }
-    const canonicalRootPrefix = `${canonicalRoot.value}/`;
-
-    if (canonicalWorkspace.value === canonicalRoot.value) {
-      return err({
+function workspacePathError(v: WorkspaceGuardViolation): Record<string, unknown> {
+  switch (v.kind) {
+    case "path_unreadable":
+      return { tag: "workspace_path_unreadable", path: v.path, reason: v.reason };
+    case "equals_root":
+      return {
         tag: "workspace_equals_root",
-        workspace: canonicalWorkspace.value,
-        root: canonicalRoot.value,
-      });
-    }
-    if (`${canonicalWorkspace.value}/`.startsWith(canonicalRootPrefix)) {
-      return ok(undefined);
-    }
-    if (`${expandedWorkspace}/`.startsWith(expandedRootPrefix)) {
-      return err({
+        workspace: v.canonicalWorkspace,
+        root: v.canonicalRoot,
+      };
+    case "symlink_escape":
+      return {
         tag: "workspace_symlink_escape",
-        workspace: expandedWorkspace,
-        root: canonicalRoot.value,
-      });
-    }
-    return err({
-      tag: "workspace_outside_root",
-      workspace: canonicalWorkspace.value,
-      root: canonicalRoot.value,
-    });
+        workspace: v.expandedWorkspace,
+        root: v.canonicalRoot,
+      };
+    case "outside_root":
+      return {
+        tag: "workspace_outside_root",
+        workspace: v.canonicalWorkspace,
+        root: v.canonicalRoot,
+      };
+    case "empty_remote":
+      return { tag: "workspace_path_unreadable", path: v.workspace, reason: "empty" };
+    case "invalid_remote_characters":
+      return { tag: "workspace_path_unreadable", path: v.workspace, reason: "invalid_characters" };
   }
-
-  if (workspace.trim() === "") {
-    return err({ tag: "workspace_path_unreadable", path: workspace, reason: "empty" });
-  }
-  if (/[\n\r\0]/.test(workspace)) {
-    return err({ tag: "workspace_path_unreadable", path: workspace, reason: "invalid_characters" });
-  }
-  return ok(undefined);
 }
 
 function remoteShellAssign(variableName: string, rawPath: string): string {
