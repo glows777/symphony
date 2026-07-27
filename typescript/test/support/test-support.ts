@@ -29,6 +29,7 @@ function defaults(): Overrides {
     workspace_root: DEFAULT_WORKSPACE_ROOT,
     worker_ssh_hosts: [],
     worker_max_concurrent_agents_per_host: null,
+    agent_backend: null,
     max_concurrent_agents: 10,
     max_turns: 20,
     max_retry_backoff_ms: 300_000,
@@ -42,6 +43,9 @@ function defaults(): Overrides {
     codex_turn_timeout_ms: 3_600_000,
     codex_read_timeout_ms: 5_000,
     codex_stall_timeout_ms: 300_000,
+    // Emitted as a top-level `claude_code:` section only when set to a map
+    // (see claudeCodeYaml); absent by default so existing fixtures are unchanged.
+    claude_code: null,
     hook_after_create: null,
     hook_before_run: null,
     hook_after_run: null,
@@ -85,6 +89,7 @@ function workflowContent(overrides: Overrides): string {
     `  root: ${yamlValue(g("workspace_root"))}`,
     workerYaml(g("worker_ssh_hosts"), g("worker_max_concurrent_agents_per_host")),
     "agent:",
+    agentBackendLine(g("agent_backend")),
     `  max_concurrent_agents: ${yamlValue(g("max_concurrent_agents"))}`,
     `  max_turns: ${yamlValue(g("max_turns"))}`,
     `  max_retry_backoff_ms: ${yamlValue(g("max_retry_backoff_ms"))}`,
@@ -97,6 +102,7 @@ function workflowContent(overrides: Overrides): string {
     `  turn_timeout_ms: ${yamlValue(g("codex_turn_timeout_ms"))}`,
     `  read_timeout_ms: ${yamlValue(g("codex_read_timeout_ms"))}`,
     `  stall_timeout_ms: ${yamlValue(g("codex_stall_timeout_ms"))}`,
+    claudeCodeYaml(g("claude_code")),
     hooksYaml(
       g("hook_after_create"),
       g("hook_before_run"),
@@ -147,6 +153,35 @@ function yamlValue(value: unknown): string {
 
 function isBlank(value: unknown): boolean {
   return value === null || value === undefined || (Array.isArray(value) && value.length === 0);
+}
+
+// Emits `  backend: <value>` only when set, so the default WORKFLOW.md leaves
+// `agent.backend` absent (defaulting to codex, zero migration).
+function agentBackendLine(backend: unknown): string | null {
+  if (backend === null || backend === undefined) {
+    return null;
+  }
+  return `  backend: ${yamlValue(backend)}`;
+}
+
+// Emits the top-level `claude_code:` backend section as a YAML block, but only
+// when the override is a map (default null -> omitted, existing fixtures
+// unchanged). Keys are written verbatim (command, permission_mode, model,
+// allowed_tools, disallowed_tools, turn_timeout_ms, read_timeout_ms).
+function claudeCodeYaml(config: unknown): string | null {
+  if (
+    config === null ||
+    config === undefined ||
+    typeof config !== "object" ||
+    Array.isArray(config)
+  ) {
+    return null;
+  }
+  const lines = ["claude_code:"];
+  for (const [key, value] of Object.entries(config)) {
+    lines.push(`  ${key}: ${yamlValue(value)}`);
+  }
+  return lines.join("\n");
 }
 
 function workerYaml(sshHosts: unknown, maxPerHost: unknown): string | null {
@@ -240,6 +275,7 @@ export function teardownWorkflow(root: string): void {
   deleteEnv("lark_client_module");
   deleteEnv("lark_task_client_module");
   deleteEnv("tracker_plugin_overrides");
+  deleteEnv("agent_backend_overrides");
   // The token cache is shared by the lark-family plugins (lark, lark-task).
   resetLarkTokenCache();
   fs.rmSync(root, { recursive: true, force: true });

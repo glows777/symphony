@@ -2,9 +2,11 @@
 //
 // Runtime configuration loaded from WORKFLOW.md.
 
-// Side-effect import: built-in tracker plugins must be registered before
-// settings are parsed (schema casting delegates the tracker plugin section).
+// Side-effect imports: built-in tracker and agent-backend plugins must be
+// registered before settings are parsed/validated (schema casting delegates the
+// tracker plugin section and the active backend's section).
 import "./plugins/index.ts";
+import "./plugins/agents/index.ts";
 
 import { getEnv } from "./app-env.ts";
 import {
@@ -14,6 +16,7 @@ import {
   parse as parseSchema,
   resolveRuntimeTurnSandboxPolicy,
 } from "./config/schema.ts";
+import { agentBackend } from "./plugins/agents/registry.ts";
 import { trackerPlugin, trackerPluginOrNull } from "./plugins/registry.ts";
 import { type Result, err, ok } from "./result.ts";
 import { current as workflowCurrent } from "./workflow.ts";
@@ -129,11 +132,31 @@ export function codexRuntimeSettings(
 }
 
 function validateSemantics(settings: Settings): Result<undefined, unknown> {
+  const trackerValidation = validateTrackerSemantics(settings);
+  if (!trackerValidation.ok) {
+    return err(trackerValidation.error);
+  }
+  return validateAgentBackendSemantics(settings);
+}
+
+function validateTrackerSemantics(settings: Settings): Result<undefined, unknown> {
   const plugin = trackerPlugin(settings.tracker.kind);
   if (!plugin.ok) {
     return err(plugin.error);
   }
   const schema = plugin.value.configSchema;
+  if (schema === undefined) {
+    return ok(undefined);
+  }
+  return schema.validate(settings);
+}
+
+function validateAgentBackendSemantics(settings: Settings): Result<undefined, unknown> {
+  const backend = agentBackend(settings.agent.backend);
+  if (!backend.ok) {
+    return err(backend.error);
+  }
+  const schema = backend.value.configSchema;
   if (schema === undefined) {
     return ok(undefined);
   }

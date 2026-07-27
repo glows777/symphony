@@ -917,6 +917,11 @@ This section defines Symphony's language-neutral responsibilities when integrati
 app-server. The Codex app-server protocol for the targeted Codex version is the source of truth for
 protocol schemas, message payloads, transport framing, and method names.
 
+> Implementation note: the reference implementation packages this integration as a pluggable
+> `AgentBackendPlugin` (Codex is one backend); the packaging contract lives in
+> [`docs/AGENT_PLUGIN_CONTRACT.md`](docs/AGENT_PLUGIN_CONTRACT.md). This section remains the
+> normative behavior for any backend.
+
 Protocol source of truth:
 
 - Implementations MUST send messages that are valid for the targeted Codex app-server version.

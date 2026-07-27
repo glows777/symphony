@@ -9,6 +9,7 @@
 import os from "node:os";
 import path from "node:path";
 import { canonicalize } from "../path-safety.ts";
+import { agentBackendOrNull } from "../plugins/agents/registry.ts";
 import { envReferenceName } from "../plugins/config-helpers.ts";
 import { trackerPluginOrNull } from "../plugins/registry.ts";
 import { type Result, err, ok } from "../result.ts";
@@ -34,10 +35,18 @@ export type PollingSettings = { intervalMs: number };
 export type WorkspaceSettings = { root: string };
 export type WorkerSettings = { sshHosts: string[]; maxConcurrentAgentsPerHost: number | null };
 export type AgentSettings = {
+  // Selects the agent backend plugin ("codex" by default; zero migration for
+  // existing WORKFLOW.md files). Resolved once per run and pinned by the runner.
+  backend: string;
   maxConcurrentAgents: number;
   maxTurns: number;
   maxRetryBackoffMs: number;
   maxConcurrentAgentsByState: JsonMap;
+  // Raw contents of the backend's same-named top-level section, cast/finalized
+  // by the active backend's configSchema. The codex backend omits a schema, so
+  // its `codex` section stays typed in core (settings.codex) and this passes
+  // through untouched.
+  backendConfig: JsonMap;
 };
 export type CodexSettings = {
   command: string;
@@ -181,7 +190,7 @@ function changeset(attrs: JsonMap): { settings: Settings; errors: FieldError[] }
   const polling = castPolling(attrs.polling, "polling", errors);
   const workspace = castWorkspace(attrs.workspace, "workspace", errors);
   const worker = castWorker(attrs.worker, "worker", errors);
-  const agent = castAgent(attrs.agent, "agent", errors);
+  const agent = castAgent(attrs, "agent", errors);
   const codex = castCodex(attrs.codex, "codex", errors);
   const hooks = castHooks(attrs.hooks, "hooks", errors);
   const observability = castObservability(attrs.observability, "observability", errors);
@@ -392,8 +401,12 @@ function castWorker(raw: unknown, section: string, errors: FieldError[]): Worker
   };
 }
 
-function castAgent(raw: unknown, section: string, errors: FieldError[]): AgentSettings {
-  const r = castSection(raw, section, errors);
+// Takes the full attrs map (not just the `agent` section): the selected
+// backend's config lives in a top-level sibling section named after the
+// backend, so `backend: codex` claims the top-level `codex` section.
+function castAgent(attrs: JsonMap, section: string, errors: FieldError[]): AgentSettings {
+  const r = castSection(attrs.agent, section, errors);
+  const backend = field<string>(r, "backend", section, castString, "codex", errors).value;
   const maxConcurrent = field<number>(r, "max_concurrent_agents", section, castInteger, 10, errors);
   validateGreaterThan(maxConcurrent, section, "max_concurrent_agents", 0, errors);
   const maxTurns = field<number>(r, "max_turns", section, castInteger, 20, errors);
@@ -424,11 +437,28 @@ function castAgent(raw: unknown, section: string, errors: FieldError[]): AgentSe
   }
 
   return {
+    backend,
     maxConcurrentAgents: maxConcurrent.value,
     maxTurns: maxTurns.value,
     maxRetryBackoffMs: maxBackoff.value,
     maxConcurrentAgentsByState: byState,
+    backendConfig: castAgentBackendSection(attrs, backend, errors),
   };
+}
+
+// Delegates the selected backend's private top-level section to its
+// configSchema. The codex backend omits a schema, so its `codex` section passes
+// through untouched (parse succeeds; validate() reports an unsupported backend).
+// Mirrors castTrackerPluginSection.
+function castAgentBackendSection(attrs: JsonMap, backend: string, errors: FieldError[]): JsonMap {
+  const rawSection = isMap(attrs[backend]) ? attrs[backend] : {};
+  const schema = agentBackendOrNull(backend)?.configSchema;
+  if (schema === undefined) {
+    return rawSection;
+  }
+  const result = schema.cast(rawSection, backend);
+  errors.push(...result.errors);
+  return result.value;
 }
 
 function castCodex(raw: unknown, section: string, errors: FieldError[]): CodexSettings {
@@ -526,6 +556,10 @@ function finalizeSettings(settings: Settings): Settings {
       ...settings.tracker,
       plugin: finalizeTrackerPluginSection(settings.tracker),
     },
+    agent: {
+      ...settings.agent,
+      backendConfig: finalizeAgentBackendSection(settings.agent),
+    },
     workspace: {
       ...settings.workspace,
       root: resolvePathValue(settings.workspace.root, DEFAULT_WORKSPACE_ROOT),
@@ -546,6 +580,16 @@ function finalizeTrackerPluginSection(tracker: TrackerSettings): JsonMap {
     return tracker.plugin;
   }
   return schema.finalize(tracker.plugin);
+}
+
+// Backend finalization pass. The codex backend omits a schema, so its section
+// passes through untouched.
+function finalizeAgentBackendSection(agent: AgentSettings): JsonMap {
+  const schema = agentBackendOrNull(agent.backend)?.configSchema;
+  if (schema === undefined) {
+    return agent.backendConfig;
+  }
+  return schema.finalize(agent.backendConfig);
 }
 
 function resolvePathValue(value: string, fallback: string): string {

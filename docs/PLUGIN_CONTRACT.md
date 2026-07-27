@@ -147,7 +147,7 @@ from "cannot do".
 |---|---|
 | `comments` | `createComment(issueId, body)`. Write-backs are normally the agent's job (SPEC §11.5), so the core does not call this today; it exists for plugins that can support it and for tests. |
 | `stateUpdates` | `updateIssueState(issueId, stateName)`, where `stateName` is from the plugin's vocabulary (§3.1). Same caveat as `comments`. |
-| `agentTools` | `listAgentTools()` returns tool specs (`name`, `description`, JSON-schema `inputSchema`); `executeAgentTool(tool, args, opts)` returns `{ success, payload }`. The Codex dispatcher (`codex/dynamic-tool.ts`) advertises these specs on `thread/start` and routes `item/tool/call` requests; protocol encoding (JSON stringification, `contentItems`, the unsupported-tool payload) stays in the dispatcher. Plugins without this capability advertise an **empty** tool list. |
+| `agentTools` | `listAgentTools()` returns tool specs (`name`, `description`, JSON-schema `inputSchema`); `executeAgentTool(tool, args, opts)` returns `{ success, payload }`. The neutral `trackerToolProvider()` (`plugins/agents/tool-provider.ts`) adapts this capability into the agent backend contract's `ToolProvider` (see [`AGENT_PLUGIN_CONTRACT.md`](./AGENT_PLUGIN_CONTRACT.md) §6); each backend owns the wire encoding (codex: `contentItems` + `item/tool/call`, in `codex/dynamic-tool.ts`; the unsupported-tool payload is shared). Plugins without this capability advertise an **empty** tool list. |
 | `ui` | `projectUrl(settings)` for the dashboard "Project:" line (`null` renders "n/a"); `defaultPromptTemplate` used when WORKFLOW.md has no prompt body; `workItemNoun` for operator/agent copy (fallback: "work item"). |
 
 ## 6. Error model
@@ -344,6 +344,13 @@ Using a hypothetical Slack plugin as the running example:
 
 ## 11. Relationship to other documents
 
+- **AGENT_PLUGIN_CONTRACT.md** — the sibling contract for **agent backend
+  plugins** (the coding-agent adapters: Codex app-server, a future Claude Code
+  CLI). It follows the same "required core + optional capabilities" design and
+  the same registry/config/error packaging. The two contracts meet at the
+  `agentTools` capability: a tracker plugin exposes semantic tools, and the
+  agent backend advertises them to its agent via the neutral `ToolProvider`
+  (§5 above, and AGENT_PLUGIN_CONTRACT.md §6).
 - **SPEC.md** — unchanged by the plugin architecture. §11's REQUIRED reads,
   normalization rules, error-handling behavior, and the write boundary
   (§11.5) all hold; this document layers the packaging (capabilities,
