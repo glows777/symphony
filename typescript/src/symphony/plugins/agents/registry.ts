@@ -1,7 +1,7 @@
 // Agent backend plugin registry. Post-cutover TS-native design (see
 // MIGRATION.md -> Post-cutover divergence).
 //
-// Line-for-line the tracker registry (plugins/registry.ts): built-in backends
+// Line-for-line the tracker registry (plugins/trackers/registry.ts): built-in backends
 // register statically from `plugins/agents/index.ts` (no dynamic loading), and
 // tests shadow a kind via the `agent_backend_overrides` app-env key, mirroring
 // the `tracker_plugin_overrides` injection style. Unlike the tracker registry

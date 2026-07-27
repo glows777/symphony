@@ -5,7 +5,7 @@ import path from "node:path";
 // Side-effect imports mirror production entry points: schema casting delegates
 // the tracker plugin section and the active agent backend's section to their
 // registered plugins.
-import "../../../src/symphony/plugins/index.ts";
+import "../../../src/symphony/plugins/trackers/index.ts";
 import "../../../src/symphony/plugins/agents/index.ts";
 import {
   type Settings,

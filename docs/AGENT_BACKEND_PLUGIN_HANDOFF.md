@@ -62,7 +62,7 @@ Claude Code、……)可以通过实现插件接入。本次交付 **P1–P4 四
 method。所以「规范化事件层」的成本主要是**声明与冻结**,不是重写。
 
 **工具桥已分层正确**:tracker 插件的 `agentTools` capability 输出语义结果
-`AgentToolOutcome {success, payload}`(plugins/types.ts:103),codex wire 编码
+`AgentToolOutcome {success, payload}`(plugins/trackers/types.ts:103),codex wire 编码
 (`contentItems:[{type:"inputText"}]`)集中在 `codex/dynamic-tool.ts`。缺的
 只是把「解析激活 tracker 插件 + 分发」抽成中立模块(§6)。
 
@@ -97,7 +97,7 @@ method。所以「规范化事件层」的成本主要是**声明与冻结**,不
 
 ```ts
 // Agent backend plugin contract. Mirrors the tracker plugin design
-// (plugins/types.ts): the session API is required, everything else is a
+// (plugins/trackers/types.ts): the session API is required, everything else is a
 // capability. See docs/AGENT_PLUGIN_CONTRACT.md.
 
 import type { JsonMap } from "../../config/schema.ts";
@@ -250,7 +250,7 @@ export type AgentBackendPlugin = {
 - 不认识的后端流量 MUST 以 `notification` / `other_message` + `payload`
   透传,不得丢弃(dashboard 依赖)。
 
-**注册表**(`plugins/agents/registry.ts`,逐行镜像 `plugins/registry.ts`):
+**注册表**(`plugins/agents/registry.ts`,逐行镜像 `plugins/trackers/registry.ts`):
 `registerAgentBackend` / `agentBackend(kind)`(err tags:
 `missing_agent_backend` / `unsupported_agent_backend`)/
 `agentBackendOrNull`(读 app-env `agent_backend_overrides` 作测试缝,同

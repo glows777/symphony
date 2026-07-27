@@ -17,7 +17,7 @@
 // handler (an unknown tool name — one not advertised by listSpecs — is the
 // "unsupported" case; a known tool returning success:false is "failed").
 
-import type { AgentToolSpec } from "../../types.ts";
+import type { AgentToolSpec } from "../../shared/types.ts";
 import type { OnAgentMessage, ToolProvider } from "../types.ts";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";

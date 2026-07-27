@@ -1,6 +1,6 @@
 // Single registration point for built-in agent backend plugins. Importing this
 // module (for side effects) guarantees the registry is populated; `config.ts`
-// and `agent-runner.ts` both do so, mirroring the tracker `plugins/index.ts`.
+// and `agent-runner.ts` both do so, mirroring the tracker `plugins/trackers/index.ts`.
 // Out-of-tree backends would call `registerAgentBackend` from their own entry
 // point.
 

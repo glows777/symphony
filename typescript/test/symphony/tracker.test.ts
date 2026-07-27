@@ -1,17 +1,20 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import { putEnv } from "../../src/symphony/app-env.ts";
-import * as Adapter from "../../src/symphony/plugins/linear/adapter.ts";
-import type { GraphqlOpts, LinearClientModule } from "../../src/symphony/plugins/linear/client.ts";
-import { LinearPlugin } from "../../src/symphony/plugins/linear/plugin.ts";
-import type { MemoryEvent } from "../../src/symphony/plugins/memory/adapter.ts";
-import * as Memory from "../../src/symphony/plugins/memory/adapter.ts";
-import { MemoryPlugin } from "../../src/symphony/plugins/memory/plugin.ts";
-import type { TrackerError } from "../../src/symphony/plugins/types.ts";
-import type { Issue } from "../../src/symphony/plugins/work-item.ts";
-import { newIssue } from "../../src/symphony/plugins/work-item.ts";
+import * as Adapter from "../../src/symphony/plugins/trackers/linear/adapter.ts";
+import type {
+  GraphqlOpts,
+  LinearClientModule,
+} from "../../src/symphony/plugins/trackers/linear/client.ts";
+import { LinearPlugin } from "../../src/symphony/plugins/trackers/linear/plugin.ts";
+import type { MemoryEvent } from "../../src/symphony/plugins/trackers/memory/adapter.ts";
+import * as Memory from "../../src/symphony/plugins/trackers/memory/adapter.ts";
+import { MemoryPlugin } from "../../src/symphony/plugins/trackers/memory/plugin.ts";
+import type { TrackerError } from "../../src/symphony/plugins/trackers/types.ts";
 import { type Result, err, ok } from "../../src/symphony/result.ts";
 import * as Tracker from "../../src/symphony/tracker/tracker.ts";
+import type { Issue } from "../../src/symphony/work-item.ts";
+import { newIssue } from "../../src/symphony/work-item.ts";
 import { workflowFilePath } from "../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";
 

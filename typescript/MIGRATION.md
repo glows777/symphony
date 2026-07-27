@@ -265,20 +265,20 @@ The hardcoded memory/linear tracker switch was generalized into a plugin
 registry so additional work-management tools (Slack, Lark, ...) can be added
 without touching the core. TS-native design, no Elixir counterpart.
 
-- **Contract & registry:** `src/symphony/plugins/types.ts` defines
+- **Contract & registry:** `src/symphony/plugins/trackers/types.ts` defines
   `TrackerPlugin` — three required read operations (the SPEC §11.1 REQUIRED
   set) plus optional capabilities (`comments`, `stateUpdates`, `agentTools`,
-  `ui`, `configSchema`). `plugins/registry.ts` resolves `tracker.kind` to a
-  registered plugin; built-ins register in `plugins/index.ts`. The tracker
+  `ui`, `configSchema`). `plugins/trackers/registry.ts` resolves `tracker.kind` to a
+  registered plugin; built-ins register in `plugins/trackers/index.ts`. The tracker
   facade (`tracker/tracker.ts`) returns a structured
   `tracker_capability_unsupported` error when the active plugin omits a write
   capability.
-- **Moved modules:** `linear/issue.ts` → `plugins/work-item.ts` (type renamed
+- **Moved modules:** `linear/issue.ts` → `work-item.ts` (type renamed
   `Issue` → `WorkItem`, with `Issue`/`newIssue`/`isIssue` kept as permanent
   aliases; wire names — the Liquid `issue.*` scope, JSON-API fields, snapshot
   output — are a user contract and did not change); `linear/client.ts` and
-  `linear/adapter.ts` → `plugins/linear/`; `tracker/memory.ts` →
-  `plugins/memory/adapter.ts`.
+  `linear/adapter.ts` → `plugins/trackers/linear/`; `tracker/memory.ts` →
+  `plugins/trackers/memory/adapter.ts`.
 - **WorkItem.metadata:** new plugin-private extension slot (`JsonMap`,
   defaults to `{}`). Core code never reads it; prompt templates can via
   `issue.metadata.*`.
@@ -296,7 +296,7 @@ without touching the core. TS-native design, no Elixir counterpart.
   `plugin` section cast/finalized/validated by the active plugin's
   `configSchema`. WORKFLOW.md keys, defaults, and the `LINEAR_API_KEY` /
   `LINEAR_ASSIGNEE` env fallbacks are unchanged (owned by the Linear plugin);
-  `$VAR` resolution helpers live in `plugins/config-helpers.ts`. The memory
+  `$VAR` resolution helpers live in `plugins/shared/config-helpers.ts`. The memory
   tracker's `seed_issues` extension (already a registered TS-only addition) is
   now formally claimed by its plugin config schema. Divergence: provider
   fields are only cast when the configured kind resolves to a plugin, so e.g.
@@ -305,7 +305,7 @@ without touching the core. TS-native design, no Elixir counterpart.
   `unsupported_tracker_kind`.
 - **Agent dynamic tools:** `codex/dynamic-tool.ts` became a dispatcher over
   the active plugin's `agentTools`; the `linear_graphql` implementation moved
-  verbatim to `plugins/linear/graphql-tool.ts`. Divergence: plugins without
+  verbatim to `plugins/trackers/linear/graphql-tool.ts`. Divergence: plugins without
   agent tools (memory) advertise an empty `dynamicTools` list instead of
   always exposing `linear_graphql`; the same applies when settings are
   unavailable or unparseable (e.g. the harness replay path with no
@@ -323,7 +323,7 @@ without touching the core. TS-native design, no Elixir counterpart.
 
 ### Lark tracker plugin
 
-New built-in `tracker.kind: lark` (`src/symphony/plugins/lark/`), the first
+New built-in `tracker.kind: lark` (`src/symphony/plugins/trackers/lark/`), the first
 plugin added on top of the architecture above; TS-native, no Elixir
 counterpart, and no behavior change for the linear/memory kinds. Work items
 are records in one Bitable table (`app_token` + `table_id`), read via
@@ -340,7 +340,7 @@ gate disabled). Test seam: `lark_client_module` app-env key, mirroring
 
 ### Lark task-center tracker plugin
 
-New built-in `tracker.kind: lark-task` (`src/symphony/plugins/lark-task/`),
+New built-in `tracker.kind: lark-task` (`src/symphony/plugins/trackers/lark-task/`),
 parallel to the Bitable `lark` kind; TS-native, no Elixir counterpart, and no
 behavior change for the existing kinds. Work items are tasks in one Task v2
 tasklist (`tasklist_guid`) and state is modeled on the tasklist's sections
@@ -349,13 +349,43 @@ tasklist (`tasklist_guid`) and state is modeled on the tasklist's sections
 has no batch get), and a state update moves the task via `add_tasklist`. The
 resource-agnostic transport (shared tenant-token cache keyed by
 endpoint+app_id, authenticated request layer) and the `lark_api` agent tool
-were extracted to `src/symphony/plugins/lark-common/` and are shared with the
+were extracted to `src/symphony/plugins/trackers/lark-common/` and are shared with the
 `lark` plugin, whose external behavior is unchanged. Capabilities: all of
 them — `stateUpdates`, `comments` (native Task v2 comment API), `agentTools`
 (`lark_api`), and `ui`. `blockedBy` is not mapped in v1 (blocking gate
 disabled). Error tags use the `lark_task_*` prefix. Test seam:
 `lark_task_client_module` app-env key, mirroring `lark_client_module`. See
 `docs/PLUGIN_CONTRACT.md` §9.4.
+
+### Symmetric plugin tree (`shared` / `trackers` / `agents`)
+
+The tracker contract owned the `plugins/` root (`plugins/types.ts` was
+`TrackerPlugin`, `plugins/registry.ts` was the tracker registry) while agent
+backends sat one level down in `plugins/agents/`, which read as though an agent
+backend were a kind of tracker. The two are independent extension points, so
+the tree is now symmetric:
+
+- `plugins/shared/` — machinery both contracts use: `PluginConfigSchema` /
+  `PluginConfigError` / `PluginFieldError`, the agent-facing tool vocabulary
+  (`AgentToolSpec` / `AgentToolOutcome` / `AgentToolCapability`), and
+  `config-helpers.ts`. `plugins/trackers/types.ts` re-exports the names tracker
+  plugins already imported, so no tracker plugin changed its import site.
+- `plugins/trackers/` — `TrackerPlugin`, the tracker registry/index, and
+  `linear/`, `lark/`, `lark-common/`, `lark-task/`, `memory/`.
+- `plugins/agents/` — unchanged in content, now a sibling rather than a child.
+- `work-item.ts` moved to the core (`symphony/work-item.ts`): `Issue` is a
+  domain type used by the orchestrator, prompt builder, and workspace, not
+  plugin machinery.
+
+`PluginConfigSchema.validate` previously returned `Result<undefined,
+TrackerError>`, so the claude_code backend had to import a *tracker* error type
+to report a bad `claude_code.permission_mode`. It now returns the narrower
+`PluginConfigError` (`tag` / `message` / optional `detail`, without the
+tracker-specific `code` taxonomy). `TrackerError` is structurally assignable to
+it, so tracker plugins keep returning their richer error unchanged.
+
+Pure restructuring: no behavior change, no wire/state name touched, and the
+same 369 tests pass before and after.
 
 ### Agent backend plugin architecture
 

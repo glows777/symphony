@@ -24,9 +24,9 @@ import os from "node:os";
 import path from "node:path";
 import * as AgentRunner from "../src/symphony/agent-runner.ts";
 import { logger } from "../src/symphony/logger.ts";
-import { graphql as linearGraphql } from "../src/symphony/plugins/linear/client.ts";
-import { type Issue, newIssue } from "../src/symphony/plugins/work-item.ts";
+import { graphql as linearGraphql } from "../src/symphony/plugins/trackers/linear/client.ts";
 import * as SSH from "../src/symphony/ssh.ts";
+import { type Issue, newIssue } from "../src/symphony/work-item.ts";
 import { setWorkflowFilePath, workflowFilePath } from "../src/symphony/workflow.ts";
 import { writeWorkflowFile } from "./support/test-support.ts";
 

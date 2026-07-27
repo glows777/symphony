@@ -9,7 +9,7 @@ import {
   validate,
 } from "../../src/symphony/config.ts";
 import { canonicalize } from "../../src/symphony/path-safety.ts";
-import { linearSettings } from "../../src/symphony/plugins/linear/settings.ts";
+import { linearSettings } from "../../src/symphony/plugins/trackers/linear/settings.ts";
 import { workflowFilePath } from "../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";
 

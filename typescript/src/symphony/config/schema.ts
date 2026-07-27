@@ -10,8 +10,8 @@ import os from "node:os";
 import path from "node:path";
 import { canonicalize } from "../path-safety.ts";
 import { agentBackendOrNull } from "../plugins/agents/registry.ts";
-import { envReferenceName } from "../plugins/config-helpers.ts";
-import { trackerPluginOrNull } from "../plugins/registry.ts";
+import { envReferenceName } from "../plugins/shared/config-helpers.ts";
+import { trackerPluginOrNull } from "../plugins/trackers/registry.ts";
 import { type Result, err, ok } from "../result.ts";
 
 const DEFAULT_WORKSPACE_ROOT = path.join(os.tmpdir(), "symphony_workspaces");

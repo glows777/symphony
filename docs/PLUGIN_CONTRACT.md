@@ -23,7 +23,7 @@ are to be interpreted as described in RFC 2119.
 ## 1. Overview
 
 A tracker plugin is a value satisfying the `TrackerPlugin` type
-(`plugins/types.ts`):
+(`plugins/trackers/types.ts`):
 
 ```ts
 type TrackerPlugin = {
@@ -52,10 +52,30 @@ them, and the core reports a structured error instead of guessing (see §5).
 
 ## 2. Resolution and registration
 
+Symphony has two independent extension points, and the `plugins/` tree is laid
+out to keep them symmetric — neither is a special case of the other:
+
+```
+plugins/
+  shared/     machinery both contracts use: the config-schema hooks
+              (PluginConfigSchema/PluginConfigError) and the agent-facing tool
+              vocabulary (AgentToolSpec/AgentToolOutcome), plus config-helpers
+  trackers/   THIS contract: TrackerPlugin, its registry, and linear/lark/
+              lark-task/memory
+  agents/     the agent backend contract (docs/AGENT_PLUGIN_CONTRACT.md):
+              AgentBackendPlugin, its registry, and codex/claude-code
+```
+
+The one place the two genuinely meet is the tool vocabulary in `shared/`: a
+tracker plugin's `agentTools` capability produces the specs, and an agent
+backend consumes and executes them through `plugins/agents/tool-provider.ts`.
+`Issue` itself is not plugin machinery — it lives at `work-item.ts` in the
+core, since the orchestrator, prompt builder, and workspace all use it.
+
 - The active plugin is resolved from `tracker.kind` in `WORKFLOW.md` through
-  the registry (`plugins/registry.ts`), on **every** facade call — Symphony
+  the registry (`plugins/trackers/registry.ts`), on **every** facade call — Symphony
   re-reads config per operation, so kind changes take effect without restart.
-- Built-in plugins register statically in `plugins/index.ts`. Registration is
+- Built-in plugins register statically in `plugins/trackers/index.ts`. Registration is
   a side effect of importing that module; `config.ts` and
   `tracker/tracker.ts` both import it, so any code path that parses settings
   or touches the tracker facade sees a populated registry. Out-of-tree
@@ -71,7 +91,7 @@ them, and the core reports a structured error instead of guessing (see §5).
 ## 3. Work item model
 
 Plugins normalize provider payloads into `WorkItem`
-(`plugins/work-item.ts`) — the SPEC §4.1.1 issue model plus one extension:
+(`work-item.ts`) — the SPEC §4.1.1 issue model plus one extension:
 
 | Field | Requirement |
 |---|---|
@@ -202,13 +222,13 @@ type PluginConfigSchema = {
   `"tracker.<key> <message>"` convention so they merge into the standard
   `invalid_workflow_config` surface.
 - `finalize` resolves `$VAR` references and canonical environment fallbacks.
-  Plugins MUST use the shared helpers in `plugins/config-helpers.ts`
+  Plugins MUST use the shared helpers in `plugins/shared/config-helpers.ts`
   (`resolveSecretSetting`, `envOrNull`, ...) so `$VAR` semantics are
   identical across plugins.
 - `validate` is the semantic gate run by `config.validate()` before dispatch
   (e.g. the Linear plugin requires `api_key` and `project_slug` here).
 - Plugins consume their own section through a typed narrowing function (see
-  `plugins/linear/settings.ts`) rather than reaching into raw maps at call
+  `plugins/trackers/linear/settings.ts`) rather than reaching into raw maps at call
   sites. The core `Settings` type MUST NOT gain provider-specific fields.
 
 ## 8. Test seams
@@ -231,7 +251,7 @@ same pattern (an app-env key holding an injectable module).
 ### 9.1 `linear`
 
 Full-capability reference implementation
-(`plugins/linear/`): GraphQL reads with pagination, comment/state mutations,
+(`plugins/trackers/linear/`): GraphQL reads with pagination, comment/state mutations,
 the `linear_graphql` agent tool (semantics per SPEC §10.5), and UI
 contributions (project URL, the original "Linear issue" prompt template).
 Config keys claimed by its schema: `endpoint` (default
@@ -242,7 +262,7 @@ Config keys claimed by its schema: `endpoint` (default
 ### 9.2 `memory`
 
 In-memory tracker for tests and self-contained demos
-(`plugins/memory/`). Items come from the `memory_tracker_issues` app-env
+(`plugins/trackers/memory/`). Items come from the `memory_tracker_issues` app-env
 injection or the `tracker.seed_issues` WORKFLOW.md key (claimed by its config
 schema); writes replay to the `memory_tracker_recipient` callback. It
 implements every capability except `agentTools` and `ui`, making it the
@@ -251,7 +271,7 @@ advertise no dynamic tools and render "n/a" for the project line.
 
 ### 9.3 `lark`
 
-Lark (Feishu) Bitable-backed tracker (`plugins/lark/`): one Bitable table is
+Lark (Feishu) Bitable-backed tracker (`plugins/trackers/lark/`): one Bitable table is
 one board, and a work item is a record in that table. Reads map onto
 `records/search` (per-state `is` conditions under an `or` conjunction,
 `page_token` pagination) and `records/batch_get` (100-id batches); the state
@@ -280,7 +300,7 @@ the field-name mappings `field_state`/`field_title`/`field_description`/
 
 ### 9.4 `lark-task`
 
-Lark (Feishu) task-center (Task v2) tracker (`plugins/lark-task/`), parallel
+Lark (Feishu) task-center (Task v2) tracker (`plugins/trackers/lark-task/`), parallel
 to — not replacing — the Bitable-backed `lark` plugin: one tasklist is one
 board, a work item is a task in that tasklist, and the state vocabulary
 (§3.1) is the tasklist's **section** names (one section = one board column).
@@ -297,7 +317,7 @@ no completed filter). Section listings return summaries without
 description/url/timestamps — those degrade to null and are filled in by the
 detail-backed by-ids read the orchestrator runs right before dispatch. Auth,
 the request layer, and the `lark_api` agent tool are shared with the `lark`
-plugin (`plugins/lark-common/`); error tags use the `lark_task_*` prefix.
+plugin (`plugins/trackers/lark-common/`); error tags use the `lark_task_*` prefix.
 
 Capabilities: every optional one — `stateUpdates` (section move), `comments`
 (the task center has a native comment API, closing the Bitable plugin's gap),
@@ -334,7 +354,7 @@ Using a hypothetical Slack plugin as the running example:
    `projectUrl` pointing at the channel.
 5. **Write the configSchema** claiming your keys (e.g. `bot_token` with a
    canonical env fallback, `channel`), using the shared config helpers.
-6. **Register** in `plugins/index.ts` (in-tree) or via
+6. **Register** in `plugins/trackers/index.ts` (in-tree) or via
    `registerTrackerPlugin` (out-of-tree), and add an app-env seam for client
    injection.
 7. **Test against the contract:** registry resolution, read semantics,

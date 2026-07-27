@@ -10,8 +10,8 @@ import type {
   OnAgentMessage,
   ToolProvider,
 } from "../../src/symphony/plugins/agents/types.ts";
-import { type Issue, newIssue } from "../../src/symphony/plugins/work-item.ts";
 import { ok } from "../../src/symphony/result.ts";
+import { type Issue, newIssue } from "../../src/symphony/work-item.ts";
 import { workflowFilePath } from "../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";
 

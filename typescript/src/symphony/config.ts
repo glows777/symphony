@@ -5,7 +5,7 @@
 // Side-effect imports: built-in tracker and agent-backend plugins must be
 // registered before settings are parsed/validated (schema casting delegates the
 // tracker plugin section and the active backend's section).
-import "./plugins/index.ts";
+import "./plugins/trackers/index.ts";
 import "./plugins/agents/index.ts";
 
 import { getEnv } from "./app-env.ts";
@@ -17,7 +17,7 @@ import {
   resolveRuntimeTurnSandboxPolicy,
 } from "./config/schema.ts";
 import { agentBackend } from "./plugins/agents/registry.ts";
-import { trackerPlugin, trackerPluginOrNull } from "./plugins/registry.ts";
+import { trackerPlugin, trackerPluginOrNull } from "./plugins/trackers/registry.ts";
 import { type Result, err, ok } from "./result.ts";
 import { current as workflowCurrent } from "./workflow.ts";
 

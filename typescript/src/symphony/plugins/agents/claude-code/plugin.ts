@@ -44,8 +44,8 @@
 
 import type { JsonMap } from "../../../config/schema.ts";
 import { type Result, err, ok } from "../../../result.ts";
-import { castPluginString, resolveEnvValue } from "../../config-helpers.ts";
-import { type PluginFieldError, type TrackerError, trackerError } from "../../types.ts";
+import { castPluginString, resolveEnvValue } from "../../shared/config-helpers.ts";
+import type { PluginConfigError, PluginFieldError } from "../../shared/types.ts";
 import type { AgentBackendPlugin } from "../types.ts";
 import { runTurn, startSession, stopSession } from "./client.ts";
 import { humanizeClaudeMessage } from "./humanize.ts";
@@ -104,16 +104,13 @@ export const ClaudeCodePlugin: AgentBackendPlugin = {
       };
     },
 
-    validate(settings): Result<undefined, TrackerError> {
+    validate(settings): Result<undefined, PluginConfigError> {
       const cc = claudeCodeSettings(settings);
       if (cc.permissionMode !== "bypass" && cc.permissionMode !== "default") {
-        return err(
-          trackerError(
-            "invalid_claude_code_permission_mode",
-            "invalid_payload",
-            `claude_code.permission_mode must be "bypass" or "default" (got ${JSON.stringify(cc.permissionMode)})`,
-          ),
-        );
+        return err({
+          tag: "invalid_claude_code_permission_mode",
+          message: `claude_code.permission_mode must be "bypass" or "default" (got ${JSON.stringify(cc.permissionMode)})`,
+        });
       }
       return ok(undefined);
     },

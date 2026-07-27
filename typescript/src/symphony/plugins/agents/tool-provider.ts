@@ -9,9 +9,9 @@
 // advertises an empty spec list and every call gets the unsupported payload.
 
 import { settings } from "../../config.ts";
-import { trackerPluginOrNull } from "../registry.ts";
-import type { AgentToolCapability, AgentToolExecuteOpts, AgentToolSpec } from "../types.ts";
-import type { AgentToolOutcome } from "../types.ts";
+import type { AgentToolCapability, AgentToolExecuteOpts, AgentToolSpec } from "../shared/types.ts";
+import type { AgentToolOutcome } from "../shared/types.ts";
+import { trackerPluginOrNull } from "../trackers/registry.ts";
 import type { ToolProvider } from "./types.ts";
 
 export function trackerToolProvider(opts: AgentToolExecuteOpts = {}): ToolProvider {
