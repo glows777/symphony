@@ -128,8 +128,9 @@ export type AgentBackendCapabilities = {
   // Same-session continuation turns. false/absent => the runner starts a fresh
   // session per turn and rebuilds the full prompt each time.
   multiTurnSessions?: boolean;
-  // Remote execution over worker.ssh_hosts. false/absent => startSession with a
-  // non-null workerHost fails with { tag: "remote_workers_unsupported" }.
+  // Remote execution over worker.ssh_hosts. false/absent => the runner fails a
+  // remote run with { tag: "remote_workers_unsupported" } before creating a
+  // workspace or starting a session.
   remoteWorkers?: boolean;
   // Backend reports rate limits in the envelope.
   rateLimitTelemetry?: boolean;

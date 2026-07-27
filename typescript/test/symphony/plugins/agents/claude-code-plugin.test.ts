@@ -141,7 +141,18 @@ describe("Plugins.Agents.ClaudeCodePlugin", () => {
   test("fails the turn when the result is an error subtype", async () => {
     installClaude({
       sessionId: "sess-B",
-      turns: [{ actions: [{ t: "init" }, { t: "result", subtype: "error_during_execution" }] }],
+      turns: [
+        {
+          actions: [
+            { t: "init" },
+            {
+              t: "result",
+              subtype: "error_during_execution",
+              usage: { input_tokens: 9, output_tokens: 4 },
+            },
+          ],
+        },
+      ],
     });
     const { started, messages } = await start(workspaceFor("CC-2"));
     expect(started.ok).toBe(true);
@@ -155,7 +166,10 @@ describe("Plugins.Agents.ClaudeCodePlugin", () => {
     if (!turn.ok) {
       expect((turn.error as { tag: string }).tag).toBe("turn_failed");
     }
-    expect(messages.some((m) => m.event === "turn_failed")).toBe(true);
+    const failed = messages.find((m) => m.event === "turn_failed");
+    expect(failed).toBeDefined();
+    // Billable usage from a failed result still reaches the terminal event.
+    expect(failed?.usage).toEqual({ input_tokens: 9, output_tokens: 4, total_tokens: 13 });
   });
 
   test("times out when no result arrives", async () => {
@@ -402,7 +416,10 @@ describe("Plugins.Agents.ClaudeCodePlugin", () => {
     if (!turn.ok) {
       expect((turn.error as { tag: string }).tag).toBe("approval_required");
     }
-    expect(messages.some((m) => m.event === "approval_required")).toBe(true);
+    const blocked = messages.find((m) => m.event === "approval_required");
+    expect(blocked).toBeDefined();
+    // The denied turn's billable usage still reaches the terminal event.
+    expect(blocked?.usage).toEqual({ input_tokens: 1, output_tokens: 1, total_tokens: 2 });
   });
 
   test("rejects a workspace equal to the configured root before spawning", async () => {

@@ -13,6 +13,7 @@
 import "./plugins/agents/index.ts";
 
 import { settingsBang } from "./config.ts";
+import type { JsonMap } from "./config/schema.ts";
 import { logger } from "./logger.ts";
 import { agentBackend } from "./plugins/agents/registry.ts";
 import { trackerToolProvider } from "./plugins/agents/tool-provider.ts";
@@ -185,9 +186,52 @@ async function runAgentTurns(
     workerHost,
     toolProvider,
     issueStateFetcher,
+    freshSessionUsageRebaser(),
     1,
     maxTurns,
   );
+}
+
+// The contract defines envelope `usage` as cumulative within one session, but
+// the fresh-session fallback opens a new session per turn, so a conforming
+// backend's counters restart at zero each turn. The orchestrator's
+// last-reported token baselines span the whole run and swallow totals below
+// the previous session's peak, so rebase each session's usage onto the peaks
+// of the finished sessions: the orchestrator then sees monotonic,
+// run-cumulative totals.
+type FreshSessionUsageRebaser = {
+  rebase(message: AgentMessage): AgentMessage;
+  // Folds the finished session's peaks into the offsets; call between sessions.
+  rollover(): void;
+};
+
+function freshSessionUsageRebaser(): FreshSessionUsageRebaser {
+  const offsets = new Map<string, number>();
+  const peaks = new Map<string, number>();
+  return {
+    rebase(message: AgentMessage): AgentMessage {
+      const usage = message.usage;
+      if (usage === undefined) {
+        return message;
+      }
+      const adjusted: JsonMap = {};
+      for (const [key, value] of Object.entries(usage)) {
+        if (typeof value === "number" && Number.isFinite(value)) {
+          peaks.set(key, Math.max(peaks.get(key) ?? 0, value));
+          adjusted[key] = (offsets.get(key) ?? 0) + value;
+        } else {
+          adjusted[key] = value;
+        }
+      }
+      return { ...message, usage: adjusted };
+    },
+    rollover(): void {
+      for (const [key, peak] of peaks) {
+        offsets.set(key, (offsets.get(key) ?? 0) + peak);
+      }
+      peaks.clear();
+    },
+  };
 }
 
 // Multi-turn backend (codex): one session spans the whole run, continuation
@@ -288,6 +332,7 @@ async function runFreshSessionTurns(
   workerHost: string | null,
   toolProvider: ToolProvider,
   issueStateFetcher: IssueStateFetcher,
+  usageRebaser: FreshSessionUsageRebaser,
   turnNumber: number,
   maxTurns: number,
 ): Promise<Result<undefined, unknown>> {
@@ -297,7 +342,7 @@ async function runFreshSessionTurns(
   const prompt = buildFullPrompt(issue, opts);
   const session = await backend.sessions.startSession(workspace, {
     workerHost,
-    onMessage: agentMessageHandler(recipient, issue),
+    onMessage: (message) => sendAgentUpdate(recipient, issue, usageRebaser.rebase(message)),
     toolProvider,
   });
   if (!session.ok) {
@@ -329,6 +374,7 @@ async function runFreshSessionTurns(
     logger.info(
       `Continuing agent run for ${issueContext(outcome.issue)} after normal turn completion turn=${turnNumber}/${maxTurns}`,
     );
+    usageRebaser.rollover();
     return runFreshSessionTurns(
       backend,
       workspace,
@@ -338,6 +384,7 @@ async function runFreshSessionTurns(
       workerHost,
       toolProvider,
       issueStateFetcher,
+      usageRebaser,
       turnNumber + 1,
       maxTurns,
     );

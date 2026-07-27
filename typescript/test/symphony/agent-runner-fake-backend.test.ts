@@ -33,6 +33,10 @@ type FakeHandle = {
   onMessage: OnAgentMessage | null;
   toolProvider: ToolProvider | null;
   seq: number;
+  // Contract: usage is cumulative within ONE session — a fresh session's
+  // counters restart at zero (this is what the runner's usage rebasing
+  // compensates for; a global accumulator here would hide that seam).
+  sessionTokens: number;
 };
 
 function fakeBackend(caps: { multiTurn?: boolean; remote?: boolean }): {
@@ -42,7 +46,6 @@ function fakeBackend(caps: { multiTurn?: boolean; remote?: boolean }): {
 } {
   const turns: TurnRecord[] = [];
   let sessions = 0;
-  let cumulativeTokens = 0;
 
   const plugin: AgentBackendPlugin = {
     id: "codex",
@@ -59,6 +62,7 @@ function fakeBackend(caps: { multiTurn?: boolean; remote?: boolean }): {
           onMessage: opts.onMessage ?? null,
           toolProvider: opts.toolProvider ?? null,
           seq: sessions,
+          sessionTokens: 0,
         };
         const session: AgentSession = {
           backendId: "codex",
@@ -79,7 +83,7 @@ function fakeBackend(caps: { multiTurn?: boolean; remote?: boolean }): {
           hasToolProvider: handle.toolProvider !== null,
         });
         // Contract: usage MUST be the cumulative absolute total for the session.
-        cumulativeTokens += 25;
+        handle.sessionTokens += 25;
         handle.onMessage?.({
           event: "session_started",
           timestamp: new Date(),
@@ -89,9 +93,9 @@ function fakeBackend(caps: { multiTurn?: boolean; remote?: boolean }): {
           event: "turn_completed",
           timestamp: new Date(),
           usage: {
-            input_tokens: cumulativeTokens,
+            input_tokens: handle.sessionTokens,
             output_tokens: 0,
-            total_tokens: cumulativeTokens,
+            total_tokens: handle.sessionTokens,
           },
         });
         return Promise.resolve(ok({ sessionId: `sess-${context.turnNumber}` }));
@@ -176,6 +180,24 @@ describe("AgentRunner with a synthetic backend", () => {
       .map((u) => (u.message.usage as { total_tokens?: unknown } | undefined)?.total_tokens);
     // Cumulative absolute totals, not repeated per-turn deltas (25/25/25).
     expect(totals).toEqual([25, 50, 75]);
+  });
+
+  test("rebases per-session usage to run-cumulative totals across fresh sessions", async () => {
+    const backend = fakeBackend({ multiTurn: false });
+    putEnv("agent_backend_overrides", { codex: backend.plugin });
+
+    const updates: WorkerUpdate[] = [];
+    await run(issue, (u) => updates.push(u), { maxTurns: 3, issueStateFetcher: staysActive });
+
+    const usages = codexUpdates(updates)
+      .filter((u) => u.message.event === "turn_completed")
+      .map((u) => u.message.usage as { input_tokens?: unknown; total_tokens?: unknown });
+    // Each fresh session reports its own session-cumulative 25; the runner
+    // rebases so the orchestrator's monotonic last-reported baselines (which
+    // swallow totals below the previous session's peak) still count every
+    // session's tokens.
+    expect(usages.map((u) => u.total_tokens)).toEqual([25, 50, 75]);
+    expect(usages.map((u) => u.input_tokens)).toEqual([25, 50, 75]);
   });
 
   test("a backend without remoteWorkers rejects a remote run", async () => {

@@ -201,8 +201,15 @@ function finishTurn(
   const subtype = typeof msg.subtype === "string" ? msg.subtype : "";
   const succeeded = subtype === "success" && msg.is_error !== true;
 
+  // Billable usage arrives on every result message — error and
+  // permission-denied results included — so accumulate before branching and
+  // attach the cumulative map to whichever terminal event fires: the
+  // orchestrator only reads the flat envelope `usage` for this backend (its
+  // codex payload sniffing does not recognize a claude result's shape).
+  const usage = accumulateUsage(handle, msg.usage);
+
   if (!succeeded) {
-    emit(handle, "turn_failed", { sessionId, payload: msg, raw: line });
+    emit(handle, "turn_failed", { sessionId, usage, payload: msg, raw: line });
     return err({ tag: "turn_failed", payload: msg });
   }
 
@@ -212,11 +219,10 @@ function finishTurn(
   // CLI version (2.1.218) has no --permission-prompt-tool, so result-detection
   // is the chosen path (see plugin.ts header).
   if (handle.config.permissionMode !== "bypass" && hasPermissionDenials(msg)) {
-    emit(handle, "approval_required", { sessionId, payload: msg, raw: line });
+    emit(handle, "approval_required", { sessionId, usage, payload: msg, raw: line });
     return err({ tag: "approval_required", payload: msg });
   }
 
-  const usage = accumulateUsage(handle, msg.usage);
   emit(handle, "turn_completed", { sessionId, usage, payload: msg, raw: line });
   return ok({ sessionId });
 }
