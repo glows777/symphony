@@ -77,13 +77,13 @@ polling:
 
 workspace:
   # 每个 issue 一个目录,名字是 sanitize 过的 issue identifier(如 ENG-123)。
-  # 本地部署约定:工作区放在当前 Symphony 仓库之外,避免嵌套 clone 干扰主仓库。
+  # 本地部署约定:工作区集中放在当前 Symphony 仓库的 runtime/ 下。
   # 必须可写,且这里的值要和 Codex 的 writableRoots 逐字一致。
   #
   # ⚠️ 这个值必须和下面 codex.turn_sandbox_policy.writableRoots 里的路径**逐字一致**。
   # 这里支持 "$VAR" 展开而那边不支持,所以两处都写字面值是唯一不会写岔的方案。
   # 写岔了的症状是 codex 在沙箱里报权限错,很难往配置上想。
-  root: /Users/glows777/symphony-workspaces/symphony
+  root: /Users/glows777/codes/xinze/symphony/runtime
 
 agent:
   # 这份配置跑 Codex(也是默认值)。被选中的后端读同名的顶层配置段 —— 即下面的
@@ -136,7 +136,7 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     writableRoots:
-      - /Users/glows777/symphony-workspaces/symphony
+      - /Users/glows777/codes/xinze/symphony/runtime
     readOnlyAccess:
       type: fullAccess
     networkAccess: true

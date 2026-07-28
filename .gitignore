@@ -4,4 +4,6 @@
 .env.*
 
 # Local Symphony issue workspaces.
-rumtime/
+runtime/
+
+.DS_STORE
