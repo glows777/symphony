@@ -178,6 +178,7 @@ hooks:
   before_run: |
     set -eu
     git fetch --prune origin
+    cd typescript
     bun install --frozen-lockfile
 
   # 每次尝试后都跑。这里的失败只记日志、不影响流程,所以只适合放观测,不适合做闸门。
