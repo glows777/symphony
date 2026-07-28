@@ -3,6 +3,7 @@
 // facade and config both do so. Out-of-tree plugins would call
 // `registerTrackerPlugin` from their own entry point.
 
+import { GiteaPlugin } from "./gitea/plugin.ts";
 import { LarkTaskPlugin } from "./lark-task/plugin.ts";
 import { LarkPlugin } from "./lark/plugin.ts";
 import { LinearPlugin } from "./linear/plugin.ts";
@@ -13,3 +14,4 @@ registerTrackerPlugin(LinearPlugin);
 registerTrackerPlugin(MemoryPlugin);
 registerTrackerPlugin(LarkPlugin);
 registerTrackerPlugin(LarkTaskPlugin);
+registerTrackerPlugin(GiteaPlugin);
