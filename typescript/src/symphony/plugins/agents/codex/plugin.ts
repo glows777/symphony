@@ -13,6 +13,7 @@
 // Module evaluation only builds an object literal (no AppServer call), keeping
 // the config <-> plugins <-> app-server ESM cycle side-effect free.
 
+import path from "node:path";
 import * as AppServer from "../../../codex/app-server.ts";
 import * as DynamicTool from "../../../codex/dynamic-tool.ts";
 import { type Result, err, ok } from "../../../result.ts";
@@ -58,8 +59,9 @@ async function startSession(
   };
   const session: AgentSession = {
     backendId: "codex",
-    workspace: appSession.workspace,
+    workspace: appSession.workerHost === null ? path.resolve(workspace) : appSession.workspace,
     workerHost: appSession.workerHost,
+    runId: appSession.threadId,
     handle,
   };
   const pid = codexPid(appSession);

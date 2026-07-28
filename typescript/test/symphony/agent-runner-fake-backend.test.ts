@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { AgentOutputStore } from "../../src/symphony/agent-output-store.ts";
 import { type IssueStateFetcher, type WorkerUpdate, run } from "../../src/symphony/agent-runner.ts";
 import { putEnv } from "../../src/symphony/app-env.ts";
 import type {
@@ -42,6 +43,7 @@ type FakeHandle = {
 function fakeBackend(caps: {
   multiTurn?: boolean;
   remote?: boolean;
+  backendId?: "codex" | "claude_code";
   // Blocks each turn until resolved, so a test can abort mid-turn.
   turnGate?: () => Promise<void>;
 }): {
@@ -55,7 +57,7 @@ function fakeBackend(caps: {
   let stops = 0;
 
   const plugin: AgentBackendPlugin = {
-    id: "codex",
+    id: caps.backendId ?? "codex",
     displayName: "Synthetic backend",
     capabilities: {
       multiTurnSessions: caps.multiTurn ?? false,
@@ -72,9 +74,10 @@ function fakeBackend(caps: {
           sessionTokens: 0,
         };
         const session: AgentSession = {
-          backendId: "codex",
+          backendId: caps.backendId ?? "codex",
           workspace,
           workerHost: opts.workerHost ?? null,
+          runId: `fake-run-${sessions}`,
           handle,
         };
         return Promise.resolve(ok(session));
@@ -165,6 +168,28 @@ describe("AgentRunner with a synthetic backend", () => {
     expect(backend.turns[0]?.prompt).not.toContain("Continuation guidance");
     expect(backend.turns[1]?.prompt).toContain("Continuation guidance");
     expect(backend.turns[2]?.prompt).toContain("continuation turn #3 of 3");
+  });
+
+  test("uses the backend session run id for the JSONL file", async () => {
+    const outputRoot = path.join(testRoot, "logs");
+    const backend = fakeBackend({ multiTurn: true });
+    putEnv("agent_backend_overrides", { codex: backend.plugin });
+    putEnv("agent_output_root", outputRoot);
+    writeWorkflowFile(workflowFilePath(), {
+      workspace_root: workspaceRoot,
+      observability_agent_output: "raw",
+    });
+
+    await run(issue, null, { maxTurns: 1, issueStateFetcher: staysActive });
+
+    const logPath = path.join(outputRoot, "log", "agents", "MT-1", "fake-run-1.jsonl");
+    expect(fs.existsSync(logPath)).toBe(true);
+    const events = fs
+      .readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { run_id: string });
+    expect(events.every((event) => event.run_id === "fake-run-1")).toBe(true);
   });
 
   test("single-turn backend starts a fresh session per turn with the full prompt", async () => {
@@ -290,5 +315,32 @@ describe("AgentRunner with a synthetic backend", () => {
     // The prompt is built before startSession, so no session is opened (and
     // therefore none is leaked).
     expect(backend.sessionCount()).toBe(0);
+  });
+
+  test("persists fake Codex and Claude Code envelopes to separate JSONL runs", async () => {
+    const logRoot = path.join(testRoot, "logs");
+    putEnv("agent_output_root", logRoot);
+    writeWorkflowFile(workflowFilePath(), {
+      workspace_root: workspaceRoot,
+      observability_agent_output: "raw",
+    });
+
+    for (const backendId of ["codex", "claude_code"] as const) {
+      const backend = fakeBackend({ multiTurn: true, backendId });
+      putEnv("agent_backend_overrides", { codex: backend.plugin });
+      await run(issue, null, { maxTurns: 1, issueStateFetcher: staysActive });
+
+      const store = new AgentOutputStore({ root: logRoot, mode: "raw" });
+      const result = store.readIssueOutput("MT-1", { limit: 100 });
+      expect(result.run?.backend).toBe(backendId);
+      expect(result.events.map((event) => event.event)).toEqual(
+        expect.arrayContaining([
+          "run_started",
+          "session_started",
+          "turn_completed",
+          "run_completed",
+        ]),
+      );
+    }
   });
 });

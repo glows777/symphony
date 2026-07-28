@@ -15,11 +15,14 @@
 //     `${session_id}-${turnNumber}` (mirroring codex `${threadId}-${turnId}`)
 //     keeps the orchestrator's turn counter advancing (orchestrator turnCountForUpdate).
 
+import crypto from "node:crypto";
+import path from "node:path";
 import { settingsBang } from "../../../config.ts";
 import { logger } from "../../../logger.ts";
 import { type Result, err, ok } from "../../../result.ts";
 import { type WorkspaceGuardViolation, guardWorkspacePath } from "../../../workspace-guard.ts";
 import { ProcessTransport, type Transport } from "../transport.ts";
+import type { AgentStream } from "../transport.ts";
 import type {
   AgentMessage,
   AgentSession,
@@ -35,6 +38,7 @@ const MAX_STREAM_LOG_BYTES = 1_000;
 
 type ClaudeHandle = {
   transport: Transport;
+  stderrListenerCleanup?: () => void;
   bridge: McpBridge | null;
   onMessage: OnAgentMessage;
   config: ClaudeCodeSettings;
@@ -84,7 +88,13 @@ export async function startSession(
     cumulativeInput: 0,
     cumulativeOutput: 0,
   };
-  const session: AgentSession = { backendId: "claude_code", workspace: cwd, workerHost, handle };
+  const session: AgentSession = {
+    backendId: "claude_code",
+    workspace: workerHost === null ? path.resolve(workspace) : cwd,
+    workerHost,
+    runId: `claude-${crypto.randomUUID()}`,
+    handle,
+  };
   if (pid !== undefined) {
     session.backendPid = pid;
   }
@@ -99,6 +109,20 @@ export async function runTurn(
   const handle = session.handle as ClaudeHandle;
   const { turnNumber } = context;
   let sessionStarted = false;
+
+  if (handle.stderrListenerCleanup === undefined) {
+    handle.stderrListenerCleanup = handle.transport.subscribeStderr((line) => {
+      if (line.trim() === "") {
+        return;
+      }
+      logNonJsonLine(line);
+      emit(handle, protocolMessageCandidate(line) ? "malformed" : "notification", {
+        payload: line,
+        raw: line,
+        stream: "stderr",
+      });
+    });
+  }
 
   handle.transport.send(userMessage(prompt));
 
@@ -130,14 +154,16 @@ export async function runTurn(
     const decoded = tryParse(line);
     if (!decoded.ok) {
       logNonJsonLine(line);
-      if (protocolMessageCandidate(line)) {
-        emit(handle, "malformed", { payload: line, raw: line });
-      }
+      emit(handle, protocolMessageCandidate(line) ? "malformed" : "notification", {
+        payload: line,
+        raw: line,
+        stream: event.stream,
+      });
       continue;
     }
     const msg = decoded.value;
     if (!isObject(msg)) {
-      emit(handle, "notification", { payload: msg, raw: line });
+      emit(handle, "notification", { payload: msg, raw: line, stream: event.stream });
       continue;
     }
 
@@ -145,7 +171,7 @@ export async function runTurn(
       if (typeof msg.session_id === "string") {
         handle.rawSessionId = msg.session_id;
       }
-      emitSessionStarted(handle, turnNumber, { payload: msg, raw: line });
+      emitSessionStarted(handle, turnNumber, { payload: msg, raw: line, stream: event.stream });
       sessionStarted = true;
       continue;
     }
@@ -159,12 +185,12 @@ export async function runTurn(
         emitSessionStarted(handle, turnNumber, null);
         sessionStarted = true;
       }
-      return finishTurn(handle, msg, line, turnNumber);
+      return finishTurn(handle, msg, line, turnNumber, event.stream);
     }
 
     // assistant / user / rate_limit_event / other system events: raw passthrough
     // (MUST NOT drop — the dashboard renders it).
-    emit(handle, "notification", { payload: msg, raw: line });
+    emit(handle, "notification", { payload: msg, raw: line, stream: event.stream });
   }
 }
 
@@ -196,6 +222,7 @@ function finishTurn(
   msg: Record<string, unknown>,
   line: string,
   turnNumber: number,
+  stream: AgentStream,
 ): Result<TurnResult, unknown> {
   const sessionId = derivedSessionId(handle.rawSessionId, turnNumber);
   const subtype = typeof msg.subtype === "string" ? msg.subtype : "";
@@ -209,7 +236,7 @@ function finishTurn(
   const usage = accumulateUsage(handle, msg.usage);
 
   if (!succeeded) {
-    emit(handle, "turn_failed", { sessionId, usage, payload: msg, raw: line });
+    emit(handle, "turn_failed", { sessionId, usage, payload: msg, raw: line, stream });
     return err({ tag: "turn_failed", payload: msg });
   }
 
@@ -219,11 +246,11 @@ function finishTurn(
   // CLI version (2.1.218) has no --permission-prompt-tool, so result-detection
   // is the chosen path (see plugin.ts header).
   if (handle.config.permissionMode !== "bypass" && hasPermissionDenials(msg)) {
-    emit(handle, "approval_required", { sessionId, usage, payload: msg, raw: line });
+    emit(handle, "approval_required", { sessionId, usage, payload: msg, raw: line, stream });
     return err({ tag: "approval_required", payload: msg });
   }
 
-  emit(handle, "turn_completed", { sessionId, usage, payload: msg, raw: line });
+  emit(handle, "turn_completed", { sessionId, usage, payload: msg, raw: line, stream });
   return ok({ sessionId });
 }
 
@@ -246,7 +273,7 @@ function hasPermissionDenials(msg: Record<string, unknown>): boolean {
 function emitSessionStarted(
   handle: ClaudeHandle,
   turnNumber: number,
-  extra: { payload: unknown; raw: string } | null,
+  extra: { payload: unknown; raw: string; stream: AgentStream } | null,
 ): void {
   const details: Record<string, unknown> = {
     sessionId: derivedSessionId(handle.rawSessionId, turnNumber),
@@ -255,6 +282,7 @@ function emitSessionStarted(
   if (extra !== null) {
     details.payload = extra.payload;
     details.raw = extra.raw;
+    details.stream = extra.stream;
   }
   emit(handle, "session_started", details);
 }

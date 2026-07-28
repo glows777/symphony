@@ -37,6 +37,7 @@ export type RunningEntry = {
   ref?: unknown;
   identifier?: string | null;
   issue: Issue;
+  backend?: string | null;
   worker_host?: string | null;
   workspace_path?: string | null;
   started_at?: Date | null;
@@ -61,6 +62,7 @@ export type RunningEntry = {
 export type BlockedEntry = {
   identifier?: string | null;
   issue?: Issue;
+  backend?: string | null;
   error?: unknown;
   worker_host?: string | null;
   [key: string]: unknown;
@@ -754,6 +756,8 @@ export type Info =
 export type SnapshotRunning = {
   issue_id: string;
   identifier: string | null | undefined;
+  title?: string | null;
+  backend?: string | null;
   issue_url: string | null | undefined;
   state: string | null | undefined;
   worker_host: string | null | undefined;
@@ -993,6 +997,7 @@ function blockIssueFromEntry(
     issue_id: issueId,
     identifier: (entry.identifier as string | null | undefined) ?? issueId,
     issue: entry.issue,
+    backend: entry.backend ?? null,
     worker_host: entry.worker_host ?? null,
     workspace_path: entry.workspace_path ?? null,
     session_id: runningEntrySessionId(entry),
@@ -1693,6 +1698,8 @@ export class Orchestrator {
     const running: SnapshotRunning[] = Object.entries(next.running).map(([issueId, entry]) => ({
       issue_id: issueId,
       identifier: entry.identifier,
+      title: isIssue(entry.issue) ? entry.issue.title : null,
+      backend: typeof entry.backend === "string" ? entry.backend : null,
       issue_url: isIssue(entry.issue) ? entry.issue.url : null,
       state: isIssue(entry.issue) ? entry.issue.state : null,
       worker_host: entry.worker_host ?? null,
@@ -1724,6 +1731,8 @@ export class Orchestrator {
     const blocked = Object.entries(next.blocked).map(([issueId, entry]) => ({
       issue_id: issueId,
       identifier: entry.identifier ?? null,
+      title: isIssue(entry.issue) ? entry.issue.title : null,
+      backend: typeof entry.backend === "string" ? entry.backend : null,
       issue_url: blockedIssueUrl(entry),
       state: blockedIssueState(entry),
       worker_host: entry.worker_host ?? null,
@@ -1988,6 +1997,7 @@ export class Orchestrator {
       ref,
       identifier: issue.identifier,
       issue,
+      backend: settingsBang().agent.backend,
       worker_host: workerHost,
       workspace_path: null,
       session_id: null,

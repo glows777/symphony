@@ -54,4 +54,26 @@ describe("ProcessTransport", () => {
       transport.close();
     }
   });
+
+  test("preserves stdout and stderr as separate line sources", async () => {
+    const transport = new ProcessTransport(
+      spawnEmitter(`
+        process.stdout.write("out-line\\n");
+        process.stderr.write("err-line\\n");
+        await Bun.sleep(50);
+      `),
+    );
+    try {
+      const first = await transport.next(5_000);
+      const second = await transport.next(5_000);
+      expect(first.type).toBe("line");
+      expect(second.type).toBe("line");
+      if (first.type === "line" && second.type === "line") {
+        expect(new Set([first.stream, second.stream])).toEqual(new Set(["stdout", "stderr"]));
+        expect(new Set([first.data, second.data])).toEqual(new Set(["out-line", "err-line"]));
+      }
+    } finally {
+      transport.close();
+    }
+  });
 });

@@ -130,6 +130,47 @@ describe("Plugins.Agents.CodexPlugin", () => {
     expect(messages.some((m) => m.event === "turn_completed")).toBe(true);
   });
 
+  test("keeps plain stderr output as a stream-tagged agent event", async () => {
+    const workspace = workspaceFor("MT-206");
+    const cases = `  1)
+    printf '%s\\n' '{"id":1,"result":{}}'
+    ;;
+  2)
+    printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-206"}}}'
+    ;;
+  3)
+    printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-206"}}}'
+    ;;
+  4)
+    printf 'warning from codex\\n' >&2
+    printf '%s\\n' '{"method":"turn/completed"}'
+    exit 0
+    ;;`;
+    installCodex(codexScript(null, cases));
+
+    const messages: AgentMessage[] = [];
+    const started = await CodexPlugin.sessions.startSession(workspace, {
+      onMessage: (message) => messages.push(message),
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) {
+      return;
+    }
+
+    const turn = await CodexPlugin.sessions.runTurn(started.value, "go", turnContext("MT-206"));
+    CodexPlugin.sessions.stopSession(started.value);
+    await Bun.sleep(10);
+
+    expect(turn.ok).toBe(true);
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        event: "notification",
+        stream: "stderr",
+        payload: "warning from codex",
+      }),
+    );
+  });
+
   test("auto-approves command approvals when the approval policy is never", async () => {
     const workspace = workspaceFor("MT-202");
     const cases = `  1)

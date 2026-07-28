@@ -64,6 +64,7 @@ hooks:
 
 observability:
   dashboard_enabled: true
+  agent_output: raw
 ---
 你在 {{ issue.identifier }} 的独立工作区中工作,当前工作目录就是这个 issue 的工作区。
 

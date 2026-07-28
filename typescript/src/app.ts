@@ -56,7 +56,7 @@ export async function startApp(): Promise<Result<AppHandle, unknown>> {
     orchestrator,
     snapshotTimeoutMs: SNAPSHOT_TIMEOUT_MS,
     handlers: {
-      dashboard: makeDashboardHandler(orchestrator, SNAPSHOT_TIMEOUT_MS),
+      dashboard: makeDashboardHandler(orchestrator, SNAPSHOT_TIMEOUT_MS, { serveFrontend: true }),
       events: makeEventsHandler(orchestrator, SNAPSHOT_TIMEOUT_MS),
     },
   });

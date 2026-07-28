@@ -12,6 +12,7 @@
 // resolves `agent.backend` (mirrors the tracker plugins/trackers/index.ts guarantee).
 import "./plugins/agents/index.ts";
 
+import { type AgentOutputRun, getAgentOutputStore } from "./agent-output-store.ts";
 import { settingsBang } from "./config.ts";
 import type { JsonMap } from "./config/schema.ts";
 import { logger } from "./logger.ts";
@@ -110,8 +111,16 @@ async function runOnWorkerHost(
     `Starting worker attempt for ${issueContext(issue)} worker_host=${workerHostForLog(workerHost)}`,
   );
 
+  const output = getAgentOutputStore().startRun({
+    issueId: issue.id,
+    issueIdentifier: issue.identifier ?? "unknown-issue",
+    title: issue.title,
+    backend: backend.id,
+    workerHost,
+  });
   const created = Workspace.createForIssue(issue, workerHost);
   if (!created.ok) {
+    output.finish("failed", created.error);
     return err(created.error);
   }
   const workspace = created.value;
@@ -120,16 +129,50 @@ async function runOnWorkerHost(
   try {
     const beforeRun = Workspace.runBeforeRunHook(workspace, issue, workerHost);
     if (!beforeRun.ok) {
+      output.finish("failed", beforeRun.error);
       return err(beforeRun.error);
     }
-    return await runAgentTurns(workspace, issue, recipient, opts, workerHost, backend);
+    const result = await runAgentTurns(
+      workspace,
+      issue,
+      recipient,
+      opts,
+      workerHost,
+      backend,
+      output,
+    );
+    output.finish(
+      opts.signal?.aborted === true ? "cancelled" : result.ok ? "completed" : "failed",
+      result.ok ? null : result.error,
+    );
+    return result;
+  } catch (error) {
+    output.finish(opts.signal?.aborted === true ? "cancelled" : "failed", error);
+    throw error;
   } finally {
     Workspace.runAfterRunHook(workspace, issue, workerHost);
   }
 }
 
-function agentMessageHandler(recipient: UpdateRecipient, issue: Issue): OnAgentMessage {
-  return (message) => sendAgentUpdate(recipient, issue, message);
+function agentMessageHandler(
+  recipient: UpdateRecipient,
+  issue: Issue,
+  backend: AgentBackendPlugin,
+  output: AgentOutputRun,
+  turn: () => number,
+  transform: (message: AgentMessage) => AgentMessage = (message) => message,
+): OnAgentMessage {
+  return (message) => {
+    const normalized = transform(message);
+    let summary: string | null = null;
+    try {
+      summary = backend.ui?.humanizeMessage?.(normalized) ?? null;
+    } catch (error) {
+      logger.warning(`Agent output summary failed for ${issueContext(issue)}: ${inspect(error)}`);
+    }
+    output.record(normalized, turn(), summary);
+    sendAgentUpdate(recipient, issue, normalized);
+  };
 }
 
 function sendAgentUpdate(recipient: UpdateRecipient, issue: Issue, message: AgentMessage): void {
@@ -162,6 +205,7 @@ async function runAgentTurns(
   opts: RunOpts,
   workerHost: string | null,
   backend: AgentBackendPlugin,
+  output: AgentOutputRun,
 ): Promise<Result<undefined, unknown>> {
   const maxTurns = opts.maxTurns ?? settingsBang().agent.maxTurns;
   const issueStateFetcher: IssueStateFetcher =
@@ -179,6 +223,7 @@ async function runAgentTurns(
       toolProvider,
       issueStateFetcher,
       maxTurns,
+      output,
     );
   }
   return runFreshSessionTurns(
@@ -193,6 +238,7 @@ async function runAgentTurns(
     freshSessionUsageRebaser(),
     1,
     maxTurns,
+    output,
   );
 }
 
@@ -251,19 +297,22 @@ async function runMultiTurnSession(
   toolProvider: ToolProvider,
   issueStateFetcher: IssueStateFetcher,
   maxTurns: number,
+  output: AgentOutputRun,
 ): Promise<Result<undefined, unknown>> {
   const signal = opts.signal ?? null;
   if (isAborted(signal)) {
     return err({ tag: "aborted" });
   }
+  const currentTurn = { value: 0 };
   const session = await backend.sessions.startSession(workspace, {
     workerHost,
-    onMessage: agentMessageHandler(recipient, issue),
+    onMessage: agentMessageHandler(recipient, issue, backend, output, () => currentTurn.value),
     toolProvider,
   });
   if (!session.ok) {
     return err(session.error);
   }
+  output.bindRunId(session.value.runId);
   const detach = onAbort(signal, () => backend.sessions.stopSession(session.value));
   try {
     return await doRunMultiTurn(
@@ -275,6 +324,8 @@ async function runMultiTurnSession(
       issueStateFetcher,
       1,
       maxTurns,
+      output,
+      currentTurn,
     );
   } finally {
     detach();
@@ -313,9 +364,12 @@ async function doRunMultiTurn(
   issueStateFetcher: IssueStateFetcher,
   turnNumber: number,
   maxTurns: number,
+  output: AgentOutputRun,
+  currentTurn: { value: number },
 ): Promise<Result<undefined, unknown>> {
   const prompt = buildContinuationTurnPrompt(issue, opts, turnNumber, maxTurns);
 
+  currentTurn.value = turnNumber;
   const turn = await backend.sessions.runTurn(session, prompt, { issue, turnNumber, maxTurns });
   if (!turn.ok) {
     return err(turn.error);
@@ -349,6 +403,8 @@ async function doRunMultiTurn(
       issueStateFetcher,
       turnNumber + 1,
       maxTurns,
+      output,
+      currentTurn,
     );
   }
   logger.info(
@@ -372,6 +428,7 @@ async function runFreshSessionTurns(
   usageRebaser: FreshSessionUsageRebaser,
   turnNumber: number,
   maxTurns: number,
+  output: AgentOutputRun,
 ): Promise<Result<undefined, unknown>> {
   // Build the prompt before opening a session: a Liquid render error here must
   // not leak a started session (runSingleFreshTurn's finally only covers the
@@ -383,12 +440,20 @@ async function runFreshSessionTurns(
   const prompt = buildFullPrompt(issue, opts);
   const session = await backend.sessions.startSession(workspace, {
     workerHost,
-    onMessage: (message) => sendAgentUpdate(recipient, issue, usageRebaser.rebase(message)),
+    onMessage: agentMessageHandler(
+      recipient,
+      issue,
+      backend,
+      output,
+      () => turnNumber,
+      (message) => usageRebaser.rebase(message),
+    ),
     toolProvider,
   });
   if (!session.ok) {
     return err(session.error);
   }
+  output.bindRunId(session.value.runId);
   const detach = onAbort(signal, () => backend.sessions.stopSession(session.value));
   const turn = await runSingleFreshTurn(
     backend,
@@ -433,6 +498,7 @@ async function runFreshSessionTurns(
       usageRebaser,
       turnNumber + 1,
       maxTurns,
+      output,
     );
   }
   logger.info(

@@ -8,7 +8,7 @@
 import { codexRuntimeSettings, settingsBang } from "../config.ts";
 import { logger } from "../logger.ts";
 import { ProcessTransport } from "../plugins/agents/transport.ts";
-import type { LineEvent, Transport } from "../plugins/agents/transport.ts";
+import type { AgentStream, LineEvent, Transport } from "../plugins/agents/transport.ts";
 import { type Result, err, ok } from "../result.ts";
 import * as SSH from "../ssh.ts";
 import { type WorkspaceGuardViolation, guardWorkspacePath } from "../workspace-guard.ts";
@@ -46,6 +46,7 @@ type SessionPolicies = {
 
 export type Session = {
   transport: Transport;
+  stderrListenerCleanup?: () => void;
   metadata: JsonObject;
   approvalPolicy: string | JsonObject;
   autoApproveRequests: boolean;
@@ -80,9 +81,13 @@ class ReplayTransport implements Transport {
     if (this.index < this.serverMessages.length) {
       const message = this.serverMessages[this.index++];
       const data = typeof message === "string" ? message : JSON.stringify(message);
-      return Promise.resolve({ type: "line", data });
+      return Promise.resolve({ type: "line", data, stream: "stdout" });
     }
     return Promise.resolve({ type: "exit", status: 0 });
+  }
+
+  subscribeStderr(_listener: (data: string) => void): () => void {
+    return () => {};
   }
 
   close(): void {}
@@ -162,6 +167,22 @@ export async function runTurn(
   const onMessage = opts.onMessage ?? (() => {});
   const toolExecutor: ToolExecutor =
     opts.toolExecutor ?? ((tool, args) => DynamicTool.execute(tool, args));
+
+  if (session.stderrListenerCleanup === undefined) {
+    session.stderrListenerCleanup = session.transport.subscribeStderr((line) => {
+      if (line.trim() === "") {
+        return;
+      }
+      logNonJsonStreamLine(line, "stderr");
+      const details = { payload: line, raw: line };
+      emitMessage(
+        onMessage,
+        protocolMessageCandidate(line) ? "malformed" : "notification",
+        details,
+        metadataFromMessage(session.transport, details, "stderr"),
+      );
+    });
+  }
 
   const turn = await startTurn(
     session.transport,
@@ -490,6 +511,7 @@ async function receiveLoop(
       transport,
       onMessage,
       event.data,
+      event.stream,
       toolExecutor,
       autoApprove,
     );
@@ -509,6 +531,7 @@ async function handleIncoming(
   transport: Transport,
   onMessage: OnMessage,
   data: string,
+  stream: AgentStream,
   toolExecutor: ToolExecutor,
   autoApprove: boolean,
 ): Promise<LoopOutcome> {
@@ -517,12 +540,12 @@ async function handleIncoming(
 
   if (!decoded.ok) {
     logNonJsonStreamLine(payloadString, "turn stream");
-    if (protocolMessageCandidate(payloadString)) {
+    if (payloadString.trim() !== "") {
       emitMessage(
         onMessage,
-        "malformed",
+        protocolMessageCandidate(payloadString) ? "malformed" : "notification",
         { payload: payloadString, raw: payloadString },
-        metadataFromMessage(transport, { raw: payloadString }),
+        metadataFromMessage(transport, { raw: payloadString }, stream),
       );
     }
     return CONTINUE;
@@ -532,15 +555,31 @@ async function handleIncoming(
   const method = isObject(payload) ? payload.method : undefined;
 
   if (isObject(payload) && method === "turn/completed") {
-    emitTurnEvent(onMessage, "turn_completed", payload, payloadString, transport, payload);
+    emitTurnEvent(onMessage, "turn_completed", payload, payloadString, transport, payload, stream);
     return ret(ok("turn_completed"));
   }
   if (isObject(payload) && method === "turn/failed" && "params" in payload) {
-    emitTurnEvent(onMessage, "turn_failed", payload, payloadString, transport, payload.params);
+    emitTurnEvent(
+      onMessage,
+      "turn_failed",
+      payload,
+      payloadString,
+      transport,
+      payload.params,
+      stream,
+    );
     return ret(err({ tag: "turn_failed", params: payload.params }));
   }
   if (isObject(payload) && method === "turn/cancelled" && "params" in payload) {
-    emitTurnEvent(onMessage, "turn_cancelled", payload, payloadString, transport, payload.params);
+    emitTurnEvent(
+      onMessage,
+      "turn_cancelled",
+      payload,
+      payloadString,
+      transport,
+      payload.params,
+      stream,
+    );
     return ret(err({ tag: "turn_cancelled", params: payload.params }));
   }
   if (isObject(payload) && typeof method === "string") {
@@ -550,6 +589,7 @@ async function handleIncoming(
       payload,
       payloadString,
       method,
+      stream,
       toolExecutor,
       autoApprove,
     );
@@ -559,7 +599,7 @@ async function handleIncoming(
     onMessage,
     "other_message",
     { payload, raw: payloadString },
-    metadataFromMessage(transport, payload),
+    metadataFromMessage(transport, payload, stream),
   );
   return CONTINUE;
 }
@@ -571,12 +611,13 @@ function emitTurnEvent(
   payloadString: string,
   transport: Transport,
   details: unknown,
+  stream: AgentStream,
 ): void {
   emitMessage(
     onMessage,
     event,
     { payload, raw: payloadString, details },
-    metadataFromMessage(transport, payload),
+    metadataFromMessage(transport, payload, stream),
   );
 }
 
@@ -586,10 +627,11 @@ async function handleTurnMethod(
   payload: JsonObject,
   payloadString: string,
   method: string,
+  stream: AgentStream,
   toolExecutor: ToolExecutor,
   autoApprove: boolean,
 ): Promise<LoopOutcome> {
-  const metadata = metadataFromMessage(transport, payload);
+  const metadata = metadataFromMessage(transport, payload, stream);
   const handled = await maybeHandleApprovalRequest(
     transport,
     method,
@@ -945,8 +987,13 @@ function emitMessage(
   onMessage({ ...metadata, ...details, event, timestamp: new Date() });
 }
 
-function metadataFromMessage(transport: Transport, payload: unknown): JsonObject {
-  return maybeSetUsage(portMetadata(transport, null), payload);
+function metadataFromMessage(
+  transport: Transport,
+  payload: unknown,
+  stream: AgentStream | null = null,
+): JsonObject {
+  const metadata = maybeSetUsage(portMetadata(transport, null), payload);
+  return stream === null ? metadata : { ...metadata, stream };
 }
 
 function maybeSetUsage(metadata: JsonObject, payload: unknown): JsonObject {

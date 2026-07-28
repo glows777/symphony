@@ -69,10 +69,14 @@ export type HooksSettings = {
   beforeRemove: string | null;
   timeoutMs: number;
 };
+export type AgentOutputMode = "off" | "summary" | "raw";
 export type ObservabilitySettings = {
   dashboardEnabled: boolean;
   refreshMs: number;
   renderIntervalMs: number;
+  agentOutput: AgentOutputMode;
+  agentOutputMaxEventBytes: number;
+  agentOutputMaxFileBytes: number;
 };
 export type ServerSettings = { port: number | null; host: string };
 
@@ -551,11 +555,39 @@ function castObservability(
   validateGreaterThan(refreshMs, section, "refresh_ms", 0, errors);
   const renderIntervalMs = field<number>(r, "render_interval_ms", section, castInteger, 16, errors);
   validateGreaterThan(renderIntervalMs, section, "render_interval_ms", 0, errors);
+  const agentOutput = field<string>(r, "agent_output", section, castString, "off", errors);
+  if (!(["off", "summary", "raw"] as string[]).includes(agentOutput.value)) {
+    errors.push({
+      path: `${section}.agent_output`,
+      message: 'must be one of "off", "summary", or "raw"',
+    });
+  }
+  const agentOutputMaxEventBytes = field<number>(
+    r,
+    "agent_output_max_event_bytes",
+    section,
+    castInteger,
+    64 * 1024,
+    errors,
+  );
+  validateGreaterThan(agentOutputMaxEventBytes, section, "agent_output_max_event_bytes", 0, errors);
+  const agentOutputMaxFileBytes = field<number>(
+    r,
+    "agent_output_max_file_bytes",
+    section,
+    castInteger,
+    64 * 1024 * 1024,
+    errors,
+  );
+  validateGreaterThan(agentOutputMaxFileBytes, section, "agent_output_max_file_bytes", 0, errors);
   return {
     dashboardEnabled: field<boolean>(r, "dashboard_enabled", section, castBoolean, true, errors)
       .value,
     refreshMs: refreshMs.value,
     renderIntervalMs: renderIntervalMs.value,
+    agentOutput: agentOutput.value as AgentOutputMode,
+    agentOutputMaxEventBytes: agentOutputMaxEventBytes.value,
+    agentOutputMaxFileBytes: agentOutputMaxFileBytes.value,
   };
 }
 
