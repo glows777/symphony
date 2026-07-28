@@ -18,6 +18,7 @@ import { setBoundPort } from "./server-port.ts";
 import { serveStaticAsset } from "./static-assets.ts";
 
 const DEFAULT_SNAPSHOT_TIMEOUT_MS = 15_000;
+const MAX_SSE_BUFFERED_EVENTS = 256;
 
 const UNAVAILABLE_PROVIDER: SnapshotProvider = {
   snapshot: () => Promise.resolve("unavailable"),
@@ -257,6 +258,22 @@ async function handleOutputStream(
   timeoutMs: number,
   query: { limit?: number; after?: number | null },
 ): Promise<Response> {
+  const buffered: AgentOutputEvent[] = [];
+  let bufferOverflow = false;
+  let ready = false;
+  let deliver: (event: AgentOutputEvent) => void = () => {};
+  const unsubscribe = outputStore.subscribe(issueIdentifier, (event) => {
+    if (!ready) {
+      if (buffered.length >= MAX_SSE_BUFFERED_EVENTS) {
+        bufferOverflow = true;
+      } else {
+        buffered.push(event);
+      }
+      return;
+    }
+    deliver(event);
+  });
+
   const result = await Presenter.outputPayload(
     issueIdentifier,
     provider,
@@ -265,55 +282,114 @@ async function handleOutputStream(
     query,
   );
   if (!result.ok) {
+    unsubscribe();
     return outputErrorResponse(result.error);
   }
 
-  let unsubscribe: () => void = () => {};
   let closed = false;
+  let closeAfterDrain = false;
+  let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+  const pending: { value: Uint8Array; terminal: boolean }[] = [];
   const encoder = new TextEncoder();
+  const body = result.value as {
+    events?: AgentOutputEvent[];
+    run?: { run_id?: string | null; status?: string } | null;
+  };
+  let activeRunId = body.run?.run_id ?? null;
+  const seen = new Set<string>();
+
+  const closeNow = (): void => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    closeAfterDrain = false;
+    pending.length = 0;
+    unsubscribe();
+    try {
+      controllerRef?.close();
+    } catch {
+      // The browser already closed the stream.
+    }
+  };
+
+  const pump = (): void => {
+    const controller = controllerRef;
+    if (closed || controller === null) {
+      return;
+    }
+    try {
+      while (pending.length > 0 && controller.desiredSize !== null && controller.desiredSize >= 0) {
+        const chunk = pending.shift();
+        if (chunk === undefined) {
+          break;
+        }
+        controller.enqueue(chunk.value);
+        if (chunk.terminal) {
+          closeAfterDrain = true;
+          break;
+        }
+      }
+      if (closeAfterDrain && pending.length === 0) {
+        closeNow();
+      }
+    } catch {
+      closeNow();
+    }
+  };
+
+  const queue = (value: Uint8Array, terminal = false): void => {
+    if (closed) {
+      return;
+    }
+    if (pending.length >= MAX_SSE_BUFFERED_EVENTS) {
+      closeNow();
+      return;
+    }
+    pending.push({ value, terminal });
+    pump();
+  };
+
+  const send = (event: AgentOutputEvent): void => {
+    if (closed) {
+      return;
+    }
+    if (activeRunId === null) {
+      activeRunId = event.run_id;
+    }
+    if (event.run_id !== activeRunId) {
+      return;
+    }
+    const key = `${event.run_id}:${event.seq}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    queue(encoder.encode(sseAgentOutput(event)), event.terminal === true);
+  };
+
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      const close = (): void => {
-        if (closed) {
-          return;
-        }
-        closed = true;
-        unsubscribe();
-        try {
-          controller.close();
-        } catch {
-          // The browser already closed the stream.
-        }
-      };
-      const send = (event: AgentOutputEvent): void => {
-        if (closed) {
-          return;
-        }
-        try {
-          controller.enqueue(encoder.encode(sseAgentOutput(event)));
-          if (event.terminal === true) {
-            close();
-          }
-        } catch {
-          close();
-        }
-      };
-      controller.enqueue(encoder.encode(": connected\n\n"));
-      unsubscribe = outputStore.subscribe(issueIdentifier, send);
-      const body = result.value as {
-        events?: AgentOutputEvent[];
-        run?: { status?: string } | null;
-      };
-      const lastEvent = body.events?.at(-1);
-      if (lastEvent?.terminal === true) {
-        send(lastEvent);
-      } else if (body.run?.status !== undefined && body.run.status !== "running") {
-        close();
+      controllerRef = controller;
+      queue(encoder.encode(": connected\n\n"));
+      for (const event of body.events ?? []) {
+        send(event);
+      }
+      deliver = send;
+      ready = true;
+      for (const event of buffered) {
+        send(event);
+      }
+      if (bufferOverflow || (body.run?.status !== undefined && body.run.status !== "running")) {
+        closeAfterDrain = true;
+        pump();
       }
     },
+    pull() {
+      pump();
+    },
     cancel() {
-      closed = true;
-      unsubscribe();
+      closeNow();
     },
   });
   return new Response(stream, {
@@ -375,6 +451,7 @@ function jsonResponse(status: number, body: unknown): Response {
 export type ServerOpts = {
   host?: string | null;
   port?: number | null;
+  unsafeAllowRemote?: boolean;
   orchestrator?: SnapshotProvider;
   snapshotTimeoutMs?: number;
   handlers?: RouterHandlers;
@@ -396,7 +473,17 @@ export class HttpServer {
     if (typeof port !== "number" || !Number.isInteger(port) || port < 0) {
       return { kind: "ignore" };
     }
-    const host = opts.host ?? settingsBang().server.host;
+    const settings = settingsBang();
+    const host = opts.host ?? settings.server.host;
+    const unsafeAllowRemote = opts.unsafeAllowRemote ?? settings.server.unsafeAllowRemote;
+    if (!unsafeAllowRemote && !isLoopbackHost(host)) {
+      return {
+        kind: "error",
+        error: new Error(
+          `Refusing to expose the observability server on ${host}; set server.unsafe_allow_remote=true to opt in`,
+        ),
+      };
+    }
     const provider = opts.orchestrator ?? UNAVAILABLE_PROVIDER;
     const snapshotTimeoutMs = opts.snapshotTimeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS;
     const handlers: RouterHandlers = {
@@ -448,5 +535,21 @@ function normalizeHost(host: string | null | undefined): string {
   if (host === null || host === undefined || host === "") {
     return "127.0.0.1";
   }
-  return host;
+  return host.trim();
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
+  if (normalized === "localhost" || normalized === "::1") {
+    return true;
+  }
+  const octets = normalized.split(".");
+  return (
+    octets.length === 4 &&
+    octets[0] === "127" &&
+    octets.slice(1).every((octet) => /^\d+$/.test(octet) && Number(octet) <= 255)
+  );
 }

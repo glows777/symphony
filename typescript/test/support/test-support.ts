@@ -60,11 +60,12 @@ function defaults(): Overrides {
     observability_enabled: true,
     observability_refresh_ms: 1_000,
     observability_render_interval_ms: 16,
-    observability_agent_output: "off",
+    observability_agent_output: "summary",
     observability_agent_output_max_event_bytes: 64 * 1024,
     observability_agent_output_max_file_bytes: 64 * 1024 * 1024,
     server_port: null,
     server_host: null,
+    server_unsafe_allow_remote: false,
     prompt: WORKFLOW_PROMPT,
   };
 }
@@ -135,7 +136,7 @@ function workflowContent(overrides: Overrides): string {
       g("observability_agent_output_max_event_bytes"),
       g("observability_agent_output_max_file_bytes"),
     ),
-    serverYaml(g("server_port"), g("server_host")),
+    serverYaml(g("server_port"), g("server_host"), g("server_unsafe_allow_remote")),
     "---",
     g("prompt") as string,
   ];
@@ -269,8 +270,12 @@ function observabilityYaml(
   ].join("\n");
 }
 
-function serverYaml(port: unknown, host: unknown): string | null {
-  if ((port === null || port === undefined) && (host === null || host === undefined)) {
+function serverYaml(port: unknown, host: unknown, unsafeAllowRemote: unknown): string | null {
+  if (
+    (port === null || port === undefined) &&
+    (host === null || host === undefined) &&
+    unsafeAllowRemote === false
+  ) {
     return null;
   }
   const lines = ["server:"];
@@ -279,6 +284,13 @@ function serverYaml(port: unknown, host: unknown): string | null {
   }
   if (host !== null && host !== undefined) {
     lines.push(`  host: ${yamlValue(host)}`);
+  }
+  if (
+    unsafeAllowRemote !== null &&
+    unsafeAllowRemote !== undefined &&
+    unsafeAllowRemote !== false
+  ) {
+    lines.push(`  unsafe_allow_remote: ${yamlValue(unsafeAllowRemote)}`);
   }
   return lines.join("\n");
 }

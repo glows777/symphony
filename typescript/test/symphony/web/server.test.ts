@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
+import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { AgentOutputStore } from "../../../src/symphony/agent-output-store.ts";
@@ -83,6 +84,21 @@ function provider(
     snapshot: () => Promise.resolve(snapshot),
     requestRefresh: () => Promise.resolve(refresh),
   };
+}
+
+async function freePort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((resolve, reject) => {
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = probe.address();
+  const port = typeof address === "object" && address !== null ? address.port : null;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  if (port === null) {
+    throw new Error("Could not allocate a free port");
+  }
+  return port;
 }
 
 describe("web server / observability API", () => {
@@ -239,6 +255,7 @@ describe("web server / observability API", () => {
         2, 3,
       ]);
     } finally {
+      await run.finish("completed");
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -279,7 +296,7 @@ describe("web server / observability API", () => {
       { event: "session_started", timestamp: new Date(), sessionId: "history-session" },
       1,
     );
-    run.finish("completed");
+    await run.finish("completed");
     const snapshot = staticSnapshot();
     snapshot.running = [];
     snapshot.retrying = [];
@@ -330,7 +347,7 @@ describe("web server / observability API", () => {
       const chunk = await reader.read();
       expect(new TextDecoder().decode(chunk.value)).toContain("event: agent_output");
       expect(new TextDecoder().decode(chunk.value)).toContain('"stream":"stderr"');
-      run.finish("completed");
+      await run.finish("completed");
       const terminal = await reader.read();
       expect(new TextDecoder().decode(terminal.value)).toContain('"event":"run_completed"');
       expect((await reader.read()).done).toBe(true);
@@ -342,13 +359,121 @@ describe("web server / observability API", () => {
       expect(lateReader).toBeDefined();
       if (lateReader !== undefined) {
         expect(new TextDecoder().decode((await lateReader.read()).value)).toContain(": connected");
-        expect(new TextDecoder().decode((await lateReader.read()).value)).toContain(
-          '"event":"run_completed"',
-        );
+        const replay: string[] = [];
+        for (let index = 0; index < 4; index += 1) {
+          const next = await lateReader.read();
+          replay.push(new TextDecoder().decode(next.value));
+          if (replay.at(-1)?.includes('"event":"run_completed"')) {
+            break;
+          }
+        }
+        expect(replay.join("")).toContain('"event":"run_completed"');
         expect((await lateReader.read()).done).toBe(true);
       }
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("output SSE subscribes before taking the initial snapshot", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-api-sse-race-"));
+    let inject: (() => void) | null = null;
+    class RaceStore extends AgentOutputStore {
+      override readIssueOutput(
+        issueIdentifier: string,
+        options: { limit?: number; after?: number | null } = {},
+      ) {
+        const result = super.readIssueOutput(issueIdentifier, options);
+        inject?.();
+        inject = null;
+        return result;
+      }
+    }
+    const outputStore = new RaceStore({ root, mode: "raw" });
+    const run = outputStore.startRun({
+      issueId: "issue-http",
+      issueIdentifier: "MT-HTTP",
+      backend: "codex",
+      workerHost: null,
+      runId: "race-run",
+    });
+    inject = () => run.record({ event: "notification", timestamp: new Date() }, 1, "raced");
+
+    const route = createRouter(provider(staticSnapshot(), refreshReply), 50, {
+      agentOutputStore: outputStore,
+    });
+    const response = await route(new Request("http://127.0.0.1/api/v1/MT-HTTP/output/stream"));
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    if (reader === undefined) {
+      fs.rmSync(root, { recursive: true, force: true });
+      return;
+    }
+    try {
+      const chunks: string[] = [];
+      for (let index = 0; index < 3; index += 1) {
+        const next = await reader.read();
+        chunks.push(new TextDecoder().decode(next.value));
+      }
+      const text = chunks.join("");
+      expect(text).toContain('"event":"run_started"');
+      expect(text).toContain('"message":"raced"');
+      await run.finish("completed");
+    } finally {
+      await reader.cancel();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("output SSE ignores events from a newer run", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-api-sse-run-"));
+    const outputStore = new AgentOutputStore({ root, mode: "raw" });
+    const first = outputStore.startRun({
+      issueId: "issue-http",
+      issueIdentifier: "MT-HTTP",
+      backend: "codex",
+      workerHost: null,
+      runId: "first-run",
+    });
+    const route = createRouter(provider(staticSnapshot(), refreshReply), 50, {
+      agentOutputStore: outputStore,
+    });
+    const response = await route(new Request("http://127.0.0.1/api/v1/MT-HTTP/output/stream"));
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    if (reader === undefined) {
+      fs.rmSync(root, { recursive: true, force: true });
+      return;
+    }
+    try {
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain(": connected");
+      const second = outputStore.startRun({
+        issueId: "issue-http",
+        issueIdentifier: "MT-HTTP",
+        backend: "codex",
+        workerHost: null,
+        runId: "second-run",
+      });
+      second.record({ event: "notification", timestamp: new Date() }, 1, "new run");
+      const next = await Promise.race([
+        reader.read(),
+        Bun.sleep(25).then(() => ({ timedOut: true as const })),
+      ]);
+      expect("timedOut" in next).toBe(true);
+      await second.finish("completed");
+      await first.finish("completed");
+    } finally {
+      await reader.cancel();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("HttpServer refuses remote binding without an explicit opt-in", () => {
+    const server = new HttpServer();
+    const result = server.start({ host: "0.0.0.0", port: 12345 });
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(String(result.error)).toContain("unsafe_allow_remote");
     }
   });
 
@@ -362,7 +487,7 @@ describe("web server / observability API", () => {
     const server = new HttpServer();
     const result = server.start({
       host: "127.0.0.1",
-      port: 0,
+      port: await freePort(),
       orchestrator: provider(staticSnapshot(), refreshReply),
       snapshotTimeoutMs: 50,
     });

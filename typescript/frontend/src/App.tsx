@@ -89,8 +89,8 @@ export function App() {
           return;
         }
         setDetail(nextDetail);
-        setOutput(nextOutput);
-        setEvents(sortEvents(nextOutput.events));
+        setOutput((current) => mergeOutput(current, nextOutput));
+        setEvents((current) => mergeEvents(current, nextOutput.events));
         setTimelineLoading(false);
       } catch (loadError) {
         if (active && !controller.signal.aborted) {
@@ -110,19 +110,7 @@ export function App() {
         }
         setStreamState("connected");
         setEvents((current) => sortEvents(upsertEvent(current, event)));
-        setOutput((current) =>
-          current === null
-            ? current
-            : {
-                ...current,
-                run: current.run
-                  ? { ...current.run, last_seq: Math.max(current.run.last_seq, event.seq) }
-                  : current.run,
-              },
-        );
-        if (event.terminal) {
-          unsubscribe();
-        }
+        setOutput((current) => mergeLiveOutput(current, event));
       },
       () => {
         if (active) {
@@ -199,6 +187,58 @@ function upsertEvent(events: AgentOutputEvent[], next: AgentOutputEvent): AgentO
     return [...events, next];
   }
   return events.map((event, currentIndex) => (currentIndex === index ? next : event));
+}
+
+function mergeEvents(current: AgentOutputEvent[], next: AgentOutputEvent[]): AgentOutputEvent[] {
+  return sortEvents(next.reduce(upsertEvent, current));
+}
+
+function mergeOutput(current: OutputPayload | null, next: OutputPayload): OutputPayload {
+  if (current === null) {
+    return next;
+  }
+  const events = mergeEvents(current.events, next.events);
+  const run =
+    next.run === null
+      ? null
+      : {
+          ...next.run,
+          last_seq: Math.max(
+            next.run.last_seq,
+            ...events
+              .filter((event) => event.run_id === next.run?.run_id)
+              .map((event) => event.seq),
+          ),
+        };
+  return {
+    ...next,
+    events,
+    run,
+  };
+}
+
+function mergeLiveOutput(current: OutputPayload | null, event: AgentOutputEvent): OutputPayload {
+  const base =
+    current ??
+    ({
+      events: [],
+      next_cursor: null,
+      has_more: false,
+      run: null,
+      backend: event.backend,
+      run_id: event.run_id,
+      session_id: event.session_id ?? null,
+    } satisfies OutputPayload);
+  const run =
+    base.run?.run_id === event.run_id
+      ? { ...base.run, last_seq: Math.max(base.run.last_seq, event.seq) }
+      : base.run;
+  return {
+    ...base,
+    events: sortEvents(upsertEvent(base.events, event)),
+    next_cursor: Math.max(base.next_cursor ?? 0, event.seq),
+    run,
+  };
 }
 
 function sortEvents(events: AgentOutputEvent[]): AgentOutputEvent[] {

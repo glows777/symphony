@@ -12,6 +12,8 @@ const DEFAULT_MAX_EVENT_BYTES = 64 * 1024;
 const DEFAULT_MAX_FILE_BYTES = 64 * 1024 * 1024;
 const RECENT_EVENT_BUFFER_SIZE = 200;
 const FINISHED_RUN_CACHE_SIZE = 256;
+const MAX_PENDING_WRITES = 256;
+const RUN_METADATA_SUFFIX = ".meta.json";
 
 export type AgentOutputEvent = {
   seq: number;
@@ -85,6 +87,11 @@ type PersistedRun = {
   startedEventWritten: boolean;
   fileBytes: number;
   malformed: boolean;
+  mode: AgentOutputMode;
+  maxEventBytes: number;
+  maxFileBytes: number;
+  writeChain: Promise<void>;
+  pendingWrites: number;
 };
 
 export class AgentOutputRun {
@@ -105,8 +112,8 @@ export class AgentOutputRun {
     this.store.recordMessage(this.state, message, turn, summary);
   }
 
-  finish(status: "completed" | "failed" | "cancelled", reason: unknown = null): void {
-    this.store.finishRun(this.state, status, reason);
+  finish(status: "completed" | "failed" | "cancelled", reason: unknown = null): Promise<void> {
+    return this.store.finishRun(this.state, status, reason);
   }
 
   metadata(): AgentOutputRunMetadata {
@@ -115,15 +122,26 @@ export class AgentOutputRun {
 }
 
 export class AgentOutputStore {
-  private readonly agentsRoot: string;
-  private readonly mode: AgentOutputMode;
-  private readonly maxEventBytes: number;
-  private readonly maxFileBytes: number;
+  private agentsRoot: string;
+  private mode: AgentOutputMode;
+  private maxEventBytes: number;
+  private maxFileBytes: number;
+  private readonly knownAgentsRoots: Set<string>;
   private readonly runs = new Map<string, PersistedRun>();
   private readonly listeners = new Map<string, Set<AgentOutputListener>>();
 
   constructor(options: AgentOutputStoreOptions) {
     this.agentsRoot = path.join(path.resolve(options.root), "log", "agents");
+    this.mode = options.mode;
+    this.maxEventBytes = positiveOr(options.maxEventBytes, DEFAULT_MAX_EVENT_BYTES);
+    this.maxFileBytes = positiveOr(options.maxFileBytes, DEFAULT_MAX_FILE_BYTES);
+    this.knownAgentsRoots = new Set([this.agentsRoot]);
+  }
+
+  reconfigure(options: AgentOutputStoreOptions): void {
+    const nextRoot = path.join(path.resolve(options.root), "log", "agents");
+    this.knownAgentsRoots.add(nextRoot);
+    this.agentsRoot = nextRoot;
     this.mode = options.mode;
     this.maxEventBytes = positiveOr(options.maxEventBytes, DEFAULT_MAX_EVENT_BYTES);
     this.maxFileBytes = positiveOr(options.maxFileBytes, DEFAULT_MAX_FILE_BYTES);
@@ -157,8 +175,14 @@ export class AgentOutputStore {
       startedEventWritten: false,
       fileBytes: 0,
       malformed: false,
+      mode: this.mode,
+      maxEventBytes: this.maxEventBytes,
+      maxFileBytes: this.maxFileBytes,
+      writeChain: Promise.resolve(),
+      pendingWrites: 0,
     };
-    if (this.mode !== "off") {
+    if (state.mode !== "off") {
+      this.ensureUniqueRunPath(state);
       this.runs.set(metadata.path, state);
       this.pruneCachedRuns();
     }
@@ -170,7 +194,7 @@ export class AgentOutputStore {
   }
 
   bindRunId(state: PersistedRun, runId: string | null | undefined): void {
-    if (this.mode === "off" || state.closed || typeof runId !== "string") {
+    if (state.mode === "off" || state.closed || typeof runId !== "string") {
       return;
     }
     const normalized = runId.trim();
@@ -189,6 +213,7 @@ export class AgentOutputStore {
     const previousPath = state.metadata.path;
     state.metadata.run_id = normalized;
     state.metadata.path = this.runPath(state.metadata.issue_identifier, normalized);
+    this.ensureUniqueRunPath(state);
     this.runs.delete(previousPath);
     this.runs.set(state.metadata.path, state);
   }
@@ -260,13 +285,24 @@ export class AgentOutputStore {
     return result;
   }
 
-  subscribe(issueIdentifier: string, listener: AgentOutputListener): () => void {
+  subscribe(
+    issueIdentifier: string,
+    listener: AgentOutputListener,
+    runId?: string | null,
+  ): () => void {
     const key = issueKey(issueIdentifier);
+    const expectedRunId = typeof runId === "string" && runId.trim() !== "" ? runId : null;
+    const filteredListener: AgentOutputListener = (event) => {
+      if (expectedRunId !== null && event.run_id !== expectedRunId) {
+        return;
+      }
+      listener(event);
+    };
     const listeners = this.listeners.get(key) ?? new Set<AgentOutputListener>();
-    listeners.add(listener);
+    listeners.add(filteredListener);
     this.listeners.set(key, listeners);
     return () => {
-      listeners.delete(listener);
+      listeners.delete(filteredListener);
       if (listeners.size === 0) {
         this.listeners.delete(key);
       }
@@ -302,14 +338,21 @@ export class AgentOutputStore {
     for (const key of ["reason", "decision", "answer"] as const) {
       const detail = message[key];
       if (detail !== undefined) {
-        const bounded = boundValue(detail, Math.min(this.maxEventBytes, 8 * 1024));
-        value[key] = bounded.value;
-        if (bounded.truncated) {
-          value[`${key}_truncated`] = true;
+        if (key === "reason" && state.mode !== "raw") {
+          const sanitized = sanitizeReason(detail);
+          if (sanitized !== undefined) {
+            value[key] = sanitized;
+          }
+        } else {
+          const bounded = boundValue(detail, Math.min(state.maxEventBytes, 8 * 1024));
+          value[key] = bounded.value;
+          if (bounded.truncated) {
+            value[`${key}_truncated`] = true;
+          }
         }
       }
     }
-    if (this.mode === "raw") {
+    if (state.mode === "raw") {
       if (message.payload !== undefined) {
         value.payload = message.payload;
       }
@@ -320,18 +363,24 @@ export class AgentOutputStore {
     this.append(state, value);
   }
 
-  finishRun(
+  async finishRun(
     state: PersistedRun,
     status: "completed" | "failed" | "cancelled",
     reason: unknown,
-  ): void {
+  ): Promise<void> {
     if (state.closed) {
       return;
     }
     this.ensureStarted(state);
     state.metadata.status = status;
     state.metadata.ended_at = new Date().toISOString();
-    if (this.mode !== "off") {
+    if (state.mode !== "off") {
+      const terminalReason =
+        reason === null
+          ? undefined
+          : state.mode === "raw"
+            ? boundValue(reason, Math.min(state.maxEventBytes, 8 * 1024)).value
+            : sanitizeReason(reason);
       const event = this.append(state, {
         at: state.metadata.ended_at,
         issue_id: state.metadata.issue_id ?? undefined,
@@ -343,18 +392,20 @@ export class AgentOutputStore {
         event: status === "completed" ? "run_completed" : `run_${status}`,
         message: status === "completed" ? "Agent run completed" : `Agent run ${status}`,
         terminal: true,
-        reason: reason === null ? undefined : reason,
+        reason: terminalReason,
       });
       if (event !== null) {
         state.metadata.ended_at = event.at;
       }
     }
     state.closed = true;
+    this.persistMetadata(state, true);
     this.pruneCachedRuns();
+    await state.writeChain;
   }
 
   private ensureStarted(state: PersistedRun): void {
-    if (this.mode === "off" || state.startedEventWritten) {
+    if (state.mode === "off" || state.startedEventWritten) {
       return;
     }
     this.ensureUniqueRunPath(state);
@@ -375,7 +426,10 @@ export class AgentOutputStore {
   }
 
   private ensureUniqueRunPath(state: PersistedRun): void {
-    if (state.fileBytes > 0 || !fs.existsSync(state.metadata.path)) {
+    const occupied = this.runs.get(state.metadata.path);
+    const onDisk =
+      fs.existsSync(state.metadata.path) || fs.existsSync(metadataPath(state.metadata.path));
+    if (state.fileBytes > 0 || ((occupied === undefined || occupied === state) && !onDisk)) {
       return;
     }
     const originalPath = state.metadata.path;
@@ -383,22 +437,30 @@ export class AgentOutputStore {
     let suffix = 2;
     let candidateRunId = `${baseRunId}-${suffix}`;
     let candidatePath = this.runPath(state.metadata.issue_identifier, candidateRunId);
-    while (fs.existsSync(candidatePath)) {
+    while (this.runPathExists(candidatePath)) {
       suffix += 1;
       candidateRunId = `${baseRunId}-${suffix}`;
       candidatePath = this.runPath(state.metadata.issue_identifier, candidateRunId);
     }
     state.metadata.run_id = candidateRunId;
     state.metadata.path = candidatePath;
-    this.runs.delete(originalPath);
-    this.runs.set(candidatePath, state);
+    if (this.runs.get(originalPath) === state) {
+      this.runs.delete(originalPath);
+      this.runs.set(candidatePath, state);
+    }
     logger.warning(
       `Agent output run id already exists for ${state.metadata.issue_identifier}; using ${candidateRunId}`,
     );
   }
 
+  private runPathExists(filePath: string): boolean {
+    return (
+      this.runs.has(filePath) || fs.existsSync(filePath) || fs.existsSync(metadataPath(filePath))
+    );
+  }
+
   private append(state: PersistedRun, input: Record<string, unknown>): AgentOutputEvent | null {
-    if (this.mode === "off" || state.metadata.truncated) {
+    if (state.mode === "off" || (state.metadata.truncated && input.terminal !== true)) {
       return null;
     }
     const event = this.boundedEvent(state, input);
@@ -407,14 +469,18 @@ export class AgentOutputStore {
 
     try {
       if (
-        state.fileBytes + lineBytes > this.maxFileBytes ||
+        state.fileBytes + lineBytes > state.maxFileBytes ||
         (input.event !== "log_truncated" &&
-          state.fileBytes + lineBytes + this.truncationMarkerBytes(state) > this.maxFileBytes)
+          state.fileBytes + lineBytes + this.truncationMarkerBytes(state) > state.maxFileBytes)
       ) {
+        if (state.metadata.truncated || input.terminal === true) {
+          return null;
+        }
         return this.appendTruncationMarker(state);
       }
-      fs.mkdirSync(path.dirname(state.metadata.path), { recursive: true });
-      fs.appendFileSync(state.metadata.path, line, "utf8");
+      if (!this.queueWrite(state, state.metadata.path, line, input.terminal === true)) {
+        return this.appendTruncationMarker(state);
+      }
       state.fileBytes += lineBytes;
       state.metadata.size = state.fileBytes;
       state.metadata.event_count += 1;
@@ -448,14 +514,13 @@ export class AgentOutputStore {
       terminal: true,
     });
     const line = `${JSON.stringify(marker)}\n`;
-    if (state.fileBytes + Buffer.byteLength(line, "utf8") > this.maxFileBytes) {
+    if (state.fileBytes + Buffer.byteLength(line, "utf8") > state.maxFileBytes) {
       state.metadata.truncated = true;
       logger.warning(`Agent output log reached its file size limit: ${state.metadata.path}`);
       return null;
     }
     try {
-      fs.mkdirSync(path.dirname(state.metadata.path), { recursive: true });
-      fs.appendFileSync(state.metadata.path, line, "utf8");
+      this.queueWrite(state, state.metadata.path, line, true);
       state.fileBytes += Buffer.byteLength(line, "utf8");
       state.metadata.size = state.fileBytes;
       state.metadata.event_count += 1;
@@ -499,12 +564,12 @@ export class AgentOutputStore {
     let payloadTruncated = false;
     let rawTruncated = false;
     if (event.payload !== undefined) {
-      const bounded = boundValue(event.payload, this.maxEventBytes);
+      const bounded = boundValue(event.payload, state.maxEventBytes);
       event.payload = bounded.value;
       payloadTruncated = bounded.truncated;
     }
     if (typeof event.raw === "string") {
-      const bounded = boundText(event.raw, this.maxEventBytes);
+      const bounded = boundText(event.raw, state.maxEventBytes);
       event.raw = bounded.value;
       rawTruncated = bounded.truncated;
     }
@@ -515,15 +580,15 @@ export class AgentOutputStore {
       event.raw_truncated = true;
     }
     let serialized = JSON.stringify(event);
-    if (Buffer.byteLength(serialized, "utf8") > this.maxEventBytes) {
+    if (Buffer.byteLength(serialized, "utf8") > state.maxEventBytes) {
       event.payload = undefined;
       event.raw = undefined;
       event.event_truncated = true;
       if (typeof event.message === "string") {
-        event.message = boundText(event.message, Math.floor(this.maxEventBytes / 4)).value;
+        event.message = boundText(event.message, Math.floor(state.maxEventBytes / 4)).value;
       }
       serialized = JSON.stringify(event);
-      if (Buffer.byteLength(serialized, "utf8") > this.maxEventBytes) {
+      if (Buffer.byteLength(serialized, "utf8") > state.maxEventBytes) {
         return {
           seq: nextSeq,
           at: String(event.at ?? new Date().toISOString()),
@@ -550,34 +615,42 @@ export class AgentOutputStore {
     for (const state of this.runs.values()) {
       result.push({ ...state.metadata });
     }
-    if (!fs.existsSync(this.agentsRoot)) {
-      return uniqueRuns(result);
-    }
-    let issueDirs: fs.Dirent[] = [];
-    try {
-      issueDirs = fs.readdirSync(this.agentsRoot, { withFileTypes: true });
-    } catch (error) {
-      logger.warning(`Agent output log directory read failed: ${inspect(error)}`);
-      return uniqueRuns(result);
-    }
-    for (const issueDir of issueDirs) {
-      if (!issueDir.isDirectory()) {
+    for (const agentsRoot of this.knownAgentsRoots) {
+      if (!fs.existsSync(agentsRoot)) {
         continue;
       }
-      const issuePath = path.join(this.agentsRoot, issueDir.name);
-      let files: fs.Dirent[] = [];
+      let issueDirs: fs.Dirent[] = [];
       try {
-        files = fs.readdirSync(issuePath, { withFileTypes: true });
-      } catch {
+        issueDirs = fs.readdirSync(agentsRoot, { withFileTypes: true });
+      } catch (error) {
+        logger.warning(`Agent output log directory read failed: ${inspect(error)}`);
         continue;
       }
-      for (const file of files) {
-        if (!file.isFile() || !file.name.endsWith(".jsonl")) {
+      for (const issueDir of issueDirs) {
+        if (!issueDir.isDirectory()) {
           continue;
         }
-        const loaded = this.loadRun(path.join(issuePath, file.name));
-        if (loaded !== null) {
-          result.push(loaded.metadata);
+        const issuePath = path.join(agentsRoot, issueDir.name);
+        let files: fs.Dirent[] = [];
+        try {
+          files = fs.readdirSync(issuePath, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const file of files) {
+          if (!file.isFile() || !file.name.endsWith(".jsonl")) {
+            continue;
+          }
+          const filePath = path.join(issuePath, file.name);
+          const indexed = this.readMetadataSidecar(filePath);
+          if (indexed !== null) {
+            result.push(indexed);
+            continue;
+          }
+          const loaded = this.loadRun(filePath);
+          if (loaded !== null) {
+            result.push(loaded.metadata);
+          }
         }
       }
     }
@@ -602,6 +675,13 @@ export class AgentOutputStore {
       raw = fs.readFileSync(filePath, "utf8");
       size = fs.statSync(filePath).size;
     } catch {
+      if (cached !== undefined) {
+        return {
+          metadata: { ...cached.metadata },
+          events: [...cached.recent],
+          malformed: cached.malformed,
+        };
+      }
       return null;
     }
     const events: AgentOutputEvent[] = [];
@@ -621,7 +701,41 @@ export class AgentOutputStore {
         malformed = true;
       }
     }
-    const metadata = metadataFromEvents(filePath, size, events, malformed);
+    const derivedMetadata = metadataFromEvents(filePath, size, events, malformed);
+    const indexedMetadata = this.readMetadataSidecar(filePath, size);
+    const metadata =
+      indexedMetadata === null
+        ? derivedMetadata
+        : {
+            ...indexedMetadata,
+            size,
+            event_count: Math.max(indexedMetadata.event_count, derivedMetadata.event_count),
+            last_seq: Math.max(indexedMetadata.last_seq, derivedMetadata.last_seq),
+            truncated: indexedMetadata.truncated || derivedMetadata.truncated,
+          };
+    if (cached !== undefined) {
+      cached.seq = Math.max(cached.seq, derivedMetadata.last_seq);
+      cached.fileBytes = Math.max(cached.fileBytes, size);
+      cached.metadata.size = Math.max(cached.metadata.size, size);
+      cached.metadata.event_count = Math.max(
+        cached.metadata.event_count,
+        derivedMetadata.event_count,
+      );
+      cached.metadata.last_seq = Math.max(cached.metadata.last_seq, derivedMetadata.last_seq);
+      cached.metadata.truncated ||= metadata.truncated;
+      cached.malformed ||= malformed;
+      cached.recent = mergeEvents(cached.recent, events).slice(-RECENT_EVENT_BUFFER_SIZE);
+      if (cached.metadata.status === "running" && metadata.status !== "running") {
+        cached.metadata.status = metadata.status;
+        cached.metadata.ended_at = metadata.ended_at;
+        cached.closed = true;
+      }
+      return {
+        metadata: { ...cached.metadata },
+        events: mergeEvents(events, cached.recent),
+        malformed: cached.malformed,
+      };
+    }
     const state: PersistedRun = {
       metadata,
       seq: events.reduce((max, event) => Math.max(max, event.seq), 0),
@@ -630,6 +744,11 @@ export class AgentOutputStore {
       startedEventWritten: events.some((event) => event.event === "run_started"),
       fileBytes: size,
       malformed,
+      mode: this.mode,
+      maxEventBytes: this.maxEventBytes,
+      maxFileBytes: this.maxFileBytes,
+      writeChain: Promise.resolve(),
+      pendingWrites: 0,
     };
     this.runs.set(filePath, state);
     this.pruneCachedRuns();
@@ -638,6 +757,64 @@ export class AgentOutputStore {
 
   private runPath(issueIdentifier: string, runId: string): string {
     return path.join(this.agentsRoot, safeSegment(issueIdentifier), `${safeSegment(runId)}.jsonl`);
+  }
+
+  private readMetadataSidecar(filePath: string, knownSize?: number): AgentOutputRunMetadata | null {
+    let size = knownSize;
+    try {
+      size ??= fs.statSync(filePath).size;
+      const value = JSON.parse(fs.readFileSync(metadataPath(filePath), "utf8")) as unknown;
+      if (!isRecord(value) || !isRunMetadata(value)) {
+        return null;
+      }
+      return { ...value, path: filePath, size } as AgentOutputRunMetadata;
+    } catch {
+      return null;
+    }
+  }
+
+  private queueWrite(
+    state: PersistedRun,
+    filePath: string,
+    contents: string,
+    terminal = false,
+  ): boolean {
+    if (state.pendingWrites >= MAX_PENDING_WRITES && !terminal) {
+      state.metadata.truncated = true;
+      logger.warning(`Agent output write queue reached its limit: ${state.metadata.path}`);
+      return false;
+    }
+    state.pendingWrites += 1;
+    state.writeChain = state.writeChain
+      .then(async () => {
+        await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+        if (filePath.endsWith(RUN_METADATA_SUFFIX)) {
+          await fs.promises.writeFile(filePath, contents, "utf8");
+        } else {
+          await fs.promises.appendFile(filePath, contents, "utf8");
+        }
+      })
+      .catch((error) => {
+        logger.warning(
+          `Agent output log write failed for ${state.metadata.issue_identifier}: ${inspect(error)}`,
+        );
+      })
+      .finally(() => {
+        state.pendingWrites -= 1;
+      });
+    return true;
+  }
+
+  private persistMetadata(state: PersistedRun, terminal = false): void {
+    if (state.mode === "off") {
+      return;
+    }
+    this.queueWrite(
+      state,
+      metadataPath(state.metadata.path),
+      `${JSON.stringify(state.metadata)}\n`,
+      terminal,
+    );
   }
 
   private notify(issueIdentifier: string, event: AgentOutputEvent): void {
@@ -665,15 +842,16 @@ export class AgentOutputStore {
   }
 }
 
-let configuredStore: { key: string; store: AgentOutputStore } | null = null;
+let configuredStore: AgentOutputStore | null = null;
 
 export function getAgentOutputStore(): AgentOutputStore {
   const options = configuredOptions();
-  const key = JSON.stringify(options);
-  if (configuredStore?.key !== key) {
-    configuredStore = { key, store: new AgentOutputStore(options) };
+  if (configuredStore === null) {
+    configuredStore = new AgentOutputStore(options);
+  } else {
+    configuredStore.reconfigure(options);
   }
-  return configuredStore.store;
+  return configuredStore;
 }
 
 export function resetAgentOutputStoreForTest(): void {
@@ -682,7 +860,9 @@ export function resetAgentOutputStoreForTest(): void {
 
 function configuredOptions(): AgentOutputStoreOptions {
   const rootOverride = getEnv<string | null>("agent_output_root", null);
-  let mode: AgentOutputMode = "off";
+  // Keep isolated store usage consistent with the schema default when a
+  // workflow is not available yet.
+  let mode: AgentOutputMode = "summary";
   let maxEventBytes = DEFAULT_MAX_EVENT_BYTES;
   let maxFileBytes = DEFAULT_MAX_FILE_BYTES;
   try {
@@ -842,6 +1022,61 @@ function safeJson(value: unknown): string {
 function safeSegment(value: string): string {
   const normalized = value.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+$/, "_");
   return normalized.slice(0, 180) || "unknown";
+}
+
+function metadataPath(filePath: string): string {
+  return `${filePath}${RUN_METADATA_SUFFIX}`;
+}
+
+function isRunMetadata(value: Record<string, unknown>): boolean {
+  return (
+    typeof value.issue_identifier === "string" &&
+    typeof value.run_id === "string" &&
+    typeof value.backend === "string" &&
+    typeof value.worker_host === "string" &&
+    typeof value.path === "string" &&
+    typeof value.size === "number" &&
+    typeof value.event_count === "number" &&
+    typeof value.last_seq === "number" &&
+    typeof value.truncated === "boolean" &&
+    (value.status === "running" ||
+      value.status === "completed" ||
+      value.status === "failed" ||
+      value.status === "cancelled")
+  );
+}
+
+function mergeEvents(...groups: AgentOutputEvent[][]): AgentOutputEvent[] {
+  const events = new Map<string, AgentOutputEvent>();
+  for (const group of groups) {
+    for (const event of group) {
+      events.set(`${event.run_id}:${event.seq}`, event);
+    }
+  }
+  return [...events.values()].sort((left, right) => {
+    if (left.run_id === right.run_id) {
+      return left.seq - right.seq;
+    }
+    return left.at.localeCompare(right.at);
+  });
+}
+
+function sanitizeReason(value: unknown): Record<string, string> | undefined {
+  const candidate = isRecord(value) && isRecord(value.reason) ? value.reason : value;
+  if (!isRecord(candidate) && typeof candidate !== "string") {
+    return undefined;
+  }
+  if (typeof candidate === "string") {
+    return { message: boundText(candidate, 1_024).value };
+  }
+  const result: Record<string, string> = {};
+  if (typeof candidate.tag === "string" && candidate.tag.trim() !== "") {
+    result.tag = boundText(candidate.tag.trim(), 128).value;
+  }
+  if (typeof candidate.message === "string" && candidate.message.trim() !== "") {
+    result.message = boundText(candidate.message.trim(), 1_024).value;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function issueKey(value: string): string {

@@ -87,7 +87,7 @@ export type ObservabilitySettings = {
   agentOutputMaxEventBytes: number;
   agentOutputMaxFileBytes: number;
 };
-export type ServerSettings = { port: number | null; host: string };
+export type ServerSettings = { port: number | null; host: string; unsafeAllowRemote: boolean };
 
 export type Settings = {
   tracker: TrackerSettings;
@@ -612,7 +612,7 @@ function castObservability(
   validateGreaterThan(refreshMs, section, "refresh_ms", 0, errors);
   const renderIntervalMs = field<number>(r, "render_interval_ms", section, castInteger, 16, errors);
   validateGreaterThan(renderIntervalMs, section, "render_interval_ms", 0, errors);
-  const agentOutput = field<string>(r, "agent_output", section, castString, "off", errors);
+  const agentOutput = field<string>(r, "agent_output", section, castString, "summary", errors);
   if (!(["off", "summary", "raw"] as string[]).includes(agentOutput.value)) {
     errors.push({
       path: `${section}.agent_output`,
@@ -655,6 +655,8 @@ function castServer(raw: unknown, section: string, errors: FieldError[]): Server
   return {
     port: port.value,
     host: field<string>(r, "host", section, castString, "127.0.0.1", errors).value,
+    unsafeAllowRemote: field<boolean>(r, "unsafe_allow_remote", section, castBoolean, false, errors)
+      .value,
   };
 }
 

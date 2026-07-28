@@ -176,6 +176,7 @@ describe("Config.Schema.parse", () => {
   test("defaults agent.backend to codex and passes its section through", () => {
     const defaults = parseOk({});
     expect(defaults.agent.backend).toBe("codex");
+    expect(defaults.observability.agentOutput).toBe("summary");
 
     // The codex backend omits a configSchema, so its top-level section passes
     // through untouched into backendConfig (typed values live in settings.codex).

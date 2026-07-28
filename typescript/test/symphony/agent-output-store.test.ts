@@ -32,7 +32,7 @@ function message(overrides: Partial<AgentMessage> = {}): AgentMessage {
 }
 
 describe("AgentOutputStore", () => {
-  test("writes independently parseable raw JSONL with cursor reads and stream metadata", () => {
+  test("writes independently parseable raw JSONL with cursor reads and stream metadata", async () => {
     const store = new AgentOutputStore({ root: tempRoot(), mode: "raw" });
     const run = store.startRun({
       issueId: "issue-2",
@@ -46,7 +46,7 @@ describe("AgentOutputStore", () => {
     run.record(message({ event: "session_started" }), 1, "Session started");
     run.record(message({ stream: "stderr", raw: "warning from tool" }), 1, "warning from tool");
     run.record(message({ event: "turn_completed", payload: { total: 3 } }), 1, "Turn completed");
-    run.finish("completed");
+    await run.finish("completed");
 
     const metadata = store.latestRun("SYM-2");
     expect(metadata?.run_id).toBe("thread-1");
@@ -75,7 +75,7 @@ describe("AgentOutputStore", () => {
     expect(incremental.nextCursor).toBe(4);
   });
 
-  test("keeps transport failure reasons in normalized events", () => {
+  test("keeps transport failure reasons in normalized events", async () => {
     const store = new AgentOutputStore({ root: tempRoot(), mode: "summary" });
     const run = store.startRun({
       issueId: "issue-3",
@@ -94,14 +94,30 @@ describe("AgentOutputStore", () => {
     );
 
     const event = store.readIssueOutput("SYM-3").events.find((item) => item.event === "port_exit");
-    expect(event).toMatchObject({
-      event: "port_exit",
-      reason: { tag: "port_exit", status: 1 },
-    });
+    expect(event).toMatchObject({ event: "port_exit", reason: { tag: "port_exit" } });
+    expect((event?.reason as Record<string, unknown>)?.status).toBeUndefined();
     expect(event?.message).toContain("port_exit");
+    await run.finish("failed", { tag: "port_exit", status: 1 });
   });
 
-  test("honors off, summary, and raw modes", () => {
+  test("keeps the live run object authoritative after an output read", async () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "raw" });
+    const run = store.startRun({
+      issueId: "issue-live",
+      issueIdentifier: "LIVE-1",
+      backend: "codex",
+      workerHost: null,
+      runId: "live-run",
+    });
+    run.record(message(), 1, "Still running");
+
+    expect(store.readIssueOutput("LIVE-1").events.length).toBeGreaterThan(0);
+    await run.finish("completed");
+
+    expect(store.latestRun("LIVE-1")?.status).toBe("completed");
+  });
+
+  test("honors off, summary, and raw modes", async () => {
     const off = new AgentOutputStore({ root: tempRoot(), mode: "off" });
     const offRun = off.startRun({
       issueId: "issue-off",
@@ -110,7 +126,7 @@ describe("AgentOutputStore", () => {
       workerHost: null,
     });
     offRun.record(message(), 1, "Summary");
-    offRun.finish("completed");
+    await offRun.finish("completed");
     expect(off.latestRun("OFF-1")).toBeNull();
 
     const summary = new AgentOutputStore({ root: tempRoot(), mode: "summary" });
@@ -121,7 +137,7 @@ describe("AgentOutputStore", () => {
       workerHost: null,
     });
     summaryRun.record(message(), 1, "Summary only");
-    summaryRun.finish("completed");
+    await summaryRun.finish("completed");
     const summaryEvent = summary
       .readIssueOutput("SUM-1")
       .events.find((event) => event.event === "notification");
@@ -137,7 +153,7 @@ describe("AgentOutputStore", () => {
       workerHost: null,
     });
     rawRun.record(message(), 1, "Summary");
-    rawRun.finish("completed");
+    await rawRun.finish("completed");
     const rawEvent = raw
       .readIssueOutput("RAW-1")
       .events.find((event) => event.event === "notification");
@@ -145,7 +161,64 @@ describe("AgentOutputStore", () => {
     expect(rawEvent?.raw).toBe('{"message":"Inspecting the workspace"}');
   });
 
-  test("marks payload truncation and stops at the file limit", () => {
+  test("keeps one store live across output configuration changes", async () => {
+    const firstRoot = tempRoot();
+    const secondRoot = tempRoot();
+    const store = new AgentOutputStore({ root: firstRoot, mode: "raw" });
+    const first = store.startRun({
+      issueId: "issue-config",
+      issueIdentifier: "CFG-1",
+      backend: "codex",
+      workerHost: null,
+      runId: "first-run",
+    });
+    first.record(message(), 1, "First");
+    await first.finish("completed");
+
+    store.reconfigure({ root: secondRoot, mode: "summary" });
+    const second = store.startRun({
+      issueId: "issue-config",
+      issueIdentifier: "CFG-1",
+      backend: "codex",
+      workerHost: null,
+      runId: "second-run",
+    });
+    second.record(message(), 1, "Second");
+    await second.finish("completed");
+
+    expect(store.listRecentRuns(10).map((run) => run.run_id)).toEqual(["second-run", "first-run"]);
+    expect(store.readIssueOutput("CFG-1").run?.run_id).toBe("second-run");
+  });
+
+  test("allocates duplicate run ids before asynchronous writes flush", async () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "raw" });
+    const first = store.startRun({
+      issueId: "issue-duplicate",
+      issueIdentifier: "DUP-1",
+      backend: "codex",
+      workerHost: null,
+      runId: "same-run",
+    });
+    const second = store.startRun({
+      issueId: "issue-duplicate",
+      issueIdentifier: "DUP-1",
+      backend: "codex",
+      workerHost: null,
+      runId: "same-run",
+    });
+
+    first.record(message(), 1, "First");
+    second.record(message(), 1, "Second");
+    await Promise.all([first.finish("completed"), second.finish("completed")]);
+
+    expect(first.metadata().run_id).toBe("same-run");
+    expect(second.metadata().run_id).toBe("same-run-2");
+    expect(store.listRecentRuns(10).map((run) => run.run_id)).toEqual(
+      expect.arrayContaining(["same-run", "same-run-2"]),
+    );
+  });
+
+  test("marks payload truncation and stops at the file limit", async () => {
     const store = new AgentOutputStore({
       root: tempRoot(),
       mode: "raw",
@@ -165,7 +238,7 @@ describe("AgentOutputStore", () => {
         "Large event",
       );
     }
-    run.finish("completed");
+    await run.finish("completed");
 
     const metadata = store.latestRun("LIM-1");
     expect(metadata?.size).toBeLessThanOrEqual(1_700);
@@ -176,9 +249,17 @@ describe("AgentOutputStore", () => {
       .split("\n");
     expect(lines.every((line) => Buffer.byteLength(line, "utf8") + 1 <= 1_700)).toBe(true);
     expect(lines.some((line) => JSON.parse(line).event === "log_truncated")).toBe(true);
+
+    const restarted = new AgentOutputStore({
+      root: path.dirname(path.dirname(path.dirname(path.dirname(metadata?.path ?? "")))),
+      mode: "raw",
+      maxEventBytes: 512,
+      maxFileBytes: 1_700,
+    });
+    expect(restarted.latestRun("LIM-1")?.status).toBe("completed");
   });
 
-  test("returns a stable corruption warning without throwing", () => {
+  test("returns a stable corruption warning without throwing", async () => {
     const root = tempRoot();
     const store = new AgentOutputStore({ root, mode: "raw" });
     const run = store.startRun({
@@ -189,6 +270,7 @@ describe("AgentOutputStore", () => {
       runId: "bad-run",
     });
     run.record(message(), 1, "Valid event");
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const pathName = run.metadata().path;
     fs.appendFileSync(pathName, "not-json\n");
     const result = store.readIssueOutput("BAD-1");
@@ -199,7 +281,7 @@ describe("AgentOutputStore", () => {
     expect(result.events.length).toBeGreaterThan(0);
   });
 
-  test("does not fail an agent run when the log root cannot be written", () => {
+  test("does not fail an agent run when the log root cannot be written", async () => {
     const root = path.join(tempRoot(), "not-a-directory");
     fs.writeFileSync(root, "locked");
     const store = new AgentOutputStore({ root, mode: "raw" });
@@ -209,9 +291,9 @@ describe("AgentOutputStore", () => {
       backend: "codex",
       workerHost: null,
     });
-    expect(() => {
+    await expect(async () => {
       run.record(message(), 1, "Still running");
-      run.finish("completed");
+      await run.finish("completed");
     }).not.toThrow();
   });
 });
