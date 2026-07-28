@@ -13,6 +13,9 @@ import { type GiteaSettings, giteaInstanceUrl, giteaSettings } from "./settings.
 const API_PREFIX = "/api/v1";
 const ISSUE_PAGE_SIZE = 50;
 const LABEL_PAGE_SIZE = 50;
+const MAX_PAGINATION_PAGES = 100;
+const MAX_PAGINATION_ITEMS = 5_000;
+const MAX_PAGINATION_DURATION_MS = 60_000;
 const MAX_ERROR_BODY_LOG_BYTES = 1_000;
 const PATH_VALIDATION_ORIGIN = "https://symphony.invalid";
 
@@ -150,6 +153,9 @@ export async function fetchIssueStatesByIds(
     const path = repositoryIssuePath(repository.value, issueNumber);
     const response = await requestRaw("GET", path, null, opts);
     if (!response.ok) {
+      if (isMissingIssueError(response.error)) {
+        continue;
+      }
       return err(response.error);
     }
     const issue = decodeIssue(response.value.body, settings, gitea);
@@ -422,6 +428,7 @@ async function httpRequest(
       method,
       headers,
       body: body === null ? undefined : JSON.stringify(body),
+      redirect: "error",
       signal: AbortSignal.timeout(30_000),
     });
     const text = await response.text();
@@ -472,8 +479,16 @@ async function fetchPaginatedArray(
   let path = initialPath;
   const seen = new Set<string>();
   const items: unknown[] = [];
+  const startedAt = Date.now();
+  let pageCount = 0;
 
   while (true) {
+    if (pageCount >= MAX_PAGINATION_PAGES) {
+      return err(paginationLimitError(path, "pages", MAX_PAGINATION_PAGES));
+    }
+    if (Date.now() - startedAt >= MAX_PAGINATION_DURATION_MS) {
+      return err(paginationLimitError(path, "duration_ms", MAX_PAGINATION_DURATION_MS));
+    }
     if (seen.has(path)) {
       return err({
         tag: "gitea_pagination_loop",
@@ -483,6 +498,7 @@ async function fetchPaginatedArray(
       });
     }
     seen.add(path);
+    pageCount += 1;
     const response = await requestRaw("GET", path, null, opts);
     if (!response.ok) {
       return err(response.error);
@@ -490,6 +506,9 @@ async function fetchPaginatedArray(
     const page = decodeArray(response.value.body, response.value.path);
     if (!page.ok) {
       return err(page.error);
+    }
+    if (items.length + page.value.length > MAX_PAGINATION_ITEMS) {
+      return err(paginationLimitError(path, "items", MAX_PAGINATION_ITEMS));
     }
     items.push(...page.value);
 
@@ -999,6 +1018,25 @@ function invalidIssueIdError(issueId: string): TrackerError {
     code: "invalid_payload",
     message: `Gitea issue identifier is not a repository issue number: ${JSON.stringify(issueId)}`,
     detail: { issueId },
+  };
+}
+
+function isMissingIssueError(error: TrackerError): boolean {
+  const status =
+    "status" in error ? error.status : isObject(error.detail) ? error.detail.status : null;
+  return error.code === "provider_status" && status === 404;
+}
+
+function paginationLimitError(
+  path: string,
+  limitKind: "pages" | "items" | "duration_ms",
+  limit: number,
+): TrackerError {
+  return {
+    tag: "gitea_pagination_limit",
+    code: "invalid_payload",
+    message: `Gitea pagination exceeded its ${limitKind} limit`,
+    detail: { path, limitKind, limit },
   };
 }
 

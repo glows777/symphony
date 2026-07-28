@@ -10,6 +10,7 @@ import {
   fetchRepositoryLabels,
   normalizeIssueForTest,
   replaceIssueLabels,
+  request,
   updateIssueState,
 } from "../../../../../src/symphony/plugins/trackers/gitea/client.ts";
 import { workflowFilePath } from "../../../../../src/symphony/workflow.ts";
@@ -215,6 +216,22 @@ describe("Gitea.Client", () => {
     ]);
   });
 
+  test("skips missing issues while preserving the remaining refresh results", async () => {
+    const calls: Call[] = [];
+    const result = await fetchIssueStatesByIds(["acme/symphony#404", "acme/symphony#1"], {
+      requestFun: fakeTransport(calls, [
+        { status: 404, body: { message: "issue not found" } },
+        { status: 200, body: rawIssue(1) },
+      ]),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: [expect.objectContaining({ id: "acme/symphony#1" })],
+    });
+    expect(calls).toHaveLength(2);
+  });
+
   test("creates comments and updates issue state through official routes", async () => {
     const calls: Call[] = [];
     const requestFun = fakeTransport(calls, [
@@ -326,6 +343,48 @@ describe("Gitea.Client", () => {
     ]);
   });
 
+  test("rejects redirects at the authenticated API boundary", async () => {
+    const originalFetch = globalThis.fetch;
+    let fetchOptions: RequestInit | undefined;
+    globalThis.fetch = (async (_input, options) => {
+      fetchOptions = options;
+      return new Response("[]", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      expect(await request("GET", "/api/v1/repos/acme/symphony/issues")).toEqual({
+        ok: true,
+        value: [],
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(fetchOptions?.redirect).toBe("error");
+  });
+
+  test("bounds pagination when the provider keeps returning unique next links", async () => {
+    let calls = 0;
+    const result = await fetchIssueComments("acme/symphony#7", {
+      requestFun: (_method, _url, _headers, _body) => {
+        calls += 1;
+        return {
+          ok: true,
+          value: {
+            status: 200,
+            body: [{ id: calls, body: `comment ${calls}` }],
+            headers: {
+              link: `<https://gitea.test/api/v1/repos/acme/symphony/issues/7/comments?page=${calls + 1}>; rel="next"`,
+            },
+          },
+        };
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { tag: "gitea_pagination_limit" } });
+    expect(calls).toBe(100);
+  });
+
   test("normalizes missing credentials, transport, HTTP, and payload failures", async () => {
     writeGiteaWorkflowFile(workflowFilePath(), { token: undefined });
     const missing = await fetchCandidateIssues();
@@ -359,15 +418,7 @@ describe("Gitea.Client", () => {
         value: { status: 404, body: { message: "issue not found" } },
       }),
     });
-    expect(notFound).toMatchObject({
-      ok: false,
-      error: {
-        tag: "gitea_api_status",
-        code: "provider_status",
-        status: 404,
-        detail: { body: { message: "issue not found" } },
-      },
-    });
+    expect(notFound).toEqual({ ok: true, value: [] });
 
     const providerError = await fetchIssuesByStates(["open"], {
       requestFun: () => ({

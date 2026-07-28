@@ -170,13 +170,67 @@ describe("Gitea.Plugin", () => {
     };
     const success = await GiteaPlugin.agentTools?.executeAgentTool(
       "gitea_api",
-      { method: "GET", path: "/api/v1/user" },
+      { method: "GET", path: "/api/v1/repos/acme/symphony/issues/7" },
       {
         giteaClient,
       },
     );
     expect(success).toEqual({ success: true, payload: { login: "runner" } });
-    expect(calls).toEqual([{ method: "GET", path: "/api/v1/user", body: null }]);
+    expect(calls).toEqual([
+      { method: "GET", path: "/api/v1/repos/acme/symphony/issues/7", body: null },
+    ]);
+
+    for (const request of [
+      {
+        method: "POST",
+        path: "/api/v1/repos/acme/symphony/issues/7/comments",
+        body: { body: "hello" },
+      },
+      {
+        method: "PATCH",
+        path: "/api/v1/repos/acme/symphony/issues/7",
+        body: { state: "closed" },
+      },
+      {
+        method: "PUT",
+        path: "/api/v1/repos/acme/symphony/issues/7/labels",
+        body: { labels: [2, "bug"] },
+      },
+    ]) {
+      await expect(
+        GiteaPlugin.agentTools?.executeAgentTool("gitea_api", request, { giteaClient }),
+      ).resolves.toEqual({ success: true, payload: { login: "runner" } });
+    }
+
+    const destructive = await GiteaPlugin.agentTools?.executeAgentTool(
+      "gitea_api",
+      { method: "DELETE", path: "/api/v1/token" },
+      { giteaClient },
+    );
+    expect(destructive).toMatchObject({
+      success: false,
+      payload: { error: { message: expect.stringContaining("must be one of") } },
+    });
+
+    const unrelated = await GiteaPlugin.agentTools?.executeAgentTool(
+      "gitea_api",
+      { method: "GET", path: "/api/v1/user" },
+      { giteaClient },
+    );
+    expect(unrelated).toMatchObject({
+      success: false,
+      payload: { error: { message: expect.stringContaining("only permits") } },
+    });
+
+    const foreignRepository = await GiteaPlugin.agentTools?.executeAgentTool(
+      "gitea_api",
+      { method: "GET", path: "/api/v1/repos/other/symphony/issues/7" },
+      { giteaClient },
+    );
+    expect(foreignRepository).toMatchObject({
+      success: false,
+      payload: { error: { message: expect.stringContaining("only permits") } },
+    });
 
     const invalid = await GiteaPlugin.agentTools?.executeAgentTool("gitea_api", {
       method: "GET",

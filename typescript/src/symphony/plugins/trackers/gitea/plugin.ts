@@ -3,6 +3,7 @@
 // configuration, capability wiring, and the injectable client seam.
 
 import { getEnv } from "../../../app-env.ts";
+import { settingsBang } from "../../../config.ts";
 import type { JsonMap } from "../../../config/schema.ts";
 import { type Result, err, ok } from "../../../result.ts";
 import type { Issue } from "../../../work-item.ts";
@@ -14,7 +15,12 @@ import {
   toTrackerError,
   trackerError,
 } from "../types.ts";
-import { GITEA_API_TOOL, executeGiteaApiWith, giteaApiToolSpec } from "./api-tool.ts";
+import {
+  GITEA_API_TOOL,
+  type GiteaApiRepository,
+  executeGiteaApiWith,
+  giteaApiToolSpec,
+} from "./api-tool.ts";
 import { Client, type GiteaClientModule, request } from "./client.ts";
 import { giteaInstanceUrl, giteaSettings, repositoryUrl } from "./settings.ts";
 
@@ -143,7 +149,17 @@ export const GiteaPlugin: TrackerPlugin = {
           payload: { error: { message: `Unsupported dynamic tool: ${JSON.stringify(tool)}.` } },
         });
       }
-      return executeGiteaApiWith((method, path, body) => request(method, path, body), args, opts);
+      const gitea = giteaSettings(settingsBang());
+      const repository: GiteaApiRepository | null =
+        gitea.owner !== null && gitea.repo !== null
+          ? { owner: gitea.owner, repo: gitea.repo }
+          : null;
+      return executeGiteaApiWith(
+        (method, path, body) => request(method, path, body),
+        args,
+        repository,
+        opts,
+      );
     },
   },
 

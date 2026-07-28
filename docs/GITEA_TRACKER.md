@@ -48,7 +48,8 @@ export GITEA_API_TOKEN='...'
 
 Requests use Gitea's `/api/v1` REST API. The client sends the configured token
 as `Authorization: token <token>` and restricts agent `gitea_api` calls to the
-configured host and `/api/v1/` path prefix. The main routes are:
+configured host and the configured repository's supported issue routes. The
+main routes are:
 
 - `GET /api/v1/repos/{owner}/{repo}/issues?state={open|closed}&type=issues&page={page}&limit={limit}`
 - `GET /api/v1/repos/{owner}/{repo}/issues/{index}`
@@ -60,7 +61,12 @@ configured host and `/api/v1/` path prefix. The main routes are:
 Issue and repository-label reads send `page` and `limit`. The client follows a
 `Link` header with `rel="next"`, and uses `x-total-count` as the fallback for
 constructing the next page. Empty arrays are valid results. Pagination links
-are accepted only when they stay on the configured host and API path.
+are accepted only when they stay on the configured host and API path. A
+pagination walk is bounded to 100 pages, 5,000 items, and 60 seconds. During
+issue-state refresh, an individual 404 is treated as a missing issue and does
+not abort the remaining refresh; other provider errors still fail the refresh.
+Authenticated requests reject redirects so the API prefix and authorization
+boundary cannot be bypassed.
 
 Authentication and pagination follow the [Gitea API Usage documentation](https://docs.gitea.com/development/api-usage).
 The [Gitea 1.27 API reference](https://docs.gitea.com/api/1.27/) is generated
@@ -93,9 +99,12 @@ existing scheduling/reconciliation loop:
   issue's labels; the agent can use that route through `gitea_api` when needed.
 
 The plugin implements `comments` and `stateUpdates`. It also advertises a
-controlled `gitea_api` agent tool with `GET`, `POST`, `PUT`, `PATCH`, and
-`DELETE`; tool paths must start with `/api/v1/`, and the tool cannot select a
-different host or send an arbitrary absolute URL.
+controlled `gitea_api` agent tool. The tool accepts only `GET`, `POST`, `PUT`,
+and `PATCH` requests for the configured repository's issue, comment, label,
+and state routes. Write bodies are constrained to comment creation, issue
+state changes, and complete label replacement. `DELETE`, unrelated API
+endpoints, other repositories, and arbitrary request bodies are rejected before
+the client is called.
 
 ## Compatibility and errors
 

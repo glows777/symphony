@@ -1,17 +1,17 @@
-// The `gitea_api` agent-facing dynamic tool. It exposes only declared HTTP
-// methods and paths under the configured Gitea instance's `/api/v1/` prefix;
-// the host and Authorization header always come from the tracker plugin.
+// The `gitea_api` agent-facing dynamic tool. It exposes only the configured
+// repository's issue, comment, label, and state routes; the host and
+// Authorization header always come from the tracker plugin.
 
 import { type Result, err, ok } from "../../../result.ts";
 import type { AgentToolExecuteOpts, AgentToolOutcome, AgentToolSpec } from "../types.ts";
 
 export const GITEA_API_TOOL = "gitea_api";
 const GITEA_API_PATH_PREFIX = "/api/v1/";
-const GITEA_API_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+const GITEA_API_METHODS = ["GET", "POST", "PUT", "PATCH"] as const;
 const PATH_VALIDATION_ORIGIN = "https://symphony.invalid";
 
 const GITEA_API_DESCRIPTION =
-  "Execute a raw Gitea API request using Symphony's configured endpoint and token. Paths must stay under /api/v1/.\n";
+  "Execute a constrained Gitea issue API request for the configured repository. Only issue, comment, label, and state routes are permitted.\n";
 
 const GITEA_API_INPUT_SCHEMA = {
   type: "object",
@@ -26,7 +26,7 @@ const GITEA_API_INPUT_SCHEMA = {
     path: {
       type: "string",
       description:
-        "Gitea API path starting with /api/v1/ (query string allowed); the host and auth are always configured by Symphony.",
+        "Gitea API path for the configured repository; the host, repository, and auth are always configured by Symphony.",
     },
     body: {
       type: ["object", "null"],
@@ -42,6 +42,8 @@ export type GiteaApiClientFn = (
   body: Record<string, unknown> | null,
 ) => Result<unknown, unknown> | Promise<Result<unknown, unknown>>;
 
+export type GiteaApiRepository = { owner: string; repo: string };
+
 export const giteaApiToolSpec: AgentToolSpec = {
   name: GITEA_API_TOOL,
   description: GITEA_API_DESCRIPTION,
@@ -51,12 +53,13 @@ export const giteaApiToolSpec: AgentToolSpec = {
 export async function executeGiteaApiWith(
   defaultClient: GiteaApiClientFn,
   args: unknown,
+  repository: GiteaApiRepository | null,
   opts: AgentToolExecuteOpts = {},
 ): Promise<AgentToolOutcome> {
   const giteaClient: GiteaApiClientFn =
     (opts.giteaClient as GiteaApiClientFn | undefined) ?? defaultClient;
 
-  const normalized = normalizeGiteaApiArguments(args);
+  const normalized = normalizeGiteaApiArguments(args, repository);
   if (!normalized.ok) {
     return { success: false, payload: toolErrorPayload(normalized.error) };
   }
@@ -85,7 +88,10 @@ type NormalizedArgs = {
   body: Record<string, unknown> | null;
 };
 
-function normalizeGiteaApiArguments(args: unknown): Result<NormalizedArgs, unknown> {
+function normalizeGiteaApiArguments(
+  args: unknown,
+  repository: GiteaApiRepository | null,
+): Result<NormalizedArgs, unknown> {
   if (!isObject(args)) {
     return err({ tag: "invalid_arguments" });
   }
@@ -100,6 +106,10 @@ function normalizeGiteaApiArguments(args: unknown): Result<NormalizedArgs, unkno
   const body = normalizeBody(args.body);
   if (!body.ok) {
     return err(body.error);
+  }
+  const route = validateRoute(method.value, path.value, body.value, repository);
+  if (!route.ok) {
+    return err(route.error);
   }
   return ok({ method: method.value, path: path.value, body: body.value });
 }
@@ -135,6 +145,78 @@ function normalizePath(path: unknown): Result<string, unknown> {
     return err({ tag: "invalid_path" });
   }
   return ok(trimmed);
+}
+
+function validateRoute(
+  method: string,
+  path: string,
+  body: Record<string, unknown> | null,
+  repository: GiteaApiRepository | null,
+): Result<undefined, unknown> {
+  if (repository === null || repository.owner.trim() === "" || repository.repo.trim() === "") {
+    return err({ tag: "missing_gitea_api_repository" });
+  }
+  const parsed = new URL(path, PATH_VALIDATION_ORIGIN);
+  const repoPath = `${GITEA_API_PATH_PREFIX}repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}`;
+  const issueCollectionPath = `${repoPath}/issues`;
+  const issuePath = new RegExp(`^${escapeRegExp(issueCollectionPath)}/[1-9]\\d*$`);
+  const commentsPath = new RegExp(`^${escapeRegExp(issueCollectionPath)}/[1-9]\\d*/comments$`);
+  const labelsPath = new RegExp(`^${escapeRegExp(issueCollectionPath)}/[1-9]\\d*/labels$`);
+
+  const allowed =
+    (parsed.pathname === `${repoPath}/labels` && method === "GET" && body === null) ||
+    (parsed.pathname === issueCollectionPath && method === "GET" && body === null) ||
+    (issuePath.test(parsed.pathname) &&
+      ((method === "GET" && body === null) || (method === "PATCH" && isStateBody(body)))) ||
+    (commentsPath.test(parsed.pathname) &&
+      ((method === "GET" && body === null) || (method === "POST" && isCommentBody(body)))) ||
+    (labelsPath.test(parsed.pathname) &&
+      ((method === "GET" && body === null) || (method === "PUT" && isLabelsBody(body))));
+
+  return allowed
+    ? ok(undefined)
+    : err({ tag: "invalid_gitea_api_route", detail: { method, path } });
+}
+
+function isStateBody(body: Record<string, unknown> | null): boolean {
+  return (
+    body !== null &&
+    hasOnlyKeys(body, ["state"]) &&
+    (body.state === "open" || body.state === "closed")
+  );
+}
+
+function isCommentBody(body: Record<string, unknown> | null): boolean {
+  return (
+    body !== null &&
+    hasOnlyKeys(body, ["body"]) &&
+    typeof body.body === "string" &&
+    body.body.trim() !== ""
+  );
+}
+
+function isLabelsBody(body: Record<string, unknown> | null): boolean {
+  return (
+    body !== null &&
+    hasOnlyKeys(body, ["labels"]) &&
+    Array.isArray(body.labels) &&
+    body.labels.every(
+      (label) =>
+        (typeof label === "string" && label.trim() !== "") ||
+        (typeof label === "number" && Number.isInteger(label) && label >= 0),
+    )
+  );
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  const allowed = new Set(keys);
+  return (
+    Object.keys(value).every((key) => allowed.has(key)) && Object.keys(value).length === keys.length
+  );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
 }
 
 function isSafeApiPathname(pathname: string, prefix: string): boolean {
@@ -185,8 +267,17 @@ function toolErrorPayload(reason: unknown): Record<string, unknown> {
     case "missing_gitea_endpoint":
     case "missing_gitea_owner":
     case "missing_gitea_repository":
+    case "missing_gitea_api_repository":
     case "invalid_gitea_endpoint":
       return { error: { message: reasonMessage(reason) } };
+    case "invalid_gitea_api_route":
+      return {
+        error: {
+          message:
+            "`gitea_api` only permits configured-repository issue, comment, label, and state routes with their supported request bodies.",
+          detail: (reason as { detail?: unknown }).detail ?? null,
+        },
+      };
     case "gitea_api_status":
       return statusPayload(reason);
     case "gitea_api_request":
@@ -212,12 +303,12 @@ function toolErrorPayload(reason: unknown): Record<string, unknown> {
     case "missing_method":
       return {
         error: {
-          message: "`gitea_api` requires a `method` string (GET, POST, PUT, PATCH, or DELETE).",
+          message: "`gitea_api` requires a `method` string (GET, POST, PUT, or PATCH).",
         },
       };
     case "invalid_method":
       return {
-        error: { message: "`gitea_api.method` must be one of GET, POST, PUT, PATCH, or DELETE." },
+        error: { message: "`gitea_api.method` must be one of GET, POST, PUT, or PATCH." },
       };
     case "missing_path":
       return { error: { message: "`gitea_api` requires a non-empty `path` string." } };
