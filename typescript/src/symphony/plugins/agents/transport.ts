@@ -74,9 +74,16 @@ export class ProcessTransport implements Transport {
   }
 
   private async pump(stream: ReadableStream<Uint8Array>, which: "out" | "err"): Promise<void> {
+    // One decoder per stream, decoding in streaming mode: a multibyte UTF-8
+    // sequence split across a chunk boundary must be held until its remaining
+    // bytes arrive. A non-streaming decode emits U+FFFD for the split halves,
+    // silently corrupting backend protocol payloads (both backends share this
+    // transport).
     const decoder = new TextDecoder();
     for await (const chunk of stream) {
-      const text = (which === "out" ? this.outBuffer : this.errBuffer) + decoder.decode(chunk);
+      const text =
+        (which === "out" ? this.outBuffer : this.errBuffer) +
+        decoder.decode(chunk, { stream: true });
       const lines = text.split("\n");
       const remainder = lines.pop() ?? "";
       if (which === "out") {

@@ -1475,11 +1475,22 @@ export class Orchestrator {
       return "unavailable";
     }
     const callPromise = this.call({ tag: "snapshot" }) as Promise<Snapshot>;
+    // The timer must be cleared once the race settles: dashboard/SSE polling
+    // calls this continuously, and every leaked handle stayed in `timers`
+    // forever (unbounded growth, and the process kept being kept alive).
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<"timeout">((resolve) => {
-      const timer = setTimeout(() => resolve("timeout"), timeoutMs);
+      timer = setTimeout(() => resolve("timeout"), timeoutMs);
       this.timers.add(timer);
     });
-    return Promise.race([callPromise, timeout]);
+    try {
+      return await Promise.race([callPromise, timeout]);
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        this.timers.delete(timer);
+      }
+    }
   }
 
   requestRefresh(): Promise<RequestRefreshReply> {
@@ -1802,7 +1813,11 @@ export class Orchestrator {
   }
 
   private reconcileStalledRunningIssues(state: State): State {
-    const timeoutMs = settingsBang().codex.stallTimeoutMs;
+    // Stalling is backend-neutral, so `agent.stall_timeout_ms` wins when set;
+    // `codex.stall_timeout_ms` remains the fallback (it predates pluggable
+    // backends, and existing WORKFLOW.md files still set it there).
+    const settings = settingsBang();
+    const timeoutMs = settings.agent.stallTimeoutMs ?? settings.codex.stallTimeoutMs;
     if (timeoutMs <= 0 || Object.keys(state.running).length === 0) {
       return state;
     }
@@ -1936,12 +1951,23 @@ export class Orchestrator {
     }
     const ref = Symbol("agent-ref");
     let aborted = false;
+    // Elixir's stop_running_task kills the worker process. Here stop() aborts
+    // the signal so the runner tears the backend session (and its subprocess)
+    // down; otherwise a stalled/terminal/blocked issue leaves the agent running
+    // until turn_timeout_ms, and a retry can dispatch a second agent into the
+    // same workspace concurrently.
+    const abortController = new AbortController();
     const task: RunningTask = {
       stop() {
         aborted = true;
+        abortController.abort();
       },
     };
-    AgentRunner.run(issue, (update) => this.onWorkerUpdate(update), { workerHost, attempt })
+    AgentRunner.run(issue, (update) => this.onWorkerUpdate(update), {
+      workerHost,
+      attempt,
+      signal: abortController.signal,
+    })
       .then(() => {
         if (!aborted) {
           this.cast({ tag: "down", ref, reason: "normal" });

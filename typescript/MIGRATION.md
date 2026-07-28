@@ -438,9 +438,45 @@ TS-native design, no Elixir counterpart; no behavior change for the default
 - **Test seam:** new `agent_backend_overrides` app-env key (map of kind →
   plugin) shadows registered backends for tests, mirroring
   `tracker_plugin_overrides`.
-- **Not included (follow-up):** an `agent.stall_timeout_ms` override (codex's
-  value is read directly today). The claude-code backend, the shared
-  `ProcessTransport`, and the unified workspace guard shipped in P5 (below).
+- **Follow-up, now shipped:** `agent.stall_timeout_ms` (see below). The
+  claude-code backend, the shared `ProcessTransport`, and the unified workspace
+  guard shipped in P5 (below).
+
+### Backend-neutral `agent.stall_timeout_ms`
+
+Stall detection is a property of "an agent run went quiet", not of any one
+backend, but the orchestrator read `codex.stall_timeout_ms` directly — so a
+claude_code deployment was governed by a `codex:` key. `agent.stall_timeout_ms`
+(nullable integer, default `null`) now takes precedence, with
+`codex.stall_timeout_ms` as the fallback. Purely additive: existing WORKFLOW.md
+files are unaffected, and `0` still disables stall reconciliation (SPEC §10).
+
+### Cancellation, decoding, and lifecycle fixes
+
+Five defects originally found by diffing against the Elixir reference, all of
+which still applied and two of which grew worse once a second backend shared
+the transport:
+
+- **`RunningTask.stop()` did not stop anything.** It set an `aborted` flag that
+  suppressed the exit message while the agent kept running to `turn_timeout_ms`
+  (an hour by default), so a stalled/terminal/blocked issue leaked its
+  subprocess and a retry could dispatch a second agent into the same workspace.
+  The orchestrator now aborts an `AbortSignal` that the runner wires to
+  `sessions.stopSession` on both session paths — matching Elixir's
+  `Task.Supervisor.terminate_child`.
+- **`ProcessTransport` decoded without `{ stream: true }`,** so a multibyte
+  UTF-8 sequence split across a chunk boundary decoded to U+FFFD and silently
+  corrupted protocol payloads. Both backends share this transport.
+- **`Orchestrator.snapshot()` leaked its timeout timer** into `timers` on every
+  call; dashboard/SSE polling grew that set without bound.
+- **The dashboard SSE handler enqueued onto a cancelled stream** when a client
+  disconnected mid-render, raising an unhandled rejection out of a
+  fire-and-forget subscriber.
+- **`/api/v1/%zz` threw a `URIError` into a 500**; malformed percent-encoding is
+  now an unmatched route (404).
+
+The abort and UTF-8 regression tests were verified to fail against the pre-fix
+code.
 
 ### Claude Code agent backend (P5)
 

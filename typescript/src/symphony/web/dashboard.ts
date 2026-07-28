@@ -44,7 +44,14 @@ export function makeEventsHandler(
         const send = async (): Promise<void> => {
           const payload = await statePayload(provider, snapshotTimeoutMs);
           const section = renderDashboardSection(payload, new Date());
-          controller.enqueue(encoder.encode(sseEvent("update", section)));
+          try {
+            controller.enqueue(encoder.encode(sseEvent("update", section)));
+          } catch {
+            // The client disconnected while the snapshot was in flight, so the
+            // stream is already cancelled. Drop the update instead of raising
+            // an unhandled rejection out of the fire-and-forget subscriber.
+            unsubscribe();
+          }
         };
         controller.enqueue(encoder.encode(": connected\n\n"));
         unsubscribe = subscribe(() => {
