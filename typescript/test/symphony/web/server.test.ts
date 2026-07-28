@@ -325,6 +325,8 @@ describe("web server / observability API", () => {
       const connected = await reader.read();
       expect(new TextDecoder().decode(connected.value)).toContain(": connected");
       run.record({ event: "notification", timestamp: new Date(), stream: "stderr" }, 1, "stderr");
+      const started = await reader.read();
+      expect(new TextDecoder().decode(started.value)).toContain('"event":"run_started"');
       const chunk = await reader.read();
       expect(new TextDecoder().decode(chunk.value)).toContain("event: agent_output");
       expect(new TextDecoder().decode(chunk.value)).toContain('"stream":"stderr"');

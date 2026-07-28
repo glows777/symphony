@@ -14,6 +14,7 @@ export type RunItem = {
   turn_count?: number;
   updated_at?: string | null;
   started_at?: string | null;
+  ended_at?: string | null;
   last_event_at?: string | null;
   tokens?: {
     input_tokens?: number;

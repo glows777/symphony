@@ -24,6 +24,8 @@ export function RunHeader({ identifier, detail, run, loading }: RunHeaderProps) 
     "Not started";
   const turn = snapshotRun?.turn_count ?? "n/a";
   const tokens = snapshotRun?.tokens?.total_tokens ?? null;
+  const startedAt = snapshotRun?.started_at ?? run?.started_at ?? null;
+  const endedAt = run?.ended_at ?? null;
 
   return (
     <header className="run-header">
@@ -57,6 +59,7 @@ export function RunHeader({ identifier, detail, run, loading }: RunHeaderProps) 
         <Fact label="Workspace" value={workspace} mono />
         <Fact label="Session" value={compactId(session)} mono />
         <Fact label="Turn" value={String(turn)} numeric />
+        <Fact label="Runtime" value={formatRuntime(startedAt, endedAt)} numeric />
         <Fact
           label="Tokens"
           value={tokens === null || tokens === undefined ? "n/a" : formatInt(tokens)}
@@ -129,4 +132,29 @@ function compactId(value: string): string {
 
 function formatInt(value: number): string {
   return Math.trunc(value).toLocaleString("en-US");
+}
+
+function formatRuntime(startedAt: string | null | undefined, endedAt: string | null): string {
+  if (startedAt === null || startedAt === undefined) {
+    return "n/a";
+  }
+  const started = Date.parse(startedAt);
+  if (!Number.isFinite(started)) {
+    return "n/a";
+  }
+  const ended = endedAt === null ? Date.now() : Date.parse(endedAt);
+  if (!Number.isFinite(ended)) {
+    return "n/a";
+  }
+  const seconds = Math.max(0, Math.floor((ended - started) / 1000));
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (minutes < 60) {
+    return `${minutes}m ${remainder}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
 }

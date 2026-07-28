@@ -77,6 +77,7 @@ function fakeBackend(caps: {
           backendId: caps.backendId ?? "codex",
           workspace,
           workerHost: opts.workerHost ?? null,
+          runId: `fake-run-${sessions}`,
           handle,
         };
         return Promise.resolve(ok(session));
@@ -167,6 +168,28 @@ describe("AgentRunner with a synthetic backend", () => {
     expect(backend.turns[0]?.prompt).not.toContain("Continuation guidance");
     expect(backend.turns[1]?.prompt).toContain("Continuation guidance");
     expect(backend.turns[2]?.prompt).toContain("continuation turn #3 of 3");
+  });
+
+  test("uses the backend session run id for the JSONL file", async () => {
+    const outputRoot = path.join(testRoot, "logs");
+    const backend = fakeBackend({ multiTurn: true });
+    putEnv("agent_backend_overrides", { codex: backend.plugin });
+    putEnv("agent_output_root", outputRoot);
+    writeWorkflowFile(workflowFilePath(), {
+      workspace_root: workspaceRoot,
+      observability_agent_output: "raw",
+    });
+
+    await run(issue, null, { maxTurns: 1, issueStateFetcher: staysActive });
+
+    const logPath = path.join(outputRoot, "log", "agents", "MT-1", "fake-run-1.jsonl");
+    expect(fs.existsSync(logPath)).toBe(true);
+    const events = fs
+      .readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { run_id: string });
+    expect(events.every((event) => event.run_id === "fake-run-1")).toBe(true);
   });
 
   test("single-turn backend starts a fresh session per turn with the full prompt", async () => {

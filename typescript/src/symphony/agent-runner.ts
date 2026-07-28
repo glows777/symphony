@@ -312,6 +312,7 @@ async function runMultiTurnSession(
   if (!session.ok) {
     return err(session.error);
   }
+  output.bindRunId(session.value.runId);
   const detach = onAbort(signal, () => backend.sessions.stopSession(session.value));
   try {
     return await doRunMultiTurn(
@@ -452,6 +453,7 @@ async function runFreshSessionTurns(
   if (!session.ok) {
     return err(session.error);
   }
+  output.bindRunId(session.value.runId);
   const detach = onAbort(signal, () => backend.sessions.stopSession(session.value));
   const turn = await runSingleFreshTurn(
     backend,

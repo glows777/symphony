@@ -1,8 +1,7 @@
 :root {
   color: #1d1b16;
   background: #f5f3ee;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Noto Sans SC",
-    sans-serif;
+  font-family: var(--font-ui);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -25,6 +24,8 @@
   --amber-wash: #f1e6d0;
   --red: #a8534a;
   --red-wash: #f1ddda;
+  --font-ui: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "Noto Serif SC", serif;
+  --font-code: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
@@ -111,7 +112,7 @@ summary:focus-visible {
   color: var(--surface);
   background: var(--ink);
   border-radius: var(--radius-md);
-  font-family: "Songti SC", "Noto Serif SC", serif;
+  font-family: var(--font-ui);
   font-size: 19px;
   line-height: 1;
 }
@@ -140,7 +141,7 @@ summary:focus-visible {
 
 .sidebar-title {
   margin-top: 2px;
-  font-family: "Songti SC", "Noto Serif SC", serif;
+  font-family: var(--font-ui);
   font-size: 16px;
   line-height: 1.2;
 }
@@ -154,7 +155,7 @@ summary:focus-visible {
   color: var(--green);
   background: var(--green-wash);
   border-radius: var(--radius-sm);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
+  font-family: var(--font-code);
   font-size: 10px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -335,7 +336,7 @@ summary:focus-visible {
 .run-button-title {
   overflow: hidden;
   color: var(--ink-faint);
-  font-family: "Songti SC", "Noto Serif SC", serif;
+  font-family: var(--font-ui);
   font-size: 12px;
   line-height: 1.4;
   text-overflow: ellipsis;
@@ -468,7 +469,7 @@ summary:focus-visible {
   max-width: 850px;
   margin: 7px 0 0;
   color: var(--ink);
-  font-family: "Songti SC", "Noto Serif SC", serif;
+  font-family: var(--font-ui);
   font-size: clamp(25px, 3vw, 41px);
   font-weight: 500;
   letter-spacing: -0.018em;
@@ -520,7 +521,13 @@ summary:focus-visible {
 
 .run-facts {
   display: grid;
-  grid-template-columns: minmax(160px, 1.6fr) minmax(130px, 1.1fr) 68px 90px minmax(90px, 0.7fr);
+  grid-template-columns:
+    minmax(160px, 1.6fr)
+    minmax(130px, 1.1fr)
+    68px
+    90px
+    90px
+    minmax(90px, 0.7fr);
   gap: 0;
   margin-top: 25px;
   padding-top: 16px;
@@ -576,7 +583,7 @@ summary:focus-visible {
 .timeline-heading-row h2 {
   margin: 7px 0 0;
   color: var(--ink);
-  font-family: "Songti SC", "Noto Serif SC", serif;
+  font-family: var(--font-ui);
   font-size: 23px;
   font-weight: 500;
   letter-spacing: -0.012em;
@@ -789,7 +796,7 @@ summary:focus-visible {
 .timeline-empty p {
   margin: 0;
   color: var(--ink-soft);
-  font-family: "Songti SC", "Noto Serif SC", serif;
+  font-family: var(--font-ui);
   font-size: 17px;
 }
 
@@ -894,7 +901,7 @@ summary:focus-visible {
   }
 
   .run-facts {
-    grid-template-columns: minmax(140px, 1.4fr) minmax(120px, 1fr) 58px 80px;
+    grid-template-columns: minmax(140px, 1.4fr) minmax(120px, 1fr) 58px 80px 80px;
   }
 
   .run-fact:last-child {

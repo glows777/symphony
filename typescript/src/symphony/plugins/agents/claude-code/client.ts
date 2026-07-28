@@ -38,6 +38,7 @@ const MAX_STREAM_LOG_BYTES = 1_000;
 
 type ClaudeHandle = {
   transport: Transport;
+  stderrListenerCleanup?: () => void;
   bridge: McpBridge | null;
   onMessage: OnAgentMessage;
   config: ClaudeCodeSettings;
@@ -108,6 +109,20 @@ export async function runTurn(
   const handle = session.handle as ClaudeHandle;
   const { turnNumber } = context;
   let sessionStarted = false;
+
+  if (handle.stderrListenerCleanup === undefined) {
+    handle.stderrListenerCleanup = handle.transport.subscribeStderr((line) => {
+      if (line.trim() === "") {
+        return;
+      }
+      logNonJsonLine(line);
+      emit(handle, protocolMessageCandidate(line) ? "malformed" : "notification", {
+        payload: line,
+        raw: line,
+        stream: "stderr",
+      });
+    });
+  }
 
   handle.transport.send(userMessage(prompt));
 

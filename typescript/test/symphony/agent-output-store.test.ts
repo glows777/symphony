@@ -40,8 +40,9 @@ describe("AgentOutputStore", () => {
       title: "Observability",
       backend: "codex",
       workerHost: null,
-      runId: "thread-1",
+      runId: "provisional-run",
     });
+    run.bindRunId("thread-1");
     run.record(message({ event: "session_started" }), 1, "Session started");
     run.record(message({ stream: "stderr", raw: "warning from tool" }), 1, "warning from tool");
     run.record(message({ event: "turn_completed", payload: { total: 3 } }), 1, "Turn completed");
@@ -49,6 +50,7 @@ describe("AgentOutputStore", () => {
 
     const metadata = store.latestRun("SYM-2");
     expect(metadata?.run_id).toBe("thread-1");
+    expect(metadata?.path).toContain(`${path.sep}thread-1.jsonl`);
     expect(metadata?.backend).toBe("codex");
     expect(metadata?.status).toBe("completed");
     expect(metadata?.ended_at).toBeString();
@@ -71,6 +73,32 @@ describe("AgentOutputStore", () => {
     const incremental = store.readIssueOutput("SYM-2", { limit: 2, after: 2 });
     expect(incremental.events.map((event) => event.seq)).toEqual([3, 4]);
     expect(incremental.nextCursor).toBe(4);
+  });
+
+  test("keeps transport failure reasons in normalized events", () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "summary" });
+    const run = store.startRun({
+      issueId: "issue-3",
+      issueIdentifier: "SYM-3",
+      backend: "claude_code",
+      workerHost: null,
+      runId: "run-3",
+    });
+    run.record(
+      {
+        event: "turn_ended_with_error",
+        timestamp: new Date(),
+        reason: { tag: "port_exit", status: 1 },
+      },
+      1,
+    );
+
+    const event = store.readIssueOutput("SYM-3").events.find((item) => item.event === "port_exit");
+    expect(event).toMatchObject({
+      event: "port_exit",
+      reason: { tag: "port_exit", status: 1 },
+    });
+    expect(event?.message).toContain("port_exit");
   });
 
   test("honors off, summary, and raw modes", () => {

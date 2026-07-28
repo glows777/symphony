@@ -46,6 +46,7 @@ type SessionPolicies = {
 
 export type Session = {
   transport: Transport;
+  stderrListenerCleanup?: () => void;
   metadata: JsonObject;
   approvalPolicy: string | JsonObject;
   autoApproveRequests: boolean;
@@ -83,6 +84,10 @@ class ReplayTransport implements Transport {
       return Promise.resolve({ type: "line", data, stream: "stdout" });
     }
     return Promise.resolve({ type: "exit", status: 0 });
+  }
+
+  subscribeStderr(_listener: (data: string) => void): () => void {
+    return () => {};
   }
 
   close(): void {}
@@ -162,6 +167,22 @@ export async function runTurn(
   const onMessage = opts.onMessage ?? (() => {});
   const toolExecutor: ToolExecutor =
     opts.toolExecutor ?? ((tool, args) => DynamicTool.execute(tool, args));
+
+  if (session.stderrListenerCleanup === undefined) {
+    session.stderrListenerCleanup = session.transport.subscribeStderr((line) => {
+      if (line.trim() === "") {
+        return;
+      }
+      logNonJsonStreamLine(line, "stderr");
+      const details = { payload: line, raw: line };
+      emitMessage(
+        onMessage,
+        protocolMessageCandidate(line) ? "malformed" : "notification",
+        details,
+        metadataFromMessage(session.transport, details, "stderr"),
+      );
+    });
+  }
 
   const turn = await startTurn(
     session.transport,
@@ -519,10 +540,10 @@ async function handleIncoming(
 
   if (!decoded.ok) {
     logNonJsonStreamLine(payloadString, "turn stream");
-    if (protocolMessageCandidate(payloadString)) {
+    if (payloadString.trim() !== "") {
       emitMessage(
         onMessage,
-        "malformed",
+        protocolMessageCandidate(payloadString) ? "malformed" : "notification",
         { payload: payloadString, raw: payloadString },
         metadataFromMessage(transport, { raw: payloadString }, stream),
       );

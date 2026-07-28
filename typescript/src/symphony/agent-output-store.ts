@@ -82,18 +82,23 @@ type PersistedRun = {
   seq: number;
   recent: AgentOutputEvent[];
   closed: boolean;
+  startedEventWritten: boolean;
   fileBytes: number;
   malformed: boolean;
 };
 
 export class AgentOutputRun {
-  readonly runId: string;
-
   constructor(
     private readonly store: AgentOutputStore,
     private readonly state: PersistedRun,
-  ) {
-    this.runId = state.metadata.run_id;
+  ) {}
+
+  get runId(): string {
+    return this.state.metadata.run_id;
+  }
+
+  bindRunId(runId: string | null | undefined): void {
+    this.store.bindRunId(this.state, runId);
   }
 
   record(message: AgentMessage, turn: number, summary: string | null = null): void {
@@ -149,6 +154,7 @@ export class AgentOutputStore {
       seq: 0,
       recent: [],
       closed: false,
+      startedEventWritten: false,
       fileBytes: 0,
       malformed: false,
     };
@@ -156,25 +162,35 @@ export class AgentOutputStore {
       this.runs.set(metadata.path, state);
       this.pruneCachedRuns();
     }
-
-    if (this.mode !== "off") {
-      this.append(state, {
-        at: metadata.started_at ?? new Date().toISOString(),
-        issue_id: context.issueId ?? undefined,
-        issue_identifier: issueIdentifier,
-        title: context.title ?? undefined,
-        backend: context.backend,
-        worker_host: metadata.worker_host,
-        run_id: runId,
-        event: "run_started",
-        message: "Agent run started",
-      });
-    }
     return new AgentOutputRun(this, state);
   }
 
   latestRun(issueIdentifier: string): AgentOutputRunMetadata | null {
     return this.runsForIssue(issueIdentifier)[0] ?? null;
+  }
+
+  bindRunId(state: PersistedRun, runId: string | null | undefined): void {
+    if (this.mode === "off" || state.closed || typeof runId !== "string") {
+      return;
+    }
+    const normalized = runId.trim();
+    if (normalized === "" || normalized === state.metadata.run_id) {
+      return;
+    }
+    // The runner binds the backend's stable session/run id before the first
+    // event is written. Refuse a late rebind rather than leaving a JSONL file
+    // whose path and event run_id disagree.
+    if (state.startedEventWritten || state.fileBytes > 0) {
+      logger.warning(
+        `Agent output run id arrived after output started for ${state.metadata.issue_identifier}`,
+      );
+      return;
+    }
+    const previousPath = state.metadata.path;
+    state.metadata.run_id = normalized;
+    state.metadata.path = this.runPath(state.metadata.issue_identifier, normalized);
+    this.runs.delete(previousPath);
+    this.runs.set(state.metadata.path, state);
   }
 
   listRecentRuns(limit = 50): AgentOutputRunMetadata[] {
@@ -210,6 +226,10 @@ export class AgentOutputStore {
     }
     const loaded = this.loadRun(run.path, false);
     if (loaded === null) {
+      const active = this.runs.get(run.path);
+      if (active !== undefined && active.fileBytes === 0) {
+        return { events: [], nextCursor: null, hasMore: false, run: { ...active.metadata } };
+      }
       return {
         events: [],
         nextCursor: null,
@@ -259,6 +279,7 @@ export class AgentOutputStore {
     turn: number,
     summary: string | null,
   ): void {
+    this.ensureStarted(state);
     const event = normalizeMessageEvent(message.event, message);
     const sessionId = typeof message.sessionId === "string" ? message.sessionId : null;
     if (sessionId !== null) {
@@ -278,6 +299,16 @@ export class AgentOutputStore {
       event_detail: message.event,
       message: summary ?? genericSummary(message),
     };
+    for (const key of ["reason", "decision", "answer"] as const) {
+      const detail = message[key];
+      if (detail !== undefined) {
+        const bounded = boundValue(detail, Math.min(this.maxEventBytes, 8 * 1024));
+        value[key] = bounded.value;
+        if (bounded.truncated) {
+          value[`${key}_truncated`] = true;
+        }
+      }
+    }
     if (this.mode === "raw") {
       if (message.payload !== undefined) {
         value.payload = message.payload;
@@ -297,6 +328,7 @@ export class AgentOutputStore {
     if (state.closed) {
       return;
     }
+    this.ensureStarted(state);
     state.metadata.status = status;
     state.metadata.ended_at = new Date().toISOString();
     if (this.mode !== "off") {
@@ -319,6 +351,50 @@ export class AgentOutputStore {
     }
     state.closed = true;
     this.pruneCachedRuns();
+  }
+
+  private ensureStarted(state: PersistedRun): void {
+    if (this.mode === "off" || state.startedEventWritten) {
+      return;
+    }
+    this.ensureUniqueRunPath(state);
+    const event = this.append(state, {
+      at: state.metadata.started_at ?? new Date().toISOString(),
+      issue_id: state.metadata.issue_id ?? undefined,
+      issue_identifier: state.metadata.issue_identifier,
+      title: state.metadata.title ?? undefined,
+      backend: state.metadata.backend,
+      worker_host: state.metadata.worker_host,
+      run_id: state.metadata.run_id,
+      event: "run_started",
+      message: "Agent run started",
+    });
+    if (event !== null) {
+      state.startedEventWritten = true;
+    }
+  }
+
+  private ensureUniqueRunPath(state: PersistedRun): void {
+    if (state.fileBytes > 0 || !fs.existsSync(state.metadata.path)) {
+      return;
+    }
+    const originalPath = state.metadata.path;
+    const baseRunId = state.metadata.run_id;
+    let suffix = 2;
+    let candidateRunId = `${baseRunId}-${suffix}`;
+    let candidatePath = this.runPath(state.metadata.issue_identifier, candidateRunId);
+    while (fs.existsSync(candidatePath)) {
+      suffix += 1;
+      candidateRunId = `${baseRunId}-${suffix}`;
+      candidatePath = this.runPath(state.metadata.issue_identifier, candidateRunId);
+    }
+    state.metadata.run_id = candidateRunId;
+    state.metadata.path = candidatePath;
+    this.runs.delete(originalPath);
+    this.runs.set(candidatePath, state);
+    logger.warning(
+      `Agent output run id already exists for ${state.metadata.issue_identifier}; using ${candidateRunId}`,
+    );
   }
 
   private append(state: PersistedRun, input: Record<string, unknown>): AgentOutputEvent | null {
@@ -551,6 +627,7 @@ export class AgentOutputStore {
       seq: events.reduce((max, event) => Math.max(max, event.seq), 0),
       recent: events.slice(-RECENT_EVENT_BUFFER_SIZE),
       closed: metadata.status !== "running",
+      startedEventWritten: events.some((event) => event.event === "run_started"),
       fileBytes: size,
       malformed,
     };
@@ -711,6 +788,9 @@ function findReasonTag(message: AgentMessage): string | null {
 function genericSummary(message: AgentMessage): string {
   if (typeof message.raw === "string" && message.raw.trim() !== "") {
     return message.raw.trim().slice(0, 240);
+  }
+  if (isRecord(message.reason) && typeof message.reason.tag === "string") {
+    return `${message.event.replaceAll("_", " ")} (${message.reason.tag})`;
   }
   if (typeof message.event === "string") {
     return message.event.replaceAll("_", " ");

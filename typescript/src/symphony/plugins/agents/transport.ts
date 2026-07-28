@@ -9,6 +9,7 @@
 // differential-oracle in-memory transport) stays in app-server.ts.
 
 export type AgentStream = "stdout" | "stderr";
+export type StreamLineListener = (data: string) => void;
 
 export type LineEvent =
   | { type: "line"; data: string; stream: AgentStream }
@@ -18,6 +19,7 @@ export type LineEvent =
 export interface Transport {
   send(message: Record<string, unknown>): void;
   next(timeoutMs: number): Promise<LineEvent>;
+  subscribeStderr(listener: StreamLineListener): () => void;
   close(): void;
   osPid(): string | undefined;
 }
@@ -28,6 +30,7 @@ export class ProcessTransport implements Transport {
   private outBuffer = "";
   private errBuffer = "";
   private exitPushed = false;
+  private readonly stderrListeners = new Set<StreamLineListener>();
 
   constructor(private proc: Bun.Subprocess<"pipe", "pipe", "pipe">) {
     void this.pump(proc.stdout, "stdout");
@@ -61,6 +64,11 @@ export class ProcessTransport implements Transport {
       };
       this.waiters.push(deliver);
     });
+  }
+
+  subscribeStderr(listener: StreamLineListener): () => void {
+    this.stderrListeners.add(listener);
+    return () => this.stderrListeners.delete(listener);
   }
 
   close(): void {
@@ -104,6 +112,12 @@ export class ProcessTransport implements Transport {
   }
 
   private pushLine(event: LineEvent): void {
+    if (event.type === "line" && event.stream === "stderr" && this.stderrListeners.size > 0) {
+      for (const listener of this.stderrListeners) {
+        listener(event.data);
+      }
+      return;
+    }
     const waiter = this.waiters.shift();
     if (waiter) {
       waiter(event);
