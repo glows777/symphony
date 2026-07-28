@@ -39,13 +39,20 @@ type FakeHandle = {
   sessionTokens: number;
 };
 
-function fakeBackend(caps: { multiTurn?: boolean; remote?: boolean }): {
+function fakeBackend(caps: {
+  multiTurn?: boolean;
+  remote?: boolean;
+  // Blocks each turn until resolved, so a test can abort mid-turn.
+  turnGate?: () => Promise<void>;
+}): {
   plugin: AgentBackendPlugin;
   turns: TurnRecord[];
   sessionCount: () => number;
+  stopCount: () => number;
 } {
   const turns: TurnRecord[] = [];
   let sessions = 0;
+  let stops = 0;
 
   const plugin: AgentBackendPlugin = {
     id: "codex",
@@ -72,8 +79,11 @@ function fakeBackend(caps: { multiTurn?: boolean; remote?: boolean }): {
         };
         return Promise.resolve(ok(session));
       },
-      runTurn: (session, prompt, context) => {
+      runTurn: async (session, prompt, context) => {
         const handle = session.handle as FakeHandle;
+        if (caps.turnGate !== undefined) {
+          await caps.turnGate();
+        }
         turns.push({
           prompt,
           turnNumber: context.turnNumber,
@@ -98,13 +108,15 @@ function fakeBackend(caps: { multiTurn?: boolean; remote?: boolean }): {
             total_tokens: handle.sessionTokens,
           },
         });
-        return Promise.resolve(ok({ sessionId: `sess-${context.turnNumber}` }));
+        return ok({ sessionId: `sess-${context.turnNumber}` });
       },
-      stopSession: () => {},
+      stopSession: () => {
+        stops += 1;
+      },
     },
   };
 
-  return { plugin, turns, sessionCount: () => sessions };
+  return { plugin, turns, sessionCount: () => sessions, stopCount: () => stops };
 }
 
 function codexUpdates(
@@ -198,6 +210,58 @@ describe("AgentRunner with a synthetic backend", () => {
     // session's tokens.
     expect(usages.map((u) => u.total_tokens)).toEqual([25, 50, 75]);
     expect(usages.map((u) => u.input_tokens)).toEqual([25, 50, 75]);
+  });
+
+  test("aborting the run signal tears the live session down mid-turn", async () => {
+    // The orchestrator's RunningTask.stop() aborts this signal. Before the fix
+    // it only suppressed the exit message, so the backend session (and its
+    // subprocess) kept running until turn_timeout_ms and a retry could dispatch
+    // a second agent into the same workspace.
+    let releaseTurn: () => void = () => {};
+    const turnStarted = Promise.withResolvers<void>();
+    const gate = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const backend = fakeBackend({
+      multiTurn: true,
+      turnGate: () => {
+        turnStarted.resolve();
+        return gate;
+      },
+    });
+    putEnv("agent_backend_overrides", { codex: backend.plugin });
+
+    const controller = new AbortController();
+    const runPromise = run(issue, null, {
+      maxTurns: 3,
+      issueStateFetcher: staysActive,
+      signal: controller.signal,
+    });
+
+    await turnStarted.promise;
+    expect(backend.stopCount()).toBe(0);
+    controller.abort();
+    // The session is stopped as the signal fires, not deferred to the end.
+    expect(backend.stopCount()).toBe(1);
+
+    releaseTurn();
+    await runPromise;
+    // No further turns after the abort, and no double teardown beyond the
+    // runner's own finally.
+    expect(backend.turns).toHaveLength(1);
+  });
+
+  test("a run aborted before it starts never opens a session", async () => {
+    const backend = fakeBackend({ multiTurn: true });
+    putEnv("agent_backend_overrides", { codex: backend.plugin });
+
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      run(issue, null, { maxTurns: 1, issueStateFetcher: staysActive, signal: controller.signal }),
+    ).rejects.toThrow("aborted");
+    expect(backend.sessionCount()).toBe(0);
   });
 
   test("a backend without remoteWorkers rejects a remote run", async () => {

@@ -101,7 +101,14 @@ function apiV1IssueIdentifier(path: string): string | null {
   if (rest === "" || rest.includes("/")) {
     return null;
   }
-  return decodeURIComponent(rest);
+  try {
+    return decodeURIComponent(rest);
+  } catch {
+    // Malformed percent-encoding (e.g. /api/v1/%zz) is an unroutable path,
+    // not a server error: fall through to 404 instead of throwing a URIError
+    // into a 500.
+    return null;
+  }
 }
 
 async function handleState(provider: SnapshotProvider, timeoutMs: number): Promise<Response> {

@@ -125,6 +125,17 @@ describe("web server / observability API", () => {
       });
     });
 
+    test("GET /api/v1/:id with malformed percent-encoding returns 404, not 500", async () => {
+      // `%zz` is not decodable: decodeURIComponent throws a URIError, which
+      // used to escape the router as a 500.
+      // An undecodable path cannot name an issue at all, so it falls through as
+      // an unmatched route rather than a missing issue — either way a 404, and
+      // never a URIError escaping as a 500.
+      const { status, body } = await json("/api/v1/%zz");
+      expect(status).toBe(404);
+      expect(body).toEqual({ error: { code: "not_found", message: "Route not found" } });
+    });
+
     test("POST /api/v1/refresh returns 202", async () => {
       const { status, body } = await json("/api/v1/refresh", { method: "POST" });
       expect(status).toBe(202);

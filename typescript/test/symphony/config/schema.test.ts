@@ -187,6 +187,21 @@ describe("Config.Schema.parse", () => {
     });
   });
 
+  test("agent.stall_timeout_ms defaults to null and rejects negatives", () => {
+    // null means "fall back to codex.stall_timeout_ms", which is where this
+    // setting lived before agent backends became pluggable.
+    expect(parseOk({}).agent.stallTimeoutMs).toBeNull();
+    expect(parseOk({ agent: { stall_timeout_ms: 900_000 } }).agent.stallTimeoutMs).toBe(900_000);
+    // 0 is meaningful: it disables stall reconciliation.
+    expect(parseOk({ agent: { stall_timeout_ms: 0 } }).agent.stallTimeoutMs).toBe(0);
+
+    const bad = parse({ agent: { stall_timeout_ms: -1 } });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) {
+      expect(JSON.stringify(bad.error)).toContain("agent.stall_timeout_ms");
+    }
+  });
+
   test("an unregistered agent backend still parses with its section passed through", () => {
     const settings = parseOk({
       agent: { backend: "gemini" },

@@ -50,6 +50,10 @@ export type RunOpts = {
   maxTurns?: number;
   issueStateFetcher?: IssueStateFetcher;
   attempt?: number | null;
+  // Cooperative cancellation. Elixir's `Task.Supervisor.terminate_child` kills
+  // the worker process outright; here the orchestrator aborts this signal and
+  // the runner stops the backend session, which tears down its subprocess.
+  signal?: AbortSignal;
 };
 
 type ContinueOutcome =
@@ -248,6 +252,10 @@ async function runMultiTurnSession(
   issueStateFetcher: IssueStateFetcher,
   maxTurns: number,
 ): Promise<Result<undefined, unknown>> {
+  const signal = opts.signal ?? null;
+  if (isAborted(signal)) {
+    return err({ tag: "aborted" });
+  }
   const session = await backend.sessions.startSession(workspace, {
     workerHost,
     onMessage: agentMessageHandler(recipient, issue),
@@ -256,6 +264,7 @@ async function runMultiTurnSession(
   if (!session.ok) {
     return err(session.error);
   }
+  const detach = onAbort(signal, () => backend.sessions.stopSession(session.value));
   try {
     return await doRunMultiTurn(
       backend,
@@ -268,8 +277,31 @@ async function runMultiTurnSession(
       maxTurns,
     );
   } finally {
+    detach();
     backend.sessions.stopSession(session.value);
   }
+}
+
+// `AbortSignal.aborted` flips while a turn is in flight, but TypeScript's
+// control-flow analysis treats a property read as invariant and narrows later
+// checks to `false`. Reading it through a call keeps every check honest.
+function isAborted(signal: AbortSignal | null): boolean {
+  return signal?.aborted === true;
+}
+
+// Stops the live session as soon as the signal aborts (and immediately if it
+// already has, closing the race between startSession and an abort). Returns a
+// detach function for the happy path.
+function onAbort(signal: AbortSignal | null, stop: () => void): () => void {
+  if (signal === null) {
+    return () => {};
+  }
+  if (signal.aborted) {
+    stop();
+    return () => {};
+  }
+  signal.addEventListener("abort", stop, { once: true });
+  return () => signal.removeEventListener("abort", stop);
 }
 
 async function doRunMultiTurn(
@@ -292,6 +324,11 @@ async function doRunMultiTurn(
     `Completed agent run for ${issueContext(issue)} session_id=${turn.value.sessionId} workspace=${workspace} turn=${turnNumber}/${maxTurns}`,
   );
 
+  // An abort mid-turn already tore the session down; do not start another turn
+  // or refresh issue state on the way out.
+  if (isAborted(opts.signal ?? null)) {
+    return ok(undefined);
+  }
   const outcome = await continueWithIssue(issue, issueStateFetcher);
   if (outcome.kind === "error") {
     return err(outcome.reason);
@@ -339,6 +376,10 @@ async function runFreshSessionTurns(
   // Build the prompt before opening a session: a Liquid render error here must
   // not leak a started session (runSingleFreshTurn's finally only covers the
   // turn itself).
+  const signal = opts.signal ?? null;
+  if (isAborted(signal)) {
+    return err({ tag: "aborted" });
+  }
   const prompt = buildFullPrompt(issue, opts);
   const session = await backend.sessions.startSession(workspace, {
     workerHost,
@@ -348,6 +389,7 @@ async function runFreshSessionTurns(
   if (!session.ok) {
     return err(session.error);
   }
+  const detach = onAbort(signal, () => backend.sessions.stopSession(session.value));
   const turn = await runSingleFreshTurn(
     backend,
     session.value,
@@ -355,6 +397,7 @@ async function runFreshSessionTurns(
     issue,
     turnNumber,
     maxTurns,
+    detach,
   );
   if (!turn.ok) {
     return err(turn.error);
@@ -363,6 +406,9 @@ async function runFreshSessionTurns(
     `Completed agent run for ${issueContext(issue)} session_id=${turn.value.sessionId} workspace=${workspace} turn=${turnNumber}/${maxTurns}`,
   );
 
+  if (isAborted(signal)) {
+    return ok(undefined);
+  }
   const outcome = await continueWithIssue(issue, issueStateFetcher);
   if (outcome.kind === "error") {
     return err(outcome.reason);
@@ -402,10 +448,12 @@ async function runSingleFreshTurn(
   issue: Issue,
   turnNumber: number,
   maxTurns: number,
+  detachAbort: () => void,
 ): Promise<Result<{ sessionId: string; [key: string]: unknown }, unknown>> {
   try {
     return await backend.sessions.runTurn(session, prompt, { issue, turnNumber, maxTurns });
   } finally {
+    detachAbort();
     backend.sessions.stopSession(session);
   }
 }

@@ -42,6 +42,11 @@ export type AgentSettings = {
   maxTurns: number;
   maxRetryBackoffMs: number;
   maxConcurrentAgentsByState: JsonMap;
+  // Backend-neutral stall budget: how long a running issue may go without a
+  // backend event before the orchestrator restarts it. `null` falls back to
+  // `codex.stall_timeout_ms`, which is where this setting lived before agent
+  // backends became pluggable (existing WORKFLOW.md files keep working).
+  stallTimeoutMs: number | null;
   // Raw contents of the backend's same-named top-level section, cast/finalized
   // by the active backend's configSchema. The codex backend omits a schema, so
   // its `codex` section stays typed in core (settings.codex) and this passes
@@ -231,6 +236,12 @@ function castInteger(v: unknown): CastResult {
     return { ok: true, value: Number.parseInt(v.trim(), 10) };
   }
   return { ok: false, message: "is invalid" };
+}
+
+// `null` is a meaningful value (not "unset"): it selects the fallback rather
+// than a numeric budget. Used by `agent.stall_timeout_ms`.
+function castNullableInteger(v: unknown): CastResult {
+  return v === null ? { ok: true, value: null } : castInteger(v);
 }
 
 function castBoolean(v: unknown): CastResult {
@@ -436,12 +447,25 @@ function castAgent(attrs: JsonMap, section: string, errors: FieldError[]): Agent
     }
   }
 
+  const stallTimeout = field<number | null>(
+    r,
+    "stall_timeout_ms",
+    section,
+    castNullableInteger,
+    null,
+    errors,
+  );
+  if (stallTimeout.cast && stallTimeout.value !== null && stallTimeout.value < 0) {
+    errors.push({ path: `${section}.stall_timeout_ms`, message: "must be greater than -1" });
+  }
+
   return {
     backend,
     maxConcurrentAgents: maxConcurrent.value,
     maxTurns: maxTurns.value,
     maxRetryBackoffMs: maxBackoff.value,
     maxConcurrentAgentsByState: byState,
+    stallTimeoutMs: stallTimeout.value,
     backendConfig: castAgentBackendSection(attrs, backend, errors),
   };
 }
