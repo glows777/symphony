@@ -18,7 +18,7 @@ issue 派发,并按 §5 的清单逐项验收核心行为(会话、多轮、toke
 |---|---|---|
 | Bun | ≥ 1.3 | `bun --version` |
 | Claude Code CLI | 已安装且**已登录**;实现的实证基线是 `2.1.218`,大版本差异见 §7 | `claude --version`;`claude -p "say hi"` 能出结果即为已登录 |
-| 磁盘 | 一个一次性 workspace 父目录 | `mkdir -p /tmp/symphony-workspaces` |
+| 磁盘 | 一个一次性 workspace 父目录(**无需预先创建**,Symphony 会连父目录一起建) | `df -h /tmp` |
 
 > CLI 进程经 `bash -lc` 启动,登录 shell 的 PATH / 环境变量(含
 > `ANTHROPIC_API_KEY`,如果你用 key 而非登录态)都会被继承。
@@ -35,7 +35,9 @@ bun run verify    # 期望:PASS(fake codex 走的 e2e,与 claude 无关,但证�
 
 ## 3. 冒烟 WORKFLOW.md
 
-存为仓库外的任意路径,例如 `~/symphony-smoke/WORKFLOW.md`(整个文件可直接粘贴):
+仓库里已经带了一份可直接用的:**`typescript/WORKFLOW.md`**(memory tracker +
+claude_code 后端,零凭证)。直接用它跳到 §4 即可。下面是要点摘录,便于快速看
+结构(**完整内容以文件为准**,文件里每个键都有注释说明为什么这么设):
 
 ```yaml
 ---
@@ -75,7 +77,7 @@ observability:
 cd typescript
 bun run start \
   --i-understand-that-this-will-be-running-without-the-usual-guardrails \
-  --port 4000 ~/symphony-smoke/WORKFLOW.md
+  --port 4000 ./WORKFLOW.md
 ```
 
 三个观察面:终端状态面板(dashboard_enabled)、`http://localhost:4000`
@@ -158,7 +160,7 @@ memory tracker 的 `seed_issues` 不是启动时快照:Symphony 每次 tracker �
 | turn 立即以 `turn_timeout` 失败,无任何 claude 输出 | CLI 冷启动超过 init 等待。确认 `claude_code.read_timeout_ms: 30000` 生效;手跑 `time claude -p "hi"` 看真实启动耗时 |
 | `port_exit` + 无 init | CLI 未登录/无 key:工作区目录里手跑 `bash -lc 'claude -p "hi"'` 复现认证报错 |
 | 启动即配置错误 `unsupported agent backend` | `agent.backend` 拼写(注意是 `claude_code` 下划线);或跑在了没合并的旧分支上 |
-| `invalid_workspace_cwd` | `workspace.root` 不存在,或 seed 的工作区路径逃逸(root 必须存在,workspace 必须在其下) |
+| `invalid_workspace_cwd` | 工作区路径逃逸出 `workspace.root`,或 root 指到了不可读的位置(root 本身不必预先存在——会被自动创建) |
 | CLI flags 报 unknown option | CLI 版本与 2.1.218 差异。参数拼装集中在 `plugins/agents/claude-code/client.ts` 的 `buildCommand`,对照 `claude --help` 调整该函数即可 |
 | tokens 一直为 0 | 确认事件已到 `turn_completed`(usage 随终态事件上报);若终态已过仍为 0,`curl /api/v1/state` 把该 issue 的原始条目发去排查 |
 | rate-limit 区 n/a | 预期行为(claude 无 rate-limit 遥测),非故障 |
@@ -167,7 +169,7 @@ memory tracker 的 `seed_issues` 不是启动时快照:Symphony 每次 tracker �
 
 ```bash
 pkill -f "claude -p" || true      # 只有中途强杀过 Symphony 才需要(见 A10)
-rm -rf /tmp/symphony-workspaces ~/symphony-smoke
+rm -rf /tmp/symphony-workspaces
 ```
 
 `bypass` 模式给了 agent 工作区内的全部行动力——验收永远用一次性目录,
