@@ -117,16 +117,11 @@ codex:
   command: codex app-server
 
   # 无人值守下的两难:
-  #   never  —— 全自动放行,agent 不会因为审批卡住(examples/local.workflow.md
-  #             用的就是这个,因为那是本地冒烟)。
-  #   下面这个 reject 策略 —— 拒绝一切交互请求,Symphony 会捕捉到
-  #             "需要输入" 信号,把 issue 标成 blocked 等人来处理。
-  # 真实项目选 reject:宁可停下来等人,也不要一个无人看管的 agent 自己放行。
-  approval_policy:
-    reject:
-      sandbox_approval: true
-      rules: true
-      mcp_elicitations: true
+  #   never       —— 全自动放行,agent 不会因为审批卡住(examples/local.workflow.md
+  #                 用的就是这个,因为那是本地冒烟)。
+  #   on-request  —— 需要审批时由 Symphony 捕捉并把 issue 标成 blocked。
+  # 真实项目选 on-request:宁可停下来等人,也不要一个无人看管的 agent 自己放行。
+  approval_policy: on-request
 
   thread_sandbox: workspace-write
 

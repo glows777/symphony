@@ -90,9 +90,7 @@ export type Settings = {
 
 export type InvalidWorkflowConfig = { tag: "invalid_workflow_config"; message: string };
 
-const DEFAULT_APPROVAL_POLICY: JsonMap = {
-  reject: { sandbox_approval: true, rules: true, mcp_elicitations: true },
-};
+const DEFAULT_APPROVAL_POLICY = "on-request";
 
 // ---- public API ------------------------------------------------------------
 

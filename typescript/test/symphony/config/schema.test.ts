@@ -90,12 +90,12 @@ describe("Config.Schema.parse", () => {
     const settings = parseOk({
       tracker: { kind: "linear", api_key: `$${emptyEnv}` },
       workspace: { root: `$${missingWorkspaceEnv}` },
-      codex: { approval_policy: { reject: { sandbox_approval: true } } },
+      codex: { approval_policy: { future_policy: { sandbox_approval: true } } },
     });
 
     expect(settings.tracker.plugin.api_key).toBeNull();
     expect(settings.workspace.root).toBe(DEFAULT_WORKSPACE_ROOT);
-    expect(settings.codex.approvalPolicy).toEqual({ reject: { sandbox_approval: true } });
+    expect(settings.codex.approvalPolicy).toEqual({ future_policy: { sandbox_approval: true } });
 
     const fallback = parseOk({
       tracker: { kind: "linear", api_key: `$${missingSecretEnv}` },

@@ -65,9 +65,7 @@ describe("Config", () => {
     expect(config.worker.maxConcurrentAgentsPerHost).toBeNull();
     expect(config.agent.maxConcurrentAgents).toBe(10);
     expect(config.codex.command).toBe("codex app-server");
-    expect(config.codex.approvalPolicy).toEqual({
-      reject: { sandbox_approval: true, rules: true, mcp_elicitations: true },
-    });
+    expect(config.codex.approvalPolicy).toBe("on-request");
     expect(config.codex.threadSandbox).toBe("workspace-write");
 
     expect(codexTurnSandboxPolicy()).toEqual({
