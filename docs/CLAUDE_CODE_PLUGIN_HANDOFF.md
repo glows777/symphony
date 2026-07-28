@@ -109,7 +109,7 @@ typescript/test/harness/fake-claude.ts   # 台词驱动的假 claude CLI
 ### 5.2 configSchema(认领顶层 `claude_code` 节)
 
 实现契约的 `cast/finalize/validate` 钩子(参照 tracker 插件的
-`PluginConfigSchema` 用法与 `plugins/config-helpers.ts` 的 `$VAR` 解析惯例):
+`PluginConfigSchema` 用法与 `plugins/shared/config-helpers.ts` 的 `$VAR` 解析惯例):
 
 | 键 | 类型/默认 | 说明 |
 |---|---|---|
@@ -281,7 +281,7 @@ orchestrator 的停滞判定读 `settingsBang().codex.stallTimeoutMs`
 | `typescript/src/symphony/codex/app-server.ts:60-184` | 任务 A 的搬迁源(Transport/ProcessTransport) |
 | `typescript/src/symphony/codex/app-server.ts:347-416` + `workspace.ts:350-402` | 任务 B 的两份重复守卫 |
 | `typescript/src/symphony/orchestrator.ts:1131-1139` | turnCountForUpdate(sessionId 派生的依据) |
-| `typescript/src/symphony/plugins/config-helpers.ts` | `$VAR` / env 解析惯例 |
+| `typescript/src/symphony/plugins/shared/config-helpers.ts` | `$VAR` / env 解析惯例 |
 | `typescript/test/symphony/plugins/agents/codex-plugin.test.ts` | fake 后端脚本测试范本 |
 | `typescript/test/symphony/agent-runner-fake-backend.test.ts` | 契约语义断言范本(usage 累计等) |
 | `docs/AGENT_PLUGIN_CONTRACT.md` | 规范契约(逐条满足) |

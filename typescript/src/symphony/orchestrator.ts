@@ -7,9 +7,9 @@
 import * as AgentRunner from "./agent-runner.ts";
 import { maxConcurrentAgentsForState, settingsBang, validate } from "./config.ts";
 import { logger } from "./logger.ts";
-import { type Issue, isIssue, routable } from "./plugins/work-item.ts";
 import { notifyUpdate as notifyDashboard } from "./status-dashboard.ts";
 import * as Tracker from "./tracker/tracker.ts";
+import { type Issue, isIssue, routable } from "./work-item.ts";
 import * as Workspace from "./workspace.ts";
 
 const CONTINUATION_RETRY_DELAY_MS = 1_000;

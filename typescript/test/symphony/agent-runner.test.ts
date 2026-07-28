@@ -8,8 +8,8 @@ import {
   continueWithIssueForTest,
   run,
 } from "../../src/symphony/agent-runner.ts";
-import { newIssue } from "../../src/symphony/plugins/work-item.ts";
 import { ok } from "../../src/symphony/result.ts";
+import { newIssue } from "../../src/symphony/work-item.ts";
 import { workflowFilePath } from "../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";
 

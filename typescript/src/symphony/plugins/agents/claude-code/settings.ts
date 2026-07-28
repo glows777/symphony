@@ -2,7 +2,7 @@
 // (`settings.agent.backendConfig`, the top-level `claude_code:` block). The
 // plugin's configSchema cast/finalize guarantees the shape, so consumers get
 // full types without core Settings depending on claude-code-specific fields
-// (mirrors plugins/lark-task/settings.ts, but keyed off agent.backendConfig).
+// (mirrors plugins/trackers/lark-task/settings.ts, but keyed off agent.backendConfig).
 
 import type { Settings } from "../../../config/schema.ts";
 

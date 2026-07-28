@@ -52,6 +52,11 @@ tracker contract's "reads are required, everything else is a capability."
 
 ## 2. Resolution and registration
 
+Agent backends live in `plugins/agents/`, a sibling of `plugins/trackers/` —
+the two extension points are symmetric, and anything both contracts need
+(the config-schema hooks, the agent-facing tool vocabulary, `config-helpers`)
+lives in `plugins/shared/`. See PLUGIN_CONTRACT.md §2 for the full tree.
+
 - The active backend is resolved from `agent.backend` in `WORKFLOW.md` through
   the registry (`plugins/agents/registry.ts`).
 - Built-in backends register statically in `plugins/agents/index.ts`.
@@ -218,7 +223,7 @@ The core `agent` section owns `backend` (string, default `"codex"`) plus the
 scheduling fields (`max_turns`, `max_concurrent_agents`, ...). **The backend's
 own settings live in a top-level section named after the backend id** and flow
 through the backend's `configSchema` (the same `PluginConfigSchema`
-cast/finalize/validate shape as tracker plugins, `plugins/types.ts`):
+cast/finalize/validate shape as tracker plugins, `plugins/trackers/types.ts`):
 
 ```yaml
 agent:
@@ -364,7 +369,7 @@ check the contract was built against.
    `rate_limits` / `backendPid` unset (the dashboard already renders "n/a" for
    missing values). Ship `ui.humanizeMessage` for the CLI's own event shapes.
 7. **Add a `configSchema`** claiming the backend's top-level section (e.g.
-   `claude_code:`), using the shared `plugins/config-helpers.ts`.
+   `claude_code:`), using the shared `plugins/shared/config-helpers.ts`.
 8. **Register** in `plugins/agents/index.ts` (in-tree) or via
    `registerAgentBackend` (out-of-tree), and add a fake-CLI script test
    (stream-json dialogue, the claude-code twin of fake-codex).

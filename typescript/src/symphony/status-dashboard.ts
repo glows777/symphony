@@ -8,7 +8,7 @@
 
 import { serverPort, settings, settingsBang } from "./config.ts";
 import { agentBackendOrNull } from "./plugins/agents/registry.ts";
-import { trackerPluginOrNull } from "./plugins/registry.ts";
+import { trackerPluginOrNull } from "./plugins/trackers/registry.ts";
 import type { Result } from "./result.ts";
 import { boundPort } from "./web/server-port.ts";
 

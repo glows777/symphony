@@ -8,13 +8,13 @@
 
 // Side-effect import: guarantees built-in plugins are registered before any
 // facade call resolves a kind.
-import "../plugins/index.ts";
+import "../plugins/trackers/index.ts";
 
 import { settingsBang } from "../config.ts";
-import { trackerPlugin } from "../plugins/registry.ts";
-import { type TrackerError, type TrackerPlugin, trackerError } from "../plugins/types.ts";
-import type { Issue } from "../plugins/work-item.ts";
+import { trackerPlugin } from "../plugins/trackers/registry.ts";
+import { type TrackerError, type TrackerPlugin, trackerError } from "../plugins/trackers/types.ts";
 import { type Result, err } from "../result.ts";
+import type { Issue } from "../work-item.ts";
 
 // Resolves the active plugin from the current WORKFLOW.md config. Fails with
 // `missing_tracker_kind` / `unsupported_tracker_kind` (same tags config

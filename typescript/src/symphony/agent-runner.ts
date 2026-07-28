@@ -9,7 +9,7 @@
 // tagged updates.
 
 // Side-effect import: built-in agent backends must be registered before a run
-// resolves `agent.backend` (mirrors the tracker plugins/index.ts guarantee).
+// resolves `agent.backend` (mirrors the tracker plugins/trackers/index.ts guarantee).
 import "./plugins/agents/index.ts";
 
 import { settingsBang } from "./config.ts";
@@ -24,11 +24,11 @@ import type {
   OnAgentMessage,
   ToolProvider,
 } from "./plugins/agents/types.ts";
-import { trackerPluginOrNull } from "./plugins/registry.ts";
-import { type Issue, routable } from "./plugins/work-item.ts";
+import { trackerPluginOrNull } from "./plugins/trackers/registry.ts";
 import { buildPrompt } from "./prompt-builder.ts";
 import { type Result, err, ok } from "./result.ts";
 import * as Tracker from "./tracker/tracker.ts";
+import { type Issue, routable } from "./work-item.ts";
 import * as Workspace from "./workspace.ts";
 
 export type WorkerUpdate =

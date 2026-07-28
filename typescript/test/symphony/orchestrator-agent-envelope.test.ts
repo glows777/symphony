@@ -5,7 +5,7 @@ import {
   type RunningTask,
   type Snapshot,
 } from "../../src/symphony/orchestrator.ts";
-import { newIssue } from "../../src/symphony/plugins/work-item.ts";
+import { newIssue } from "../../src/symphony/work-item.ts";
 import { setupWorkflow, teardownWorkflow } from "../support/test-support.ts";
 
 // P3: the orchestrator consumes the normalized agent-backend envelope. It reads

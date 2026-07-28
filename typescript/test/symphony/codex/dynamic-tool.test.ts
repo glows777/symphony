@@ -7,8 +7,8 @@ import {
 import { err, ok } from "../../../src/symphony/result.ts";
 import { workflowFilePath } from "../../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../../support/test-support.ts";
-import { writeLarkTaskWorkflowFile } from "../plugins/lark-task/lark-task-test-support.ts";
-import { writeLarkWorkflowFile } from "../plugins/lark/lark-test-support.ts";
+import { writeLarkTaskWorkflowFile } from "../plugins/trackers/lark-task/lark-task-test-support.ts";
+import { writeLarkWorkflowFile } from "../plugins/trackers/lark/lark-test-support.ts";
 
 type Call = { query: string; variables: Record<string, unknown>; opts: unknown[] };
 

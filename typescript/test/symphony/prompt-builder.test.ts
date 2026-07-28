@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import path from "node:path";
 import { workflowPrompt } from "../../src/symphony/config.ts";
-import { newIssue } from "../../src/symphony/plugins/work-item.ts";
 import { buildPrompt } from "../../src/symphony/prompt-builder.ts";
+import { newIssue } from "../../src/symphony/work-item.ts";
 import { setWorkflowFilePath, workflowFilePath } from "../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";
 

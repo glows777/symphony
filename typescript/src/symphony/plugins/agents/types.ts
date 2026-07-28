@@ -1,7 +1,7 @@
 // Agent backend plugin contract. Post-cutover TS-native design (no Elixir
 // counterpart; see MIGRATION.md -> Post-cutover divergence).
 //
-// Mirrors the tracker plugin design (plugins/types.ts): the session API is
+// Mirrors the tracker plugin design (plugins/trackers/types.ts): the session API is
 // required — it drives a single issue's agent run — and everything else is an
 // optional capability. A backend for an agent without a native feature simply
 // omits the capability and the runner degrades (a fresh session per turn when
@@ -10,7 +10,7 @@
 
 import type { JsonMap } from "../../config/schema.ts";
 import type { Result } from "../../result.ts";
-import type { AgentToolOutcome, AgentToolSpec, PluginConfigSchema } from "../types.ts";
+import type { AgentToolOutcome, AgentToolSpec, PluginConfigSchema } from "../shared/types.ts";
 
 // ---- normalized event envelope ----------------------------------------------
 

@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { deleteEnv } from "../../src/symphony/app-env.ts";
-import { resetTokenCacheForTest as resetLarkTokenCache } from "../../src/symphony/plugins/lark-common/http.ts";
+import { resetTokenCacheForTest as resetLarkTokenCache } from "../../src/symphony/plugins/trackers/lark-common/http.ts";
 import { getRunningStore } from "../../src/symphony/workflow-store.ts";
 import { setWorkflowFilePath } from "../../src/symphony/workflow.ts";
 

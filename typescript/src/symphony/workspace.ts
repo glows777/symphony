@@ -10,9 +10,9 @@ import path from "node:path";
 import { settingsBang } from "./config.ts";
 import { logger } from "./logger.ts";
 import { canonicalize } from "./path-safety.ts";
-import type { Issue } from "./plugins/work-item.ts";
 import { type Result, err, ok } from "./result.ts";
 import * as SSH from "./ssh.ts";
+import type { Issue } from "./work-item.ts";
 import { type WorkspaceGuardViolation, guardWorkspacePath } from "./workspace-guard.ts";
 
 const REMOTE_WORKSPACE_MARKER = "__SYMPHONY_WORKSPACE__";

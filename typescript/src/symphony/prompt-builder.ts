@@ -8,7 +8,7 @@
 
 import { Liquid, type Template } from "liquidjs";
 import { workflowPrompt } from "./config.ts";
-import type { Issue } from "./plugins/work-item.ts";
+import type { Issue } from "./work-item.ts";
 import { current as workflowCurrent } from "./workflow.ts";
 
 const engine = new Liquid({ strictVariables: true, strictFilters: true });

@@ -3,7 +3,7 @@
 > 目标读者:实现 `kind: "lark-task"` 插件的下一个 Claude session。开工前先按顺序
 > 通读:本文 → [`PLUGIN_CONTRACT.md`](./PLUGIN_CONTRACT.md)(插件契约,规范性,逐条满足)
 > → 现有 [`LARK_PLUGIN_HANDOFF.md`](./LARK_PLUGIN_HANDOFF.md)(Bitable 版的调研背景)
-> → 现有实现 `typescript/src/symphony/plugins/lark/`(大量可复用代码,见 §5)。
+> → 现有实现 `typescript/src/symphony/plugins/trackers/lark/`(大量可复用代码,见 §5)。
 
 ## 0. 一句话任务
 
@@ -105,7 +105,7 @@ Task v2 概览:https://open.feishu.cn/document/task-v2/task/overview
 
 ## 5. 最大化复用现有 lark 插件的通用层(重要,别复制粘贴)
 
-现有 `plugins/lark/client.ts` 里有一部分是**与 Bitable 无关的 Lark 通用层**,
+现有 `plugins/trackers/lark/client.ts` 里有一部分是**与 Bitable 无关的 Lark 通用层**,
 `lark-task` 应当复用而非重写:
 
 - **`tenant_access_token` 生命周期**(`client.ts:181-223`):模块级缓存 `{token, expiresAt}`、
@@ -115,8 +115,8 @@ Task v2 概览:https://open.feishu.cn/document/task-v2/task/overview
 - **`lark_api` 动态工具**(`api-tool.ts` 全文):路径只校验 `/open-apis/` 前缀,
   host 恒为配置 endpoint。**它对 Task v2 路径同样适用**,一字不用改。
 
-**建议做法**:开工时先做一次**小重构**,把上述通用层从 `plugins/lark/client.ts`
-抽到共享位置(如 `plugins/lark/shared.ts` 或新目录 `plugins/lark-common/`),
+**建议做法**:开工时先做一次**小重构**,把上述通用层从 `plugins/trackers/lark/client.ts`
+抽到共享位置(如 `plugins/trackers/lark/shared.ts` 或新目录 `plugins/trackers/lark-common/`),
 让 `lark` 与 `lark-task` 两个插件共享 token 缓存 + `request()` + `lark_api` 工具。
 `lark-task/client.ts` 只写 **Task v2 专属**部分:list/get/更新 的路径与 body、
 `normalizeTask`。
@@ -154,7 +154,7 @@ tracker:
 
 - **canonical env 复用 `LARK_APP_SECRET`**:`finalize` 走
   `resolveSecretSetting(value, envOrNull("LARK_APP_SECRET"))`,必须用
-  `plugins/config-helpers.ts` 的共享 helper(与 Bitable 版一致,`$VAR` 语义统一)。
+  `plugins/shared/config-helpers.ts` 的共享 helper(与 Bitable 版一致,`$VAR` 语义统一)。
   这样跑 lark-task **唯一必须的环境变量仍是 `LARK_APP_SECRET`**,其余都在 WORKFLOW.md。
 - `validate` 语义门(错误须带 `code` + `message`,遵守 TrackerError 契约):
   缺 `app_id`/`app_secret` → tag `missing_lark_task_credentials`(code `missing_credentials`);
@@ -199,7 +199,7 @@ typescript/src/symphony/plugins/
     settings.ts                 # LarkTaskSettings 窄化(照 lark/settings.ts)
     client.ts                   # Task v2 专属:list/get/更新、normalizeTask(token+request 复用 §5 共享层)
     # api-tool.ts               # 若 §5 抽出共享 lark_api,则无需新建;否则薄封装复用
-typescript/test/symphony/plugins/lark-task/
+typescript/test/symphony/plugins/trackers/lark-task/
     client.test.ts              # normalizeTask、分页、状态过滤(客户端/服务端按 §2 结果)、token 复用(注入 fake requestFun)
     plugin.test.ts              # configSchema cast/finalize/validate、capability 面、经 Tracker 门面端到端(fake client)
 ```
@@ -210,7 +210,7 @@ typescript/test/symphony/plugins/lark-task/
 2. (可选但推荐)§5 通用层重构:抽 token+request+lark_api 到共享模块,保证现有
    `lark` 插件测试仍绿。
 3. `settings.ts` + `configSchema`(cast/finalize/validate)+ 注册进
-   `plugins/index.ts`(`registerTrackerPlugin(LarkTaskPlugin)`)+ config 测试
+   `plugins/trackers/index.ts`(`registerTrackerPlugin(LarkTaskPlugin)`)+ config 测试
    (kind `"lark-task"` 不再 unsupported)。加 app-env 注入 seam `lark_task_client_module`
    (照 `lark_client_module`),并在 `test/support/test-support.ts` teardown 里清理。
 4. `client.ts`:三个读操作 + `normalizeTask`(**全部经 `newWorkItem` 盖章**,labels
@@ -299,5 +299,5 @@ typescript/test/symphony/plugins/lark-task/
 - `projectUrl` 用清单 applink(`https://applink.{domain}/client/todo/task_list?guid=`,
   与 tasklist API 返回的 `url` 字段格式一致);此拼法来自官方文档示例,
   离线未能直接核实——首次真实运行时确认,错了只影响 dashboard 链接。
-- 共享层落位 `plugins/lark-common/`(http.ts + api-tool.ts),token 缓存按
+- 共享层落位 `plugins/trackers/lark-common/`(http.ts + api-tool.ts),token 缓存按
   `endpoint|app_id` 键控(两插件共享,teardown 一处清理);`lark` 插件对外行为不变。

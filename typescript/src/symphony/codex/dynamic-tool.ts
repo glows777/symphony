@@ -8,8 +8,8 @@
 // Jason.encode! -> JSON.stringify(_, null, 2).
 
 import { trackerToolProvider } from "../plugins/agents/tool-provider.ts";
-import type { LinearClientFn } from "../plugins/linear/graphql-tool.ts";
-import type { AgentToolOutcome } from "../plugins/types.ts";
+import type { LinearClientFn } from "../plugins/trackers/linear/graphql-tool.ts";
+import type { AgentToolOutcome } from "../plugins/trackers/types.ts";
 
 export type DynamicToolResponse = {
   success: boolean;

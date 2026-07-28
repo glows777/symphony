@@ -13,9 +13,9 @@ Linear 和 memory 是现有的两个插件。本任务是新增第三个插件 `
 
 1. `docs/PLUGIN_CONTRACT.md` — 插件契约(数据模型、必选读操作、可选 capability、
    错误模型、配置钩子、新插件 checklist §10)。
-2. `typescript/src/symphony/plugins/linear/` — 全能力参考实现
+2. `typescript/src/symphony/plugins/trackers/linear/` — 全能力参考实现
    (plugin.ts / settings.ts / client.ts / adapter.ts / graphql-tool.ts)。
-3. `typescript/src/symphony/plugins/memory/` — 最小实现 + capability 降级示例。
+3. `typescript/src/symphony/plugins/trackers/memory/` — 最小实现 + capability 降级示例。
 4. `typescript/test/symphony/plugins/` 与 `typescript/test/symphony/tracker.test.ts`
    — 测试注入模式(app-env seam)。
 5. `SPEC.md` §11(tracker 契约)、§8(轮询/对账循环,理解三个读操作何时被调用)。
@@ -102,7 +102,7 @@ tracker:
 ```
 
 - `finalize`:`app_secret` 走 `resolveSecretSetting(value, envOrNull("LARK_APP_SECRET"))`
-  (必须用 `plugins/config-helpers.ts` 的共享 helper,保证 `$VAR` 语义一致)。
+  (必须用 `plugins/shared/config-helpers.ts` 的共享 helper,保证 `$VAR` 语义一致)。
 - `validate` 错误 tag(带 code + message,遵守 TrackerError 契约):
   `missing_lark_app_credentials`(code `missing_credentials`)、
   `missing_lark_app_token` / `missing_lark_table_id`(code `missing_config`)。
@@ -147,19 +147,19 @@ Linear 是静态 key,Lark 是短期 token——插件内做模块级缓存:
 ## 4. 文件布局与实施步骤
 
 ```
-typescript/src/symphony/plugins/lark/
+typescript/src/symphony/plugins/trackers/lark/
   plugin.ts        # LarkPlugin 聚合对象(configSchema + 3 reads + stateUpdates + agentTools + ui)
   settings.ts      # LarkSettings 窄化(照 linear/settings.ts)
   client.ts        # HTTP client:token 缓存、search/batch_get/update、normalize → newWorkItem
   api-tool.ts      # lark_api 动态工具
-typescript/test/symphony/plugins/lark/
+typescript/test/symphony/plugins/trackers/lark/
   client.test.ts   # normalize、分页、filter 构造、token 缓存/刷新(注入 fake requestFun)
   plugin.test.ts   # configSchema cast/finalize/validate、capability 面、经 Tracker 门面的端到端(fake client)
 ```
 
 步骤(每步 `bun run check` 绿):
 
-1. settings.ts + configSchema(cast/finalize/validate)+ 注册进 `plugins/index.ts`
+1. settings.ts + configSchema(cast/finalize/validate)+ 注册进 `plugins/trackers/index.ts`
    + config 测试(kind "lark" 不再是 unsupported)。
 2. client.ts:token 管理 + 三个读操作 + normalize(**所有产出必须经 `newWorkItem` 盖章**,
    labels trim+小写,状态词汇表原样保留大小写)。注入 seam:`lark_client_module`
