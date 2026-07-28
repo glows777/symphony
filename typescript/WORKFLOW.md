@@ -38,8 +38,9 @@ tracker:
   api_key: $LINEAR_API_KEY
 
   # ⚠️ 只接受字面值,**不做** "$VAR" 展开(和 api_key 不同)。
-  # 从项目 URL 里取:https://linear.app/<workspace>/project/<project-slug>
-  project_slug: replace-me-with-your-project-slug
+  # 从项目 URL 对应的 Linear project.slugId 里取。
+  # 当前项目 URL:https://linear.app/glows777/project/symphony-self-f61a905eedf7/overview
+  project_slug: f61a905eedf7
 
   # "me" = 用这把 key 自己的用户(内部走 `viewer { id }` 查),这是给 Symphony
   # 配专用 bot 账号时的标准写法;也可以填字面的 Linear user id。
@@ -76,12 +77,13 @@ polling:
 
 workspace:
   # 每个 issue 一个目录,名字是 sanitize 过的 issue identifier(如 ENG-123)。
-  # 必须可写,且**不要**放在被改动的仓库内部。
+  # 本地部署约定:工作区放在当前 Symphony 仓库之外,避免嵌套 clone 干扰主仓库。
+  # 必须可写,且这里的值要和 Codex 的 writableRoots 逐字一致。
   #
   # ⚠️ 这个值必须和下面 codex.turn_sandbox_policy.writableRoots 里的路径**逐字一致**。
   # 这里支持 "$VAR" 展开而那边不支持,所以两处都写字面值是唯一不会写岔的方案。
   # 写岔了的症状是 codex 在沙箱里报权限错,很难往配置上想。
-  root: /replace/me/symphony-workspaces
+  root: /Users/glows777/symphony-workspaces/symphony
 
 agent:
   # 这份配置跑 Codex(也是默认值)。被选中的后端读同名的顶层配置段 —— 即下面的
@@ -139,7 +141,7 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     writableRoots:
-      - /replace/me/symphony-workspaces
+      - /Users/glows777/symphony-workspaces/symphony
     readOnlyAccess:
       type: fullAccess
     networkAccess: true
@@ -167,7 +169,7 @@ hooks:
   # issue identifier,所以 `basename "$PWD"` 是取回它的唯一办法。
   after_create: |
     set -eu
-    git clone --filter=blob:none git@github.com:replace-me/replace-me.git .
+    git clone --filter=blob:none git@github.com:glows777/symphony.git .
     git switch -c "symphony/$(basename "$PWD")"
 
   # 每次尝试前都跑(含重试和重新派发),所以必须幂等且快。非零退出会让本次尝试
@@ -193,8 +195,10 @@ hooks:
     set -eu
     branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
     [ -n "$branch" ] || exit 0
-    gh pr list --head "$branch" --state open --json number --jq '.[].number' \
-      | xargs -r -n1 gh pr close
+    gh pr list --head "$branch" --state open --json number --jq '.[].number' |
+      while IFS= read -r number; do
+        [ -n "$number" ] && gh pr close "$number"
+      done
 
 observability:
   dashboard_enabled: true

@@ -2,3 +2,6 @@
 # env; keep any local .env out of git.
 .env
 .env.*
+
+# Local Symphony issue workspaces.
+rumtime/
