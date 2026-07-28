@@ -84,6 +84,8 @@ review:
   # Fail-closed review runs remain active here for manual follow-up.
   manual_state: In Progress
   handoff_path: .symphony/review-handoff.json
+  # System-owned evidence: run against a clean commit and bind the receipt to PR HEAD.
+  verification_command: cd typescript && bun run check
 
 polling:
   # Linear API 有限流,issue 也不会每秒变。30s 是默认值,共享项目下别再往下调。

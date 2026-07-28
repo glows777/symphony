@@ -162,7 +162,9 @@ async function runOnWorkerHost(
       return err(beforeRun.error);
     }
     const promptReviewContext =
-      reviewContext === null ? null : mergePersistedHandoff(reviewContext, workspace);
+      reviewContext === null
+        ? null
+        : mergePersistedHandoff(reviewContext, workspace, { workerHost });
     const result = await runAgentTurns(
       workspace,
       issue,
@@ -174,15 +176,47 @@ async function runOnWorkerHost(
       promptReviewContext,
     );
     if (result.ok && reviewContext !== null && !isAborted(opts.signal ?? null)) {
-      const gated = await finalizeReviewRun(
-        issue,
-        reviewContext,
+      const verification = Workspace.runVerificationCommand(
         workspace,
-        opts.reviewProviderOptions,
+        settingsBang().review.verificationCommand,
+        workerHost,
       );
+      if (!verification.ok) {
+        const verificationError = {
+          tag: "review_verification_failed",
+          message: "Unable to execute the configured review verification command",
+          detail: verification.error,
+        };
+        await output.finish("failed", verificationError);
+        return err(verificationError);
+      }
+      const gated = await finalizeReviewRun(issue, reviewContext, workspace, {
+        ...opts.reviewProviderOptions,
+        workerHost,
+        verificationReceipt:
+          verification.value === null
+            ? null
+            : {
+                headSha: verification.value.headSha,
+                command: verification.value.command,
+                exitCode: verification.value.exitCode,
+              },
+        ...(opts.issueStateFetcher === undefined
+          ? {}
+          : { issueStateFetcher: opts.issueStateFetcher }),
+      });
       if (!gated.ok) {
         await output.finish("failed", gated.error);
         return err(gated.error);
+      }
+      if (gated.value.status === "incomplete") {
+        const incomplete = {
+          tag: "review_incomplete",
+          message: "Review findings remain incomplete or require a human decision",
+          detail: { openFindingIds: gated.value.openFindingIds },
+        };
+        await output.finish("failed", incomplete);
+        return err(incomplete);
       }
     }
     await output.finish(
@@ -252,7 +286,7 @@ async function runAgentTurns(
   output: AgentOutputRun,
   reviewContext: ReviewContext | null,
 ): Promise<Result<undefined, unknown>> {
-  const maxTurns = opts.maxTurns ?? settingsBang().agent.maxTurns;
+  const maxTurns = reviewContext === null ? (opts.maxTurns ?? settingsBang().agent.maxTurns) : 1;
   const issueStateFetcher: IssueStateFetcher =
     opts.issueStateFetcher ?? ((ids) => Tracker.fetchIssueStatesByIds(ids));
   const toolProvider = trackerToolProvider({ reviewStateGate: reviewContext !== null });

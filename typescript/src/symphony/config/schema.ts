@@ -42,6 +42,7 @@ export type ReviewSettings = {
   githubToken: string | null;
   manualState: string;
   handoffPath: string;
+  verificationCommand: string | null;
 };
 export type AgentSettings = {
   // Selects the agent backend plugin ("codex" by default; zero migration for
@@ -402,6 +403,14 @@ function castReview(raw: unknown, section: string, errors: FieldError[]): Review
       section,
       castString,
       ".symphony/review-handoff.json",
+      errors,
+    ).value,
+    verificationCommand: field<string | null>(
+      r,
+      "verification_command",
+      section,
+      castString,
+      null,
       errors,
     ).value,
   };
