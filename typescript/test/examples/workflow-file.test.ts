@@ -96,6 +96,37 @@ describe("WORKFLOW.md (Linear + codex)", () => {
     });
   });
 
+  test("the sandbox's writable root matches workspace.root verbatim", () => {
+    const parsed = settings();
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    // These two are written independently — workspace.root expands "$VAR",
+    // the sandbox policy map does not — and a mismatch surfaces only as a
+    // permission error from inside Codex's sandbox. Pin them together.
+    const writableRoots = parsed.value.codex.turnSandboxPolicy?.writableRoots;
+    expect(writableRoots).toEqual([parsed.value.workspace.root]);
+  });
+
+  test("carries no baked-in credential", () => {
+    // The file is committed, so the api key must come from the environment and
+    // nowhere else: with the variable unset there is no key left to find, and
+    // validation fails on exactly that.
+    Reflect.deleteProperty(process.env, "LINEAR_API_KEY");
+
+    const parsed = settings();
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    expect(parsed.value.tracker.plugin.api_key).toBeNull();
+    expect(validate()).toMatchObject({
+      ok: false,
+      error: { tag: "missing_linear_api_token" },
+    });
+  });
+
   test("renders the prompt for a fully populated issue", () => {
     const prompt = buildPrompt(sampleIssue({ branchName: "eng-123-retry-backoff" }), {
       attempt: null,

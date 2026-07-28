@@ -47,20 +47,28 @@ Three workflow files ship here, for three different jobs:
 
 ### Running against Linear
 
-`WORKFLOW.md` is fully annotated; replace the values marked `replace-me`, then:
+`WORKFLOW.md` is fully annotated; replace the values marked `replace-me` (the
+project slug, the clone URL, and the workspace root — which appears **twice**,
+in `workspace.root` and in the sandbox policy, and must match verbatim), then:
 
 ```bash
+cd typescript
 export LINEAR_API_KEY=lin_api_...          # a bot account's key is the usual setup
-export SYMPHONY_REPO_URL=git@github.com:acme/app.git
-export SYMPHONY_WORKSPACE_ROOT="$HOME/.symphony/workspaces"
 
 bun run start \
   --i-understand-that-this-will-be-running-without-the-usual-guardrails \
   --port 4000 ./WORKFLOW.md
 ```
 
-The file is read from the process working directory when no path is passed.
-Points worth knowing before the first run, all covered inline:
+The API key is the only credential, and it is the only thing that has to come
+from the environment — everything else is a literal in the file. A
+`typescript/.env` works too (it is gitignored, and Bun loads it automatically),
+but Bun resolves `.env` against the **current working directory**: launching
+from the repository root instead of `typescript/` silently picks up nothing and
+surfaces as `missing_linear_api_token`.
+
+`WORKFLOW.md` itself is read from the process working directory when no path is
+passed. Points worth knowing before the first run, all covered inline:
 
 - **Symphony only creates the workspace directory.** Cloning the repository is
   the `after_create` hook's job. Hooks run via `sh -lc` with the workspace as
@@ -80,7 +88,10 @@ Points worth knowing before the first run, all covered inline:
   review. The agent moves the issue itself, through `linear_graphql`.
 - **`codex.turn_sandbox_policy` defaults to `networkAccess: false`**, which
   cannot install dependencies or push a branch. An agent expected to open a PR
-  needs the explicit override, and `$VAR` is not expanded inside that map.
+  needs the explicit override. `$VAR` is not expanded inside that map, which is
+  why the workspace root is written as a literal in both places rather than
+  through an environment variable; a mismatch between the two surfaces only as
+  a permission error from inside Codex's sandbox.
 
 [`test/examples/workflow-file.test.ts`](./test/examples/workflow-file.test.ts)
 keeps both runnable workflows honest: they must keep parsing, keep passing

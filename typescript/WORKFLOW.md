@@ -4,18 +4,25 @@
 # 这份文件是仓库自己的运行配置:Symphony 从 Linear 项目取工作项,为每个 issue
 # 建独立工作区,在里面跑 codex app-server,直到 issue 离开活跃状态。
 #
-# 启动前先导出这三个环境变量(hooks 会继承 Symphony 的整个环境):
+# 只需要一个环境变量,就是那把密钥:
 #
-#   export LINEAR_API_KEY=lin_api_...                 # Linear API key
-#   export SYMPHONY_REPO_URL=git@github.com:you/repo.git   # after_create 克隆的仓库
-#   export SYMPHONY_WORKSPACE_ROOT="$HOME/.symphony/workspaces"
+#   export LINEAR_API_KEY=lin_api_...
 #
-# 然后:
+# 也可以写进 `typescript/.env`(已被 .gitignore 忽略),Bun 会自动加载它 ——
+# 但 Bun 是按**当前工作目录**找 .env 的,所以必须先 cd 进 typescript 再启动,
+# 从仓库根目录跑 `bun run typescript/src/cli.ts` 读不到,而且不报错、只是安静地
+# 变成 missing_linear_api_token。
+#
+# 启动:
 #
 #   cd typescript
 #   bun run start \
 #     --i-understand-that-this-will-be-running-without-the-usual-guardrails \
 #     --port 4000 ./WORKFLOW.md
+#
+# 仓库地址和工作区路径都写成字面值了(见 workspace.root / after_create):它们不是
+# 密钥,写在文件里反而能一眼看出这份配置服务于哪个仓库;工作区路径更是必须写死
+# —— 见 codex.turn_sandbox_policy 上的说明。
 #
 # 不带凭证的本地冒烟(memory tracker,原来这个文件的内容)搬到了
 # `examples/local.workflow.md`,验收流程见 ../docs/CLAUDE_CODE_LOCAL_ACCEPTANCE.md。
@@ -69,9 +76,12 @@ polling:
 
 workspace:
   # 每个 issue 一个目录,名字是 sanitize 过的 issue identifier(如 ENG-123)。
-  # 必须可写,且**不要**放在被改动的仓库内部。"$VAR" 会展开;变量没设时回退到
-  # <tmpdir>/symphony_workspaces。
-  root: $SYMPHONY_WORKSPACE_ROOT
+  # 必须可写,且**不要**放在被改动的仓库内部。
+  #
+  # ⚠️ 这个值必须和下面 codex.turn_sandbox_policy.writableRoots 里的路径**逐字一致**。
+  # 这里支持 "$VAR" 展开而那边不支持,所以两处都写字面值是唯一不会写岔的方案。
+  # 写岔了的症状是 codex 在沙箱里报权限错,很难往配置上想。
+  root: /replace/me/symphony-workspaces
 
 agent:
   # 这份配置跑 Codex(也是默认值)。被选中的后端读同名的顶层配置段 —— 即下面的
@@ -121,15 +131,15 @@ codex:
   # ⚠️ 两个坑:
   #
   # 1. 这个 map 原样透传给 Codex,所以键是 camelCase(不是本文件其他地方的
-  #    snake_case),而且这里的 "$VAR" **不展开** —— writableRoots 必须写字面
-  #    绝对路径,填成 workspace.root 实际解析到的那个目录。
+  #    snake_case),而且这里的 "$VAR" **不展开** —— writableRoots 只能写字面
+  #    绝对路径,且必须与上面的 workspace.root 逐字一致。
   # 2. Symphony 的内置默认值就是这个形状但 `networkAccess: false`,那样既装不了
   #    依赖也推不了分支。要 agent 开 PR 就必须显式覆盖。在沙箱里放开网络是一个
   #    真实的信任决策,所以 Symphony 让你手写出来,而不是默默继承。
   turn_sandbox_policy:
     type: workspaceWrite
     writableRoots:
-      - /replace/me/with/your/workspace/root
+      - /replace/me/symphony-workspaces
     readOnlyAccess:
       type: fullAccess
     networkAccess: true
@@ -157,7 +167,7 @@ hooks:
   # issue identifier,所以 `basename "$PWD"` 是取回它的唯一办法。
   after_create: |
     set -eu
-    git clone --filter=blob:none "$SYMPHONY_REPO_URL" .
+    git clone --filter=blob:none git@github.com:replace-me/replace-me.git .
     git switch -c "symphony/$(basename "$PWD")"
 
   # 每次尝试前都跑(含重试和重新派发),所以必须幂等且快。非零退出会让本次尝试
