@@ -183,10 +183,21 @@ export class HttpServer {
     const provider = opts.orchestrator ?? UNAVAILABLE_PROVIDER;
     const snapshotTimeoutMs = opts.snapshotTimeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS;
     const handlers: RouterHandlers = { staticAsset: serveStaticAsset, ...opts.handlers };
-    const fetch = createRouter(provider, snapshotTimeoutMs, handlers);
+    const route = createRouter(provider, snapshotTimeoutMs, handlers);
 
     try {
-      const server = Bun.serve({ hostname: normalizeHost(host), port, fetch });
+      const server = Bun.serve({
+        hostname: normalizeHost(host),
+        port,
+        fetch: (req, server) => {
+          // `/events` is a quiet SSE stream between dashboard updates. Bun's
+          // default 10-second idle timeout would close it and log a timeout.
+          if (req.method === "GET" && new URL(req.url).pathname === "/events") {
+            server.timeout(req, 0);
+          }
+          return route(req);
+        },
+      });
       this.server = server;
       setBoundPort(server.port ?? null);
       return { kind: "started", server };
