@@ -187,6 +187,20 @@ describe("web server / observability API", () => {
       expect(status).toBe(404);
       expect(body).toEqual({ error: { code: "not_found", message: "Route not found" } });
     });
+
+    test("routes built frontend fonts through the static asset handler", async () => {
+      const route = createRouter(provider(staticSnapshot(), refreshReply), 50, {
+        staticAsset: () =>
+          new Response("font bytes", {
+            headers: { "content-type": "font/woff2" },
+          }),
+      });
+
+      const response = await route(new Request("http://127.0.0.1/fonts/CascadiaMono.woff2"));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("font/woff2");
+      expect(await response.text()).toBe("font bytes");
+    });
   });
 
   test("reports snapshot unavailable and orchestrator unavailable", async () => {

@@ -58,7 +58,7 @@ export function createRouter(
     const path = url.pathname;
     const method = req.method.toUpperCase();
 
-    if (STATIC_ASSET_PATHS.has(path) || path.startsWith("/assets/")) {
+    if (STATIC_ASSET_PATHS.has(path) || path.startsWith("/assets/") || path.startsWith("/fonts/")) {
       if (method === "GET" && handlers.staticAsset) {
         return handlers.staticAsset(req);
       }

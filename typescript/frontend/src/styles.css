@@ -1,7 +1,24 @@
+@font-face {
+  font-family: "Symphony Source Han Serif";
+  src: url("/fonts/SourceHanSerifSC-VF.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 250 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Symphony Cascadia Mono";
+  src: url("/fonts/CascadiaMono.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 200 700;
+  font-display: swap;
+}
+
 :root {
   color: #1d1b16;
   background: #f5f3ee;
   font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -24,8 +41,10 @@
   --amber-wash: #f1e6d0;
   --red: #a8534a;
   --red-wash: #f1ddda;
-  --font-ui: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "Noto Serif SC", serif;
-  --font-code: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
+  --font-ui: "Symphony Source Han Serif", serif;
+  --font-code: "Symphony Cascadia Mono", monospace;
+  --font-size-ui: 14px;
+  --font-size-code: 12px;
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
@@ -156,7 +175,7 @@ summary:focus-visible {
   background: var(--green-wash);
   border-radius: var(--radius-sm);
   font-family: var(--font-code);
-  font-size: 10px;
+  font-size: var(--font-size-code);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -232,10 +251,15 @@ summary:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+.numeric {
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+}
+
 .sidebar-count {
   color: var(--ink-faint);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 11px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
 }
 
 .run-groups {
@@ -248,7 +272,8 @@ summary:focus-visible {
   gap: 8px;
   padding: 0 6px 8px;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   font-weight: 600;
   letter-spacing: 0.03em;
 }
@@ -256,8 +281,8 @@ summary:focus-visible {
 .run-group-count {
   margin-left: auto;
   color: var(--ink-faint);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 10px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   font-weight: 400;
 }
 
@@ -328,8 +353,8 @@ summary:focus-visible {
 
 .run-button-id {
   color: currentColor;
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 11px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   line-height: 1.1;
 }
 
@@ -337,7 +362,7 @@ summary:focus-visible {
   overflow: hidden;
   color: var(--ink-faint);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--font-size-ui);
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -350,8 +375,8 @@ summary:focus-visible {
   gap: 7px;
   min-width: 0;
   color: var(--ink-faint);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 9px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
 }
 
 .backend-chip,
@@ -372,7 +397,7 @@ summary:focus-visible {
 .sidebar-empty {
   padding: 0 6px;
   color: var(--ink-faint);
-  font-size: 11px;
+  font-size: var(--font-size-ui);
   line-height: 1.5;
 }
 
@@ -380,8 +405,8 @@ summary:focus-visible {
   margin-top: auto;
   padding: 24px 6px 0;
   color: var(--ink-faint);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 9px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
@@ -421,8 +446,8 @@ summary:focus-visible {
   align-items: center;
   gap: 9px;
   color: var(--ink-faint);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 10px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   letter-spacing: 0.02em;
 }
 
@@ -436,8 +461,8 @@ summary:focus-visible {
   gap: 7px;
   padding: 6px 9px;
   border-radius: var(--radius-sm);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 10px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -484,7 +509,8 @@ summary:focus-visible {
   gap: 9px;
   margin: 10px 0 0;
   color: var(--ink-soft);
-  font-size: 12px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   line-height: 1.5;
 }
 
@@ -493,8 +519,8 @@ summary:focus-visible {
 }
 
 .backend-badge {
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 10px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   text-transform: uppercase;
 }
 
@@ -508,8 +534,8 @@ summary:focus-visible {
   background: var(--surface-quiet);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 10px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   text-transform: uppercase;
 }
 
@@ -548,8 +574,8 @@ summary:focus-visible {
 .run-fact-label {
   display: block;
   color: var(--ink-faint);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 9px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -559,15 +585,16 @@ summary:focus-visible {
   overflow: hidden;
   margin-top: 6px;
   color: var(--ink-soft);
-  font-size: 12px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .run-fact-mono {
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 10px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
 }
 
 .timeline-panel {
@@ -592,8 +619,8 @@ summary:focus-visible {
 .timeline-heading-meta {
   gap: 12px;
   color: var(--ink-faint);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 10px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   text-transform: uppercase;
 }
 
@@ -677,8 +704,8 @@ summary:focus-visible {
 
 .event-label {
   color: var(--ink);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 11px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   font-weight: 600;
   letter-spacing: 0.025em;
 }
@@ -686,8 +713,8 @@ summary:focus-visible {
 .event-time,
 .event-sequence {
   color: var(--ink-faint);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 10px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
 }
 
 .event-sequence {
@@ -698,7 +725,7 @@ summary:focus-visible {
   max-width: 76ch;
   margin: 7px 0 0;
   color: var(--ink-soft);
-  font-size: 14px;
+  font-size: var(--font-size-ui);
   line-height: 1.65;
   text-wrap: pretty;
 }
@@ -708,8 +735,8 @@ summary:focus-visible {
   gap: 10px;
   margin-top: 9px;
   color: var(--ink-faint);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 9px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
@@ -728,7 +755,7 @@ summary:focus-visible {
 }
 
 .mono {
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
+  font-family: var(--font-code);
 }
 
 .payload-details {
@@ -742,8 +769,8 @@ summary:focus-visible {
   padding: 10px 0 5px;
   color: var(--ink-faint);
   cursor: pointer;
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 10px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   list-style-position: inside;
   text-transform: uppercase;
 }
@@ -757,8 +784,8 @@ summary:focus-visible {
   background: var(--surface-quiet);
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-sm);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 10px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -801,7 +828,7 @@ summary:focus-visible {
 }
 
 .timeline-empty > span:last-child {
-  font-size: 12px;
+  font-size: var(--font-size-ui);
 }
 
 .empty-glyph {
@@ -845,7 +872,7 @@ summary:focus-visible {
   color: var(--amber);
   background: var(--amber-wash);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: var(--font-size-ui);
 }
 
 .runtime-bar {
@@ -855,8 +882,8 @@ summary:focus-visible {
   color: var(--ink-faint);
   background: var(--surface-quiet);
   border-top: 1px solid var(--line);
-  font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-  font-size: 9px;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
   letter-spacing: 0.035em;
   text-transform: uppercase;
 }
@@ -930,8 +957,8 @@ summary:focus-visible {
 
   .mobile-picker-label {
     color: var(--ink-faint);
-    font-family: "SF Mono", "Cascadia Mono", "Noto Sans Mono", monospace;
-    font-size: 9px;
+    font-family: var(--font-code);
+    font-size: var(--font-size-code);
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
@@ -944,6 +971,8 @@ summary:focus-visible {
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
+    font-family: var(--font-code);
+    font-size: var(--font-size-code);
   }
 
   .workspace {
@@ -966,7 +995,6 @@ summary:focus-visible {
 
   .read-only-stamp {
     padding: 6px 8px;
-    font-size: 9px;
   }
 
   .run-facts {
@@ -1008,14 +1036,6 @@ summary:focus-visible {
     grid-template-columns: 15px minmax(0, 1fr);
     gap: 12px;
     padding-bottom: 21px;
-  }
-
-  .event-message {
-    font-size: 13px;
-  }
-
-  .event-sequence {
-    font-size: 9px;
   }
 
   .runtime-bar {
