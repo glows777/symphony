@@ -33,6 +33,8 @@ bun run typecheck   # tsc --strict, no emit
 bun run lint        # biome check
 bun run check       # typecheck + lint + test (the quality gate)
 bun run verify      # check + a real end-to-end smoke of the running app
+bun run frontend:dev    # Vite development server; proxies /api to Bun on port 4000
+bun run frontend:build  # production assets; served by the Bun app when present
 ```
 
 ## Workflow files
@@ -148,6 +150,23 @@ curl -s -X POST localhost:4000/api/v1/refresh   # 202
 curl -s -o /dev/null -w '%{http_code}\n' localhost:4000/api/v1/NOPE   # 404
 ls "$SYMPHONY_SMOKE_WORKSPACE_ROOT"             # SMOKE-1 (dispatched issue workspace)
 ```
+
+The observability workspace is a read-only Vite + React app. Run
+`bun run frontend:dev` in a second terminal while the Bun server is listening on port 4000;
+set `SYMPHONY_API_ORIGIN` when the API is on another origin. For a production-like check, run
+`bun run frontend:build` first and open the Bun server root; it serves `frontend/dist` and keeps the
+legacy SSR dashboard available to direct handler callers.
+
+Agent output is configured under `observability.agent_output`:
+
+- `off` (default): do not write agent output logs.
+- `summary`: persist normalized events and human-readable summaries only.
+- `raw`: also persist bounded payloads and raw protocol lines.
+
+Logs are append-only JSONL under `log/agents/<issue_identifier>/<run_id>.jsonl` relative to the
+configured `--logs-root`. Inspect a run with
+`GET /api/v1/<issue_identifier>/output?limit=100&after=<seq>` or subscribe to
+`GET /api/v1/<issue_identifier>/output/stream` (SSE event name `agent_output`).
 
 Stop the server with `Ctrl-C` (or `SIGTERM`); it shuts down cleanly with exit `0`.
 

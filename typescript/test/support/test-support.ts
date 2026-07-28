@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resetAgentOutputStoreForTest } from "../../src/symphony/agent-output-store.ts";
 import { deleteEnv } from "../../src/symphony/app-env.ts";
 import { resetTokenCacheForTest as resetLarkTokenCache } from "../../src/symphony/plugins/trackers/lark-common/http.ts";
 import { getRunningStore } from "../../src/symphony/workflow-store.ts";
@@ -52,6 +53,9 @@ function defaults(): Overrides {
     observability_enabled: true,
     observability_refresh_ms: 1_000,
     observability_render_interval_ms: 16,
+    observability_agent_output: "off",
+    observability_agent_output_max_event_bytes: 64 * 1024,
+    observability_agent_output_max_file_bytes: 64 * 1024 * 1024,
     server_port: null,
     server_host: null,
     prompt: WORKFLOW_PROMPT,
@@ -112,6 +116,9 @@ function workflowContent(overrides: Overrides): string {
       g("observability_enabled"),
       g("observability_refresh_ms"),
       g("observability_render_interval_ms"),
+      g("observability_agent_output"),
+      g("observability_agent_output_max_event_bytes"),
+      g("observability_agent_output_max_file_bytes"),
     ),
     serverYaml(g("server_port"), g("server_host")),
     "---",
@@ -232,12 +239,18 @@ function observabilityYaml(
   enabled: unknown,
   refreshMs: unknown,
   renderIntervalMs: unknown,
+  agentOutput: unknown,
+  maxEventBytes: unknown,
+  maxFileBytes: unknown,
 ): string {
   return [
     "observability:",
     `  dashboard_enabled: ${yamlValue(enabled)}`,
     `  refresh_ms: ${yamlValue(refreshMs)}`,
     `  render_interval_ms: ${yamlValue(renderIntervalMs)}`,
+    `  agent_output: ${yamlValue(agentOutput)}`,
+    `  agent_output_max_event_bytes: ${yamlValue(maxEventBytes)}`,
+    `  agent_output_max_file_bytes: ${yamlValue(maxFileBytes)}`,
   ].join("\n");
 }
 
@@ -274,6 +287,8 @@ export function teardownWorkflow(root: string): void {
   deleteEnv("lark_task_client_module");
   deleteEnv("tracker_plugin_overrides");
   deleteEnv("agent_backend_overrides");
+  deleteEnv("agent_output_root");
+  resetAgentOutputStoreForTest();
   // The token cache is shared by the lark-family plugins (lark, lark-task).
   resetLarkTokenCache();
   fs.rmSync(root, { recursive: true, force: true });

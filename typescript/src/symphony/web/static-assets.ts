@@ -14,6 +14,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const STATIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../priv/static");
+const FRONTEND_DIST = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../frontend/dist",
+);
 
 type Asset = { contentType: string; body: Uint8Array; digest: string };
 
@@ -53,6 +57,16 @@ export function fetchAsset(assetPath: string): { contentType: string; body: Uint
 // `StaticAssetController.serve/2`: a request handler for the static routes.
 export function serveStaticAsset(req: Request): Response {
   const { pathname } = new URL(req.url);
+  const frontend = fetchFrontendAsset(pathname);
+  if (frontend !== null) {
+    return new Response(frontend.body, {
+      status: 200,
+      headers: {
+        "content-type": frontend.contentType,
+        "cache-control": pathname === "/index.html" ? "no-cache" : "public, max-age=31536000",
+      },
+    });
+  }
   const asset = fetchAsset(pathname);
   if (asset === null) {
     return new Response("Not Found", { status: 404 });
@@ -64,4 +78,59 @@ export function serveStaticAsset(req: Request): Response {
       "cache-control": "public, max-age=31536000",
     },
   });
+}
+
+export function serveFrontendApp(req: Request): Response | null {
+  const asset = fetchFrontendAsset(
+    new URL(req.url).pathname === "/" ? "/index.html" : new URL(req.url).pathname,
+  );
+  if (asset === null) {
+    return null;
+  }
+  return new Response(asset.body, {
+    status: 200,
+    headers: {
+      "content-type": asset.contentType,
+      "cache-control": "no-cache",
+    },
+  });
+}
+
+function fetchFrontendAsset(assetPath: string): { contentType: string; body: Uint8Array } | null {
+  const relative = assetPath === "/" ? "index.html" : assetPath.replace(/^\/+/, "");
+  const resolved = path.resolve(FRONTEND_DIST, relative);
+  const root = path.resolve(FRONTEND_DIST);
+  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+    return null;
+  }
+  try {
+    if (!fs.statSync(resolved).isFile()) {
+      return null;
+    }
+    return {
+      body: new Uint8Array(fs.readFileSync(resolved)),
+      contentType: frontendContentType(resolved),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function frontendContentType(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".js":
+      return "text/javascript; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".json":
+      return "application/json; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
+    case ".woff2":
+      return "font/woff2";
+    default:
+      return "application/octet-stream";
+  }
 }

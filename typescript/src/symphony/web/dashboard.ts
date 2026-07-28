@@ -11,17 +11,28 @@ import { broadcastUpdate, subscribe } from "./observability-pubsub.ts";
 import { statePayload } from "./presenter.ts";
 import type { SnapshotProvider } from "./presenter.ts";
 import type { RequestHandler } from "./server.ts";
-import { dashboardCssUrl, faviconUrl } from "./static-assets.ts";
+import { dashboardCssUrl, faviconUrl, serveFrontendApp } from "./static-assets.ts";
 
 type Json = Record<string, unknown>;
+
+export type DashboardHandlerOptions = {
+  serveFrontend?: boolean;
+};
 
 // ---- handlers --------------------------------------------------------------
 
 export function makeDashboardHandler(
   provider: SnapshotProvider,
   snapshotTimeoutMs: number,
+  options: DashboardHandlerOptions = {},
 ): RequestHandler {
-  return async () => {
+  return async (req) => {
+    if (options.serveFrontend === true) {
+      const frontend = serveFrontendApp(req);
+      if (frontend !== null) {
+        return frontend;
+      }
+    }
     const payload = await statePayload(provider, snapshotTimeoutMs);
     return new Response(renderPage(payload, new Date()), {
       status: 200,

@@ -11,6 +11,7 @@
 import type { JsonMap } from "../../config/schema.ts";
 import type { Result } from "../../result.ts";
 import type { AgentToolOutcome, AgentToolSpec, PluginConfigSchema } from "../shared/types.ts";
+import type { AgentStream } from "./transport.ts";
 
 // ---- normalized event envelope ----------------------------------------------
 
@@ -48,6 +49,7 @@ export type AgentMessage = {
   // wire names stay stable.
   backendPid?: string;
   workerHost?: string;
+  stream?: AgentStream;
   // Cumulative absolute token totals for the session. MUST be cumulative —
   // the orchestrator's computeTokenDelta diffs against the last reported totals.
   usage?: JsonMap;
@@ -97,6 +99,9 @@ export type AgentSession = {
   backendId: string;
   workspace: string;
   workerHost: string | null;
+  // Stable per-run identifier used by the backend-neutral output store. It is
+  // deliberately separate from the per-turn sessionId in AgentMessage.
+  runId?: string;
   backendPid?: string;
   handle: unknown;
 };

@@ -39,6 +39,7 @@ codex:
 observability:
   dashboard_enabled: true
   refresh_ms: 1000
+  agent_output: raw
 ---
 You are working on the smoke test issue. This prompt is never sent to a real
 model — the workflow points Codex at the repo's fake app-server so the dispatch

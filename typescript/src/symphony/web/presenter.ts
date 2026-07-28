@@ -7,6 +7,12 @@
 // become string-keyed objects, JSON-encoded unchanged at the controller.
 
 import path from "node:path";
+import {
+  type AgentOutputReadResult,
+  type AgentOutputRunMetadata,
+  type AgentOutputStore,
+  getAgentOutputStore,
+} from "../agent-output-store.ts";
 import { settingsBang } from "../config.ts";
 import type { RequestRefreshReply, Snapshot, SnapshotRunning } from "../orchestrator.ts";
 import { humanizeCodexMessageExport } from "../status-dashboard.ts";
@@ -27,7 +33,11 @@ export type IssuePayloadResult =
 
 export type RefreshPayloadResult = { ok: true; value: Json } | { ok: false; error: "unavailable" };
 
-export async function statePayload(provider: SnapshotProvider, timeoutMs: number): Promise<Json> {
+export async function statePayload(
+  provider: SnapshotProvider,
+  timeoutMs: number,
+  outputStore: AgentOutputStore = getAgentOutputStore(),
+): Promise<Json> {
   const generatedAt = nowIso();
   const snapshot = await provider.snapshot(timeoutMs);
   if (snapshot === "timeout") {
@@ -43,6 +53,15 @@ export async function statePayload(provider: SnapshotProvider, timeoutMs: number
     };
   }
   const blocked = snapshot.blocked ?? [];
+  const activeIdentifiers = new Set([
+    ...snapshot.running.map((entry) => entry.identifier),
+    ...snapshot.retrying.map((entry) => entry.identifier),
+    ...blocked.map((entry) => str(entry, "identifier")),
+  ]);
+  const completed = outputStore
+    .listRecentIssues()
+    .filter((run) => !activeIdentifiers.has(run.issue_identifier))
+    .map(completedEntryPayload);
   return {
     generated_at: generatedAt,
     counts: {
@@ -53,6 +72,7 @@ export async function statePayload(provider: SnapshotProvider, timeoutMs: number
     running: snapshot.running.map(runningEntryPayload),
     retrying: snapshot.retrying.map(retryEntryPayload),
     blocked: blocked.map(blockedEntryPayload),
+    completed,
     codex_totals: snapshot.codex_totals,
     rate_limits: snapshot.rate_limits,
   };
@@ -62,6 +82,7 @@ export async function issuePayload(
   issueIdentifier: string,
   provider: SnapshotProvider,
   timeoutMs: number,
+  outputStore: AgentOutputStore = getAgentOutputStore(),
 ): Promise<IssuePayloadResult> {
   const snapshot = await provider.snapshot(timeoutMs);
   if (typeof snapshot === "string") {
@@ -70,11 +91,50 @@ export async function issuePayload(
   const running = snapshot.running.find((e) => e.identifier === issueIdentifier) ?? null;
   const retry = snapshot.retrying.find((e) => e.identifier === issueIdentifier) ?? null;
   const blocked = (snapshot.blocked ?? []).find((e) => e.identifier === issueIdentifier) ?? null;
+  const latestRun = outputStore.latestRun(issueIdentifier);
 
-  if (running === null && retry === null && blocked === null) {
+  if (running === null && retry === null && blocked === null && latestRun === null) {
     return { ok: false, error: "issue_not_found" };
   }
-  return { ok: true, value: issuePayloadBody(issueIdentifier, running, retry, blocked) };
+  return {
+    ok: true,
+    value: issuePayloadBody(issueIdentifier, running, retry, blocked, latestRun, outputStore),
+  };
+}
+
+export type OutputPayloadResult =
+  | { ok: true; value: Json }
+  | {
+      ok: false;
+      error: "issue_not_found" | "snapshot_timeout" | "snapshot_unavailable";
+    };
+
+export async function outputPayload(
+  issueIdentifier: string,
+  provider: SnapshotProvider,
+  timeoutMs: number,
+  outputStore: AgentOutputStore = getAgentOutputStore(),
+  options: { limit?: number; after?: number | null } = {},
+): Promise<OutputPayloadResult> {
+  const snapshot = await provider.snapshot(timeoutMs);
+  if (snapshot === "timeout") {
+    return { ok: false, error: "snapshot_timeout" };
+  }
+  if (snapshot === "unavailable") {
+    return { ok: false, error: "snapshot_unavailable" };
+  }
+  const knownInSnapshot =
+    snapshot.running.some((entry) => entry.identifier === issueIdentifier) ||
+    snapshot.retrying.some((entry) => entry.identifier === issueIdentifier) ||
+    (snapshot.blocked ?? []).some((entry) => str(entry, "identifier") === issueIdentifier);
+  const latestRun = outputStore.latestRun(issueIdentifier);
+  if (!knownInSnapshot && latestRun === null) {
+    return { ok: false, error: "issue_not_found" };
+  }
+  return {
+    ok: true,
+    value: outputPayloadBody(outputStore.readIssueOutput(issueIdentifier, options)),
+  };
 }
 
 export async function refreshPayload(provider: SnapshotProvider): Promise<RefreshPayloadResult> {
@@ -95,11 +155,14 @@ function issuePayloadBody(
   running: SnapshotRunning | null,
   retry: LooseEntry | null,
   blocked: LooseEntry | null,
+  latestRun: AgentOutputRunMetadata | null,
+  outputStore: AgentOutputStore,
 ): Json {
   return {
     issue_identifier: issueIdentifier,
-    issue_id: issueIdFromEntries(running, retry, blocked),
-    status: issueStatus(running, retry, blocked),
+    issue_id: issueIdFromEntries(running, retry, blocked, latestRun),
+    title: issueTitle(running, retry, blocked, latestRun),
+    status: issueStatus(running, retry, blocked, latestRun),
     workspace: {
       path: workspacePath(issueIdentifier, running, retry, blocked),
       host: workspaceHost(running, retry, blocked),
@@ -111,7 +174,7 @@ function issuePayloadBody(
     running: running && runningIssuePayload(running),
     retry: retry && retryIssuePayload(retry),
     blocked: blocked && blockedIssuePayload(blocked),
-    logs: { codex_session_logs: [] },
+    logs: logsPayload(issueIdentifier, outputStore),
     recent_events: recentEventsPayload(running ?? blocked),
     last_error: (blocked && str(blocked, "error")) ?? (retry && str(retry, "error")) ?? null,
     tracked: {},
@@ -122,8 +185,9 @@ function issueIdFromEntries(
   running: SnapshotRunning | null,
   retry: LooseEntry | null,
   blocked: LooseEntry | null,
+  latestRun: AgentOutputRunMetadata | null,
 ): unknown {
-  return running?.issue_id ?? retry?.issue_id ?? blocked?.issue_id ?? null;
+  return running?.issue_id ?? retry?.issue_id ?? blocked?.issue_id ?? latestRun?.issue_id ?? null;
 }
 
 function restartCount(retry: LooseEntry | null): number {
@@ -140,7 +204,8 @@ function retryAttempt(retry: LooseEntry | null): number {
 function issueStatus(
   running: SnapshotRunning | null,
   retry: LooseEntry | null,
-  _blocked: LooseEntry | null,
+  blocked: LooseEntry | null,
+  latestRun: AgentOutputRunMetadata | null,
 ): string {
   if (running !== null) {
     return "running";
@@ -148,7 +213,10 @@ function issueStatus(
   if (retry !== null) {
     return "retrying";
   }
-  return "blocked";
+  if (blocked !== null) {
+    return "blocked";
+  }
+  return latestRun?.status ?? "blocked";
 }
 
 // ---- collection payloads ---------------------------------------------------
@@ -157,6 +225,8 @@ function runningEntryPayload(entry: SnapshotRunning): Json {
   return {
     issue_id: entry.issue_id,
     issue_identifier: entry.identifier,
+    title: entry.title ?? null,
+    backend: entry.backend ?? settingsBang().agent.backend,
     issue_url: entry.issue_url ?? null,
     state: entry.state,
     worker_host: entry.worker_host ?? null,
@@ -192,6 +262,8 @@ function blockedEntryPayload(entry: LooseEntry): Json {
   return {
     issue_id: entry.issue_id,
     issue_identifier: entry.identifier,
+    title: entry.title ?? null,
+    backend: entry.backend ?? settingsBang().agent.backend,
     issue_url: entry.issue_url ?? null,
     state: entry.state,
     error: entry.error,
@@ -207,6 +279,8 @@ function blockedEntryPayload(entry: LooseEntry): Json {
 
 function runningIssuePayload(running: SnapshotRunning): Json {
   return {
+    title: running.title ?? null,
+    backend: running.backend ?? settingsBang().agent.backend,
     worker_host: running.worker_host ?? null,
     workspace_path: running.workspace_path ?? null,
     session_id: running.session_id,
@@ -236,6 +310,8 @@ function retryIssuePayload(retry: LooseEntry): Json {
 
 function blockedIssuePayload(blocked: LooseEntry): Json {
   return {
+    title: blocked.title ?? null,
+    backend: blocked.backend ?? settingsBang().agent.backend,
     worker_host: blocked.worker_host ?? null,
     workspace_path: blocked.workspace_path ?? null,
     session_id: blocked.session_id,
@@ -290,6 +366,66 @@ function recentEventsPayload(entry: SnapshotRunning | LooseEntry | null): Json[]
       message: summarizeMessage((entry as LooseEntry).last_codex_message),
     },
   ];
+}
+
+function completedEntryPayload(run: AgentOutputRunMetadata): Json {
+  return {
+    issue_id: run.issue_id,
+    issue_identifier: run.issue_identifier,
+    title: run.title,
+    backend: run.backend,
+    worker_host: run.worker_host,
+    run_id: run.run_id,
+    session_id: run.session_id,
+    status: run.status,
+    updated_at: run.ended_at ?? run.started_at,
+    path: run.path,
+  };
+}
+
+function logsPayload(issueIdentifier: string, outputStore: AgentOutputStore): Json {
+  const runs = outputStore
+    .listRecentRuns(50)
+    .filter((run) => run.issue_identifier === issueIdentifier);
+  const latest = runs[0] ?? null;
+  return {
+    // This field is retained for clients that shipped before the backend-neutral
+    // names existed. Its values now contain the same metadata as agent_runs.
+    codex_session_logs: latest === null ? [] : [latest],
+    agent_runs: runs,
+    latest_run: latest,
+  };
+}
+
+function outputPayloadBody(result: AgentOutputReadResult): Json {
+  const body: Json = {
+    events: result.events,
+    next_cursor: result.nextCursor,
+    has_more: result.hasMore,
+    run: result.run,
+    backend: result.run?.backend ?? null,
+    run_id: result.run?.run_id ?? null,
+    session_id: result.run?.session_id ?? null,
+  };
+  if (result.error !== undefined) {
+    body.error = result.error;
+  }
+  return body;
+}
+
+function issueTitle(
+  running: SnapshotRunning | null,
+  retry: LooseEntry | null,
+  blocked: LooseEntry | null,
+  latestRun: AgentOutputRunMetadata | null,
+): string | null {
+  return (
+    running?.title ??
+    (retry === null ? null : str(retry, "title")) ??
+    (blocked === null ? null : str(blocked, "title")) ??
+    latestRun?.title ??
+    null
+  );
 }
 
 // ---- helpers ---------------------------------------------------------------

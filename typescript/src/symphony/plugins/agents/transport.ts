@@ -8,8 +8,10 @@
 // public `Transport` type are unchanged; the codex-only ReplayTransport (the
 // differential-oracle in-memory transport) stays in app-server.ts.
 
+export type AgentStream = "stdout" | "stderr";
+
 export type LineEvent =
-  | { type: "line"; data: string }
+  | { type: "line"; data: string; stream: AgentStream }
   | { type: "exit"; status: number }
   | { type: "timeout" };
 
@@ -28,8 +30,8 @@ export class ProcessTransport implements Transport {
   private exitPushed = false;
 
   constructor(private proc: Bun.Subprocess<"pipe", "pipe", "pipe">) {
-    void this.pump(proc.stdout, "out");
-    void this.pump(proc.stderr, "err");
+    void this.pump(proc.stdout, "stdout");
+    void this.pump(proc.stderr, "stderr");
     void proc.exited.then((status) => this.pushExit(status ?? 0));
   }
 
@@ -73,7 +75,7 @@ export class ProcessTransport implements Transport {
     return this.proc.pid ? String(this.proc.pid) : undefined;
   }
 
-  private async pump(stream: ReadableStream<Uint8Array>, which: "out" | "err"): Promise<void> {
+  private async pump(stream: ReadableStream<Uint8Array>, which: AgentStream): Promise<void> {
     // One decoder per stream, decoding in streaming mode: a multibyte UTF-8
     // sequence split across a chunk boundary must be held until its remaining
     // bytes arrive. A non-streaming decode emits U+FFFD for the split halves,
@@ -82,18 +84,22 @@ export class ProcessTransport implements Transport {
     const decoder = new TextDecoder();
     for await (const chunk of stream) {
       const text =
-        (which === "out" ? this.outBuffer : this.errBuffer) +
+        (which === "stdout" ? this.outBuffer : this.errBuffer) +
         decoder.decode(chunk, { stream: true });
       const lines = text.split("\n");
       const remainder = lines.pop() ?? "";
-      if (which === "out") {
+      if (which === "stdout") {
         this.outBuffer = remainder;
       } else {
         this.errBuffer = remainder;
       }
       for (const line of lines) {
-        this.pushLine({ type: "line", data: line });
+        this.pushLine({ type: "line", data: line, stream: which });
       }
+    }
+    const remainder = `${which === "stdout" ? this.outBuffer : this.errBuffer}${decoder.decode()}`;
+    if (remainder !== "") {
+      this.pushLine({ type: "line", data: remainder, stream: which });
     }
   }
 

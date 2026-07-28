@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { AgentOutputStore } from "../../src/symphony/agent-output-store.ts";
 import { type IssueStateFetcher, type WorkerUpdate, run } from "../../src/symphony/agent-runner.ts";
 import { putEnv } from "../../src/symphony/app-env.ts";
 import type {
@@ -42,6 +43,7 @@ type FakeHandle = {
 function fakeBackend(caps: {
   multiTurn?: boolean;
   remote?: boolean;
+  backendId?: "codex" | "claude_code";
   // Blocks each turn until resolved, so a test can abort mid-turn.
   turnGate?: () => Promise<void>;
 }): {
@@ -55,7 +57,7 @@ function fakeBackend(caps: {
   let stops = 0;
 
   const plugin: AgentBackendPlugin = {
-    id: "codex",
+    id: caps.backendId ?? "codex",
     displayName: "Synthetic backend",
     capabilities: {
       multiTurnSessions: caps.multiTurn ?? false,
@@ -72,7 +74,7 @@ function fakeBackend(caps: {
           sessionTokens: 0,
         };
         const session: AgentSession = {
-          backendId: "codex",
+          backendId: caps.backendId ?? "codex",
           workspace,
           workerHost: opts.workerHost ?? null,
           handle,
@@ -290,5 +292,32 @@ describe("AgentRunner with a synthetic backend", () => {
     // The prompt is built before startSession, so no session is opened (and
     // therefore none is leaked).
     expect(backend.sessionCount()).toBe(0);
+  });
+
+  test("persists fake Codex and Claude Code envelopes to separate JSONL runs", async () => {
+    const logRoot = path.join(testRoot, "logs");
+    putEnv("agent_output_root", logRoot);
+    writeWorkflowFile(workflowFilePath(), {
+      workspace_root: workspaceRoot,
+      observability_agent_output: "raw",
+    });
+
+    for (const backendId of ["codex", "claude_code"] as const) {
+      const backend = fakeBackend({ multiTurn: true, backendId });
+      putEnv("agent_backend_overrides", { codex: backend.plugin });
+      await run(issue, null, { maxTurns: 1, issueStateFetcher: staysActive });
+
+      const store = new AgentOutputStore({ root: logRoot, mode: "raw" });
+      const result = store.readIssueOutput("MT-1", { limit: 100 });
+      expect(result.run?.backend).toBe(backendId);
+      expect(result.events.map((event) => event.event)).toEqual(
+        expect.arrayContaining([
+          "run_started",
+          "session_started",
+          "turn_completed",
+          "run_completed",
+        ]),
+      );
+    }
   });
 });

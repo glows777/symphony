@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { AgentOutputStore } from "../../../src/symphony/agent-output-store.ts";
 import type { RequestRefreshReply, Snapshot } from "../../../src/symphony/orchestrator.ts";
 import type { SnapshotProvider, SnapshotResult } from "../../../src/symphony/web/presenter.ts";
 import { HttpServer, createRouter } from "../../../src/symphony/web/server.ts";
@@ -191,6 +195,159 @@ describe("web server / observability API", () => {
     expect(await res.json()).toMatchObject({
       error: { code: "snapshot_timeout", message: "Snapshot timed out" },
     });
+  });
+
+  test("GET /api/v1/:id/output supports tail and after cursors", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-api-output-"));
+    const outputStore = new AgentOutputStore({ root, mode: "raw" });
+    const run = outputStore.startRun({
+      issueId: "issue-http",
+      issueIdentifier: "MT-HTTP",
+      title: "HTTP output",
+      backend: "codex",
+      workerHost: null,
+      runId: "api-run",
+    });
+    run.record(
+      { event: "session_started", timestamp: new Date(), sessionId: "api-session" },
+      1,
+      "Started",
+    );
+    run.record(
+      { event: "notification", timestamp: new Date(), payload: { step: 1 } },
+      1,
+      "Step one",
+    );
+    run.record({ event: "turn_completed", timestamp: new Date() }, 1, "Completed");
+
+    const route = createRouter(provider(staticSnapshot(), refreshReply), 50, {
+      agentOutputStore: outputStore,
+    });
+    try {
+      const tail = await route(new Request("http://127.0.0.1/api/v1/MT-HTTP/output?limit=2"));
+      expect(tail.status).toBe(200);
+      const tailBody = (await tail.json()) as Record<string, unknown>;
+      expect((tailBody.events as Array<{ seq: number }>).map((event) => event.seq)).toEqual([3, 4]);
+      expect(tailBody.has_more).toBe(true);
+      expect(tailBody.backend).toBe("codex");
+
+      const incremental = await route(
+        new Request("http://127.0.0.1/api/v1/MT-HTTP/output?limit=2&after=1"),
+      );
+      const incrementalBody = (await incremental.json()) as Record<string, unknown>;
+      expect((incrementalBody.events as Array<{ seq: number }>).map((event) => event.seq)).toEqual([
+        2, 3,
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("output route distinguishes unknown issues and missing logs", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-api-empty-"));
+    const outputStore = new AgentOutputStore({ root, mode: "raw" });
+    const route = createRouter(provider(staticSnapshot(), refreshReply), 50, {
+      agentOutputStore: outputStore,
+    });
+    try {
+      const empty = await route(new Request("http://127.0.0.1/api/v1/MT-HTTP/output"));
+      expect(empty.status).toBe(200);
+      expect(await empty.json()).toMatchObject({ events: [], run: null, has_more: false });
+
+      const missing = await route(new Request("http://127.0.0.1/api/v1/MT-MISSING/output"));
+      expect(missing.status).toBe(404);
+      expect(await missing.json()).toEqual({
+        error: { code: "issue_not_found", message: "Issue not found" },
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("issue detail keeps completed run metadata after the issue leaves the snapshot", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-api-history-"));
+    const outputStore = new AgentOutputStore({ root, mode: "raw" });
+    const run = outputStore.startRun({
+      issueId: "issue-history",
+      issueIdentifier: "MT-HISTORY",
+      title: "Historical run",
+      backend: "claude_code",
+      workerHost: null,
+      runId: "history-run",
+    });
+    run.record(
+      { event: "session_started", timestamp: new Date(), sessionId: "history-session" },
+      1,
+    );
+    run.finish("completed");
+    const snapshot = staticSnapshot();
+    snapshot.running = [];
+    snapshot.retrying = [];
+    snapshot.blocked = [];
+    const route = createRouter(provider(snapshot, refreshReply), 50, {
+      agentOutputStore: outputStore,
+    });
+    try {
+      const response = await route(new Request("http://127.0.0.1/api/v1/MT-HISTORY"));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        issue_identifier: "MT-HISTORY",
+        status: "completed",
+        logs: { latest_run: { run_id: "history-run", backend: "claude_code" } },
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("output SSE emits agent_output events and closes on run completion", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-api-sse-"));
+    const outputStore = new AgentOutputStore({ root, mode: "raw" });
+    const run = outputStore.startRun({
+      issueId: "issue-http",
+      issueIdentifier: "MT-HTTP",
+      backend: "codex",
+      workerHost: null,
+      runId: "sse-run",
+    });
+    const route = createRouter(provider(staticSnapshot(), refreshReply), 50, {
+      agentOutputStore: outputStore,
+    });
+    const response = await route(new Request("http://127.0.0.1/api/v1/MT-HTTP/output/stream"));
+    expect(response.status).toBe(200);
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    if (reader === undefined) {
+      fs.rmSync(root, { recursive: true, force: true });
+      return;
+    }
+    try {
+      const connected = await reader.read();
+      expect(new TextDecoder().decode(connected.value)).toContain(": connected");
+      run.record({ event: "notification", timestamp: new Date(), stream: "stderr" }, 1, "stderr");
+      const chunk = await reader.read();
+      expect(new TextDecoder().decode(chunk.value)).toContain("event: agent_output");
+      expect(new TextDecoder().decode(chunk.value)).toContain('"stream":"stderr"');
+      run.finish("completed");
+      const terminal = await reader.read();
+      expect(new TextDecoder().decode(terminal.value)).toContain('"event":"run_completed"');
+      expect((await reader.read()).done).toBe(true);
+
+      const lateResponse = await route(
+        new Request("http://127.0.0.1/api/v1/MT-HTTP/output/stream"),
+      );
+      const lateReader = lateResponse.body?.getReader();
+      expect(lateReader).toBeDefined();
+      if (lateReader !== undefined) {
+        expect(new TextDecoder().decode((await lateReader.read()).value)).toContain(": connected");
+        expect(new TextDecoder().decode((await lateReader.read()).value)).toContain(
+          '"event":"run_completed"',
+        );
+        expect((await lateReader.read()).done).toBe(true);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("HttpServer is ignored when no port is configured", () => {
