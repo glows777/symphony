@@ -52,6 +52,18 @@ export async function executeLinearGraphql(
   if (!normalized.ok) {
     return { success: false, payload: toolErrorPayload(normalized.error) };
   }
+  if (opts.reviewStateGate === true && isIssueReviewStateMutation(normalized.value.query)) {
+    return {
+      success: false,
+      payload: {
+        error: {
+          message:
+            "Review runs cannot move a Linear issue to In Review directly. Complete the per-finding handoff; Symphony applies the completion gate.",
+          tag: "review_state_gate",
+        },
+      },
+    };
+  }
   const response = await linearClient(normalized.value.query, normalized.value.variables, []);
   if (isOkResult(response)) {
     return graphqlOutcome(response.value);
@@ -60,6 +72,10 @@ export async function executeLinearGraphql(
     return { success: false, payload: toolErrorPayload(response.error) };
   }
   return { success: false, payload: toolErrorPayload(response) };
+}
+
+function isIssueReviewStateMutation(query: string): boolean {
+  return /\bmutation\b/i.test(query) && /\bissueUpdate\s*\(/i.test(query);
 }
 
 type NormalizedArgs = { query: string; variables: Record<string, unknown> };

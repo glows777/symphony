@@ -8,17 +8,25 @@
 
 import { Liquid, type Template } from "liquidjs";
 import { workflowPrompt } from "./config.ts";
+import { type ReviewContext, renderReviewHandoffPrompt } from "./review-context.ts";
 import type { Issue } from "./work-item.ts";
 import { current as workflowCurrent } from "./workflow.ts";
 
 const engine = new Liquid({ strictVariables: true, strictFilters: true });
 
-export function buildPrompt(issue: Issue, opts: { attempt?: number | null } = {}): string {
+export function buildPrompt(
+  issue: Issue,
+  opts: { attempt?: number | null; reviewContext?: ReviewContext | null } = {},
+): string {
   const parsed = parseTemplate(promptTemplate());
-  return engine.renderSync(parsed, {
+  const rendered = engine.renderSync(parsed, {
     attempt: opts.attempt ?? null,
     issue: issueScope(issue),
   });
+  if (opts.reviewContext === null || opts.reviewContext === undefined) {
+    return rendered;
+  }
+  return `${rendered.trimEnd()}\n\n${renderReviewHandoffPrompt(opts.reviewContext)}`;
 }
 
 function promptTemplate(): string {

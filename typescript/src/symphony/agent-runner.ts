@@ -28,6 +28,14 @@ import type {
 import { trackerPluginOrNull } from "./plugins/trackers/registry.ts";
 import { buildPrompt } from "./prompt-builder.ts";
 import { type Result, err, ok } from "./result.ts";
+import {
+  type ReviewContext,
+  type ReviewProviderOptions,
+  fetchReviewContext,
+  finalizeReviewRun,
+  isReviewTriggered,
+  mergePersistedHandoff,
+} from "./review-context.ts";
 import * as Tracker from "./tracker/tracker.ts";
 import { type Issue, routable } from "./work-item.ts";
 import * as Workspace from "./workspace.ts";
@@ -55,6 +63,11 @@ export type RunOpts = {
   // the worker process outright; here the orchestrator aborts this signal and
   // the runner stops the backend session, which tears down its subprocess.
   signal?: AbortSignal;
+  // Review context is injectable for offline tests. Production review runs
+  // resolve it from the explicit `symphony-review` label before a workspace
+  // or backend session is started.
+  reviewContext?: ReviewContext | null;
+  reviewProviderOptions?: ReviewProviderOptions;
 };
 
 type ContinueOutcome =
@@ -74,6 +87,11 @@ export async function run(
   recipient: UpdateRecipient = null,
   opts: RunOpts = {},
 ): Promise<void> {
+  const review = await resolveReviewContext(issue, opts);
+  if (!review.ok) {
+    throw review.error;
+  }
+
   // Resolve and pin the backend for the whole run (sessions are stateful).
   const backend = agentBackend(settingsBang().agent.backend);
   if (!backend.ok) {
@@ -93,9 +111,19 @@ export async function run(
     `Starting agent run for ${issueContext(issue)} worker_host=${workerHostForLog(workerHost)}`,
   );
 
-  const result = await runOnWorkerHost(issue, recipient, opts, workerHost, backend.value);
+  const result = await runOnWorkerHost(
+    issue,
+    recipient,
+    opts,
+    workerHost,
+    backend.value,
+    review.value,
+  );
   if (!result.ok) {
     logger.error(`Agent run failed for ${issueContext(issue)}: ${inspect(result.error)}`);
+    if (isReviewFailure(result.error)) {
+      throw result.error;
+    }
     throw new Error(`Agent run failed for ${issueContext(issue)}: ${inspect(result.error)}`);
   }
 }
@@ -106,6 +134,7 @@ async function runOnWorkerHost(
   opts: RunOpts,
   workerHost: string | null,
   backend: AgentBackendPlugin,
+  reviewContext: ReviewContext | null,
 ): Promise<Result<undefined, unknown>> {
   logger.info(
     `Starting worker attempt for ${issueContext(issue)} worker_host=${workerHostForLog(workerHost)}`,
@@ -132,6 +161,8 @@ async function runOnWorkerHost(
       output.finish("failed", beforeRun.error);
       return err(beforeRun.error);
     }
+    const promptReviewContext =
+      reviewContext === null ? null : mergePersistedHandoff(reviewContext, workspace);
     const result = await runAgentTurns(
       workspace,
       issue,
@@ -140,7 +171,20 @@ async function runOnWorkerHost(
       workerHost,
       backend,
       output,
+      promptReviewContext,
     );
+    if (result.ok && reviewContext !== null && !isAborted(opts.signal ?? null)) {
+      const gated = await finalizeReviewRun(
+        issue,
+        reviewContext,
+        workspace,
+        opts.reviewProviderOptions,
+      );
+      if (!gated.ok) {
+        output.finish("failed", gated.error);
+        return err(gated.error);
+      }
+    }
     output.finish(
       opts.signal?.aborted === true ? "cancelled" : result.ok ? "completed" : "failed",
       result.ok ? null : result.error,
@@ -206,11 +250,12 @@ async function runAgentTurns(
   workerHost: string | null,
   backend: AgentBackendPlugin,
   output: AgentOutputRun,
+  reviewContext: ReviewContext | null,
 ): Promise<Result<undefined, unknown>> {
   const maxTurns = opts.maxTurns ?? settingsBang().agent.maxTurns;
   const issueStateFetcher: IssueStateFetcher =
     opts.issueStateFetcher ?? ((ids) => Tracker.fetchIssueStatesByIds(ids));
-  const toolProvider = trackerToolProvider();
+  const toolProvider = trackerToolProvider({ reviewStateGate: reviewContext !== null });
 
   if (backend.capabilities?.multiTurnSessions === true) {
     return runMultiTurnSession(
@@ -224,6 +269,7 @@ async function runAgentTurns(
       issueStateFetcher,
       maxTurns,
       output,
+      reviewContext,
     );
   }
   return runFreshSessionTurns(
@@ -239,6 +285,7 @@ async function runAgentTurns(
     1,
     maxTurns,
     output,
+    reviewContext,
   );
 }
 
@@ -298,6 +345,7 @@ async function runMultiTurnSession(
   issueStateFetcher: IssueStateFetcher,
   maxTurns: number,
   output: AgentOutputRun,
+  reviewContext: ReviewContext | null,
 ): Promise<Result<undefined, unknown>> {
   const signal = opts.signal ?? null;
   if (isAborted(signal)) {
@@ -326,6 +374,7 @@ async function runMultiTurnSession(
       maxTurns,
       output,
       currentTurn,
+      reviewContext,
     );
   } finally {
     detach();
@@ -366,8 +415,9 @@ async function doRunMultiTurn(
   maxTurns: number,
   output: AgentOutputRun,
   currentTurn: { value: number },
+  reviewContext: ReviewContext | null,
 ): Promise<Result<undefined, unknown>> {
-  const prompt = buildContinuationTurnPrompt(issue, opts, turnNumber, maxTurns);
+  const prompt = buildContinuationTurnPrompt(issue, opts, turnNumber, maxTurns, reviewContext);
 
   currentTurn.value = turnNumber;
   const turn = await backend.sessions.runTurn(session, prompt, { issue, turnNumber, maxTurns });
@@ -405,6 +455,7 @@ async function doRunMultiTurn(
       maxTurns,
       output,
       currentTurn,
+      reviewContext,
     );
   }
   logger.info(
@@ -429,6 +480,7 @@ async function runFreshSessionTurns(
   turnNumber: number,
   maxTurns: number,
   output: AgentOutputRun,
+  reviewContext: ReviewContext | null,
 ): Promise<Result<undefined, unknown>> {
   // Build the prompt before opening a session: a Liquid render error here must
   // not leak a started session (runSingleFreshTurn's finally only covers the
@@ -437,7 +489,7 @@ async function runFreshSessionTurns(
   if (isAborted(signal)) {
     return err({ tag: "aborted" });
   }
-  const prompt = buildFullPrompt(issue, opts);
+  const prompt = buildFullPrompt(issue, opts, reviewContext);
   const session = await backend.sessions.startSession(workspace, {
     workerHost,
     onMessage: agentMessageHandler(
@@ -499,6 +551,7 @@ async function runFreshSessionTurns(
       turnNumber + 1,
       maxTurns,
       output,
+      reviewContext,
     );
   }
   logger.info(
@@ -524,8 +577,8 @@ async function runSingleFreshTurn(
   }
 }
 
-function buildFullPrompt(issue: Issue, opts: RunOpts): string {
-  return buildPrompt(issue, { attempt: opts.attempt ?? null });
+function buildFullPrompt(issue: Issue, opts: RunOpts, reviewContext: ReviewContext | null): string {
+  return buildPrompt(issue, { attempt: opts.attempt ?? null, reviewContext });
 }
 
 function buildContinuationTurnPrompt(
@@ -533,10 +586,15 @@ function buildContinuationTurnPrompt(
   opts: RunOpts,
   turnNumber: number,
   maxTurns: number,
+  reviewContext: ReviewContext | null,
 ): string {
   if (turnNumber === 1) {
-    return buildFullPrompt(issue, opts);
+    return buildFullPrompt(issue, opts, reviewContext);
   }
+  const reviewGuidance =
+    reviewContext === null
+      ? ""
+      : `\n- This is a review run pinned to PR head ${reviewContext.headSha}; keep the handoff file and per-finding replies aligned with that snapshot.`;
   return `Continuation guidance:
 
 - The previous Codex turn completed normally, but the ${workItemNoun()} is still in an active state.
@@ -544,7 +602,21 @@ function buildContinuationTurnPrompt(
 - Resume from the current workspace and workpad state instead of restarting from scratch.
 - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
 - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
+${reviewGuidance}
 `;
+}
+
+async function resolveReviewContext(
+  issue: Issue,
+  opts: RunOpts,
+): Promise<Result<ReviewContext | null, unknown>> {
+  if (opts.reviewContext !== undefined) {
+    return ok(opts.reviewContext);
+  }
+  if (!isReviewTriggered(issue)) {
+    return ok(null);
+  }
+  return fetchReviewContext(issue, opts.reviewProviderOptions);
 }
 
 async function continueWithIssue(
@@ -620,4 +692,13 @@ function inspect(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function isReviewFailure(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { tag?: unknown }).tag === "string" &&
+    (value as { tag: string }).tag.startsWith("review_")
+  );
 }

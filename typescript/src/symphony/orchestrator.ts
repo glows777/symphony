@@ -7,6 +7,7 @@
 import * as AgentRunner from "./agent-runner.ts";
 import { maxConcurrentAgentsForState, settingsBang, validate } from "./config.ts";
 import { logger } from "./logger.ts";
+import { markReviewFailure } from "./review-context.ts";
 import { notifyUpdate as notifyDashboard } from "./status-dashboard.ts";
 import * as Tracker from "./tracker/tracker.ts";
 import { type Issue, isIssue, routable } from "./work-item.ts";
@@ -814,6 +815,15 @@ function inspectReason(reason: unknown): string {
   }
 }
 
+function isReviewFailureReason(value: unknown): value is { tag: string; message: string } {
+  return (
+    isObj(value) &&
+    typeof value.tag === "string" &&
+    value.tag.startsWith("review_") &&
+    typeof value.message === "string"
+  );
+}
+
 // ---- missing-issue reconciliation ------------------------------------------
 
 function visibleIssueIdSet(issues: Issue[]): Set<string> {
@@ -1597,6 +1607,22 @@ export class Orchestrator {
     entry: RunningEntry,
     sessionId: string,
   ): State {
+    if (isReviewFailureReason(reason)) {
+      void markReviewFailure(entry.issue, reason).catch((error) => {
+        logger.error(`Review manual-handling write-back failed: ${inspectReason(error)}`);
+      });
+      logger.warning(
+        `Review run blocked for issue_id=${issueId} issue_identifier=${entry.identifier}: ${inspectReason(reason)}`,
+      );
+      return blockIssueFromEntry(
+        state,
+        issueId,
+        entry,
+        isObj(reason) && typeof reason.message === "string"
+          ? reason.message
+          : `review run failed: ${inspectReason(reason)}`,
+      );
+    }
     if (reason === "normal") {
       if (inputRequiredBlocker(entry)) {
         return this.blockInputRequiredAgentDown(state, issueId, entry, sessionId, reason);
@@ -1984,7 +2010,11 @@ export class Orchestrator {
       })
       .catch((error) => {
         if (!aborted) {
-          this.cast({ tag: "down", ref, reason: inspectReason(error) });
+          this.cast({
+            tag: "down",
+            ref,
+            reason: isReviewFailureReason(error) ? error : inspectReason(error),
+          });
         }
       });
 

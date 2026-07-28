@@ -77,11 +77,20 @@ passed. Points worth knowing before the first run, all covered inline:
   the working directory and inherit Symphony's environment; no issue variables
   are injected, but the directory name is the sanitized issue identifier, so
   `basename "$PWD"` recovers it.
-- **The prompt sees `issue.identifier`, `issue.title`, and `issue.description`
-  (plus the rest of the [`issue.*` scope](./src/symphony/prompt-builder.ts)) —
-  never the issue's comments.** Context added to a Linear comment thread after
-  the fact does not reach the agent unless the agent queries for it through the
-  `linear_graphql` tool.
+- **Normal prompts see `issue.identifier`, `issue.title`, and `issue.description`
+  (plus the rest of the [`issue.*` scope](./src/symphony/prompt-builder.ts)); they
+  do not receive tracker comments.** An issue carrying the configured
+  `review.trigger_label` (default `symphony-review`) receives a fresh GitHub PR
+  review handoff before the agent starts. The handoff includes the PR head SHA,
+  unresolved inline threads, top-level conversation findings, review submissions,
+  stable finding IDs, and an explicit untrusted-data boundary.
+- **Review runs are fail-closed.** The agent writes one `fixed`, `deferred`, or
+  `blocked` result per finding to `.symphony/review-handoff.json`. Fixed results
+  require a commit and regression tests; deferred results require a human approval
+  reference. Symphony re-fetches GitHub after the run, replies to each original
+  thread/conversation, and moves the issue to `In Review` only when the snapshot
+  and handoff gate pass. Missing PRs, ambiguous matches, API failures, or head SHA
+  changes keep the issue in the configured manual-handling state.
 - **Issue state is the control loop.** While an issue sits in an
   `active_states` state, a normally-completed turn is continued rather than
   finished (up to `agent.max_turns`); a state in `terminal_states` stops the

@@ -40,6 +40,30 @@ describe("Plugins.Agents.ToolProvider", () => {
     expect(outcome.payload).toEqual({ data: { viewer: { id: "usr_1" } } });
   });
 
+  test("blocks direct In Review state mutations during a review run", async () => {
+    let called = false;
+    const outcome = await trackerToolProvider({
+      reviewStateGate: true,
+      linearClient: () => {
+        called = true;
+        return ok({ data: { issueUpdate: { success: true } } });
+      },
+    }).execute("linear_graphql", {
+      query:
+        'mutation MoveIssue { issueUpdate(id: "issue-1", input: {stateId: "review"}) { success } }',
+    });
+
+    expect(outcome.success).toBe(false);
+    expect(called).toBe(false);
+    expect(outcome.payload).toEqual({
+      error: {
+        message:
+          "Review runs cannot move a Linear issue to In Review directly. Complete the per-finding handoff; Symphony applies the completion gate.",
+        tag: "review_state_gate",
+      },
+    });
+  });
+
   test("returns an unsupported-tool payload carrying the supported tool list", async () => {
     const outcome = await trackerToolProvider().execute("not_a_real_tool", {});
     expect(outcome.success).toBe(false);
