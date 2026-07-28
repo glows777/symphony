@@ -1,0 +1,33 @@
+---
+# Parseable Gitea tracker example. Set GITEA_API_TOKEN before running; the
+# endpoint is an instance URL, so this example also works with a self-hosted
+# Gitea installation by changing only `tracker.endpoint`.
+
+tracker:
+  kind: gitea
+  endpoint: https://gitea.example.invalid
+  token: $GITEA_API_TOKEN
+  owner: example
+  repo: symphony
+  active_states: [open]
+  terminal_states: [closed]
+  required_labels: [symphony]
+  # Optional: only issues assigned to this Gitea login are candidates.
+  # assignee: automation
+
+polling:
+  interval_ms: 30000
+
+workspace:
+  root: /tmp/symphony-gitea-workspaces
+
+agent:
+  max_concurrent_agents: 2
+
+codex:
+  command: codex app-server
+
+---
+You are working on a Gitea issue in {{ issue.identifier }}.
+
+{{ issue.title }}

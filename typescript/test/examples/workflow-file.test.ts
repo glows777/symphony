@@ -16,6 +16,7 @@ import { setWorkflowFilePath } from "../../src/symphony/workflow.ts";
 const REPO = path.join(import.meta.dir, "..", "..");
 const WORKFLOW = path.join(REPO, "WORKFLOW.md");
 const LOCAL_WORKFLOW = path.join(REPO, "examples", "local.workflow.md");
+const GITEA_WORKFLOW = path.join(REPO, "examples", "gitea.workflow.md");
 
 function sampleIssue(overrides: Record<string, unknown> = {}) {
   return newIssue({
@@ -190,5 +191,35 @@ describe("examples/local.workflow.md (memory tracker + codex)", () => {
       attempt: null,
     });
     expect(prompt).toContain("LOCAL-1");
+  });
+});
+
+describe("examples/gitea.workflow.md (Gitea tracker + codex)", () => {
+  let savedToken: string | undefined;
+
+  beforeEach(() => {
+    savedToken = process.env.GITEA_API_TOKEN;
+    process.env.GITEA_API_TOKEN = "gitea_api_example";
+    setWorkflowFilePath(GITEA_WORKFLOW);
+  });
+
+  afterEach(() => {
+    deleteEnv("workflow_file_path");
+    if (savedToken === undefined) {
+      Reflect.deleteProperty(process.env, "GITEA_API_TOKEN");
+    } else {
+      process.env.GITEA_API_TOKEN = savedToken;
+    }
+  });
+
+  test("parses and validates with the documented environment token", () => {
+    const parsed = settings();
+    expect(parsed).toMatchObject({ ok: true, value: { tracker: { kind: "gitea" } } });
+    expect(validate()).toEqual({ ok: true, value: undefined });
+    if (parsed.ok) {
+      expect(parsed.value.tracker.plugin.token).toBe("gitea_api_example");
+      expect(parsed.value.tracker.activeStates).toEqual(["open"]);
+      expect(parsed.value.tracker.terminalStates).toEqual(["closed"]);
+    }
   });
 });
