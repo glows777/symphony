@@ -53,7 +53,7 @@ function defaults(): Overrides {
     observability_enabled: true,
     observability_refresh_ms: 1_000,
     observability_render_interval_ms: 16,
-    observability_agent_output: "off",
+    observability_agent_output: "summary",
     observability_agent_output_max_event_bytes: 64 * 1024,
     observability_agent_output_max_file_bytes: 64 * 1024 * 1024,
     server_port: null,

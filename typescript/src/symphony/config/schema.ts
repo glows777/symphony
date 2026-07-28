@@ -555,7 +555,7 @@ function castObservability(
   validateGreaterThan(refreshMs, section, "refresh_ms", 0, errors);
   const renderIntervalMs = field<number>(r, "render_interval_ms", section, castInteger, 16, errors);
   validateGreaterThan(renderIntervalMs, section, "render_interval_ms", 0, errors);
-  const agentOutput = field<string>(r, "agent_output", section, castString, "off", errors);
+  const agentOutput = field<string>(r, "agent_output", section, castString, "summary", errors);
   if (!(["off", "summary", "raw"] as string[]).includes(agentOutput.value)) {
     errors.push({
       path: `${section}.agent_output`,

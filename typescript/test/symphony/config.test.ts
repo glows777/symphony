@@ -67,6 +67,7 @@ describe("Config", () => {
     expect(config.codex.command).toBe("codex app-server");
     expect(config.codex.approvalPolicy).toBe("on-request");
     expect(config.codex.threadSandbox).toBe("workspace-write");
+    expect(config.observability.agentOutput).toBe("summary");
 
     expect(codexTurnSandboxPolicy()).toEqual({
       type: "workspaceWrite",

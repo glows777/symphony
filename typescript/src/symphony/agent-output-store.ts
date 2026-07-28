@@ -860,7 +860,9 @@ export function resetAgentOutputStoreForTest(): void {
 
 function configuredOptions(): AgentOutputStoreOptions {
   const rootOverride = getEnv<string | null>("agent_output_root", null);
-  let mode: AgentOutputMode = "off";
+  // Keep isolated store usage consistent with the schema default when a
+  // workflow is not available yet.
+  let mode: AgentOutputMode = "summary";
   let maxEventBytes = DEFAULT_MAX_EVENT_BYTES;
   let maxFileBytes = DEFAULT_MAX_FILE_BYTES;
   try {

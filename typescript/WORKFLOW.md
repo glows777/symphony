@@ -200,7 +200,7 @@ observability:
   dashboard_enabled: true
   refresh_ms: 1000
   render_interval_ms: 16
-  # off (default), summary, or raw. raw keeps bounded payload/raw protocol data in JSONL.
+  # summary (default), off, or raw. raw keeps bounded payload/raw protocol data in JSONL.
   # agent_output: raw
 
 server:

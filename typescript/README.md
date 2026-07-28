@@ -159,8 +159,8 @@ legacy SSR dashboard available to direct handler callers.
 
 Agent output is configured under `observability.agent_output`:
 
-- `off` (default): do not write agent output logs.
-- `summary`: persist normalized events and human-readable summaries only.
+- `summary` (default): persist normalized events and human-readable summaries only.
+- `off`: do not write agent output logs.
 - `raw`: also persist bounded payloads and raw protocol lines.
 
 Logs are append-only JSONL under `log/agents/<issue_identifier>/<run_id>.jsonl` relative to the
