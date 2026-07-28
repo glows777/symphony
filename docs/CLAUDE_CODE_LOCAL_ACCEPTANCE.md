@@ -35,9 +35,12 @@ bun run verify    # 期望:PASS(fake codex 走的 e2e,与 claude 无关,但证�
 
 ## 3. 冒烟 WORKFLOW.md
 
-仓库里已经带了一份可直接用的:**`typescript/WORKFLOW.md`**(memory tracker +
-claude_code 后端,零凭证)。直接用它跳到 §4 即可。下面是要点摘录,便于快速看
-结构(**完整内容以文件为准**,文件里每个键都有注释说明为什么这么设):
+仓库里已经带了一份可直接用的:**`typescript/examples/local.workflow.md`**
+(memory tracker,零凭证)。直接用它跳到 §4 即可。下面是要点摘录,便于快速看
+结构(**完整内容以文件为准**,文件里每个键都有注释说明为什么这么设)。
+
+> 注意:`typescript/WORKFLOW.md` 是仓库自己的**真实**运行配置(Linear tracker +
+> codex 后端,需要凭证),不是这里要用的冒烟配置 —— 别拿它做本地验收。
 
 ```yaml
 ---
@@ -77,7 +80,7 @@ observability:
 cd typescript
 bun run start \
   --i-understand-that-this-will-be-running-without-the-usual-guardrails \
-  --port 4000 ./WORKFLOW.md
+  --port 4000 ./examples/local.workflow.md
 ```
 
 三个观察面:终端状态面板(dashboard_enabled)、`http://localhost:4000`
@@ -122,7 +125,8 @@ bun run start \
 ### B 组 — 状态流转与阻塞路径(建议验)
 
 - [ ] **B1 完成流转**:run 进行中(或两轮打满、orchestrator 重派发前)编辑
-      WORKFLOW.md,把 seed 的 `state: In Progress` 改为 `state: Done`。
+      `examples/local.workflow.md`,把 seed 的 `state: In Progress` 改为
+      `state: Done`。
       memory tracker **每次读取都重新解析文件**,下一次状态刷新即生效:
       运行中的 run 在当前 turn 结束后正常收束(不再续跑),面板 Running 清空,
       issue 不再被派发;
@@ -149,7 +153,7 @@ bun run start \
 ## 6. 状态流转的原理(为什么改文件就生效)
 
 memory tracker 的 `seed_issues` 不是启动时快照:Symphony 每次 tracker 操作
-都重新解析 WORKFLOW.md(插件契约的 per-call resolution),所以编辑文件里的
+都重新解析工作流文件(插件契约的 per-call resolution),所以编辑文件里的
 `state` 字段等价于在真实 tracker 里拖卡片。默认状态词汇:active =
 `Todo` / `In Progress`,terminal 含 `Done` / `Closed` / `Cancelled`。
 

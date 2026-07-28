@@ -35,6 +35,57 @@ bun run check       # typecheck + lint + test (the quality gate)
 bun run verify      # check + a real end-to-end smoke of the running app
 ```
 
+## Workflow files
+
+Three workflow files ship here, for three different jobs:
+
+| File | Tracker / backend | For |
+|---|---|---|
+| [`WORKFLOW.md`](./WORKFLOW.md) | Linear + codex | The real thing: credentials, real workspaces, real PRs |
+| [`examples/local.workflow.md`](./examples/local.workflow.md) | memory + codex | Credential-free local run ([acceptance checklist](../docs/CLAUDE_CODE_LOCAL_ACCEPTANCE.md)) |
+| [`examples/smoke.workflow.md`](./examples/smoke.workflow.md) | memory + fake codex | The `bun run verify` fixture — not for real work |
+
+### Running against Linear
+
+`WORKFLOW.md` is fully annotated; replace the values marked `replace-me`, then:
+
+```bash
+export LINEAR_API_KEY=lin_api_...          # a bot account's key is the usual setup
+export SYMPHONY_REPO_URL=git@github.com:acme/app.git
+export SYMPHONY_WORKSPACE_ROOT="$HOME/.symphony/workspaces"
+
+bun run start \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails \
+  --port 4000 ./WORKFLOW.md
+```
+
+The file is read from the process working directory when no path is passed.
+Points worth knowing before the first run, all covered inline:
+
+- **Symphony only creates the workspace directory.** Cloning the repository is
+  the `after_create` hook's job. Hooks run via `sh -lc` with the workspace as
+  the working directory and inherit Symphony's environment; no issue variables
+  are injected, but the directory name is the sanitized issue identifier, so
+  `basename "$PWD"` recovers it.
+- **The prompt sees `issue.identifier`, `issue.title`, and `issue.description`
+  (plus the rest of the [`issue.*` scope](./src/symphony/prompt-builder.ts)) —
+  never the issue's comments.** Context added to a Linear comment thread after
+  the fact does not reach the agent unless the agent queries for it through the
+  `linear_graphql` tool.
+- **Issue state is the control loop.** While an issue sits in an
+  `active_states` state, a normally-completed turn is continued rather than
+  finished (up to `agent.max_turns`); a state in `terminal_states` stops the
+  agent and deletes the workspace. A state in *neither* list — `In Review` here
+  — parks the issue: no more dispatch, workspace and branch kept alive for
+  review. The agent moves the issue itself, through `linear_graphql`.
+- **`codex.turn_sandbox_policy` defaults to `networkAccess: false`**, which
+  cannot install dependencies or push a branch. An agent expected to open a PR
+  needs the explicit override, and `$VAR` is not expanded inside that map.
+
+[`test/examples/workflow-file.test.ts`](./test/examples/workflow-file.test.ts)
+keeps both runnable workflows honest: they must keep parsing, keep passing
+semantic validation, and keep rendering through the prompt builder.
+
 ## Testing locally
 
 Everything here runs against this `typescript/` directory alone — **no Elixir, no
