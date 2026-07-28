@@ -127,6 +127,37 @@ describe("Gitea.Plugin", () => {
     ]);
   });
 
+  test("normalizes synchronous and asynchronous injected client failures", async () => {
+    const thrown = new Error("injected failure");
+    const fake: GiteaClientModule = {
+      fetchCandidateIssues: () => {
+        throw thrown;
+      },
+      fetchIssuesByStates: () => Promise.reject(thrown),
+      fetchIssueStatesByIds: () => {
+        throw thrown;
+      },
+      createComment: () => {
+        throw thrown;
+      },
+      updateIssueState: () => Promise.reject(thrown),
+    };
+    putEnv("gitea_client_module", fake);
+
+    for (const result of [
+      await GiteaPlugin.fetchCandidateIssues(),
+      await GiteaPlugin.fetchIssuesByStates(["open"]),
+      await GiteaPlugin.fetchIssueStatesByIds(["acme/symphony#1"]),
+      await GiteaPlugin.comments?.createComment("acme/symphony#1", "hello"),
+      await GiteaPlugin.stateUpdates?.updateIssueState("acme/symphony#1", "closed"),
+    ]) {
+      expect(result).toMatchObject({
+        ok: false,
+        error: { tag: "tracker_error", code: "unknown", detail: thrown },
+      });
+    }
+  });
+
   test("exposes only the constrained gitea_api tool", async () => {
     expect(GiteaPlugin.agentTools?.listAgentTools()).toEqual([
       expect.objectContaining({ name: "gitea_api" }),
@@ -152,6 +183,15 @@ describe("Gitea.Plugin", () => {
       path: "https://other.example/api/v1/user",
     });
     expect(invalid).toMatchObject({
+      success: false,
+      payload: { error: { message: expect.stringContaining("start with `/api/v1/`") } },
+    });
+
+    const traversal = await GiteaPlugin.agentTools?.executeAgentTool("gitea_api", {
+      method: "GET",
+      path: "/api/v1/%252e%252e/secrets",
+    });
+    expect(traversal).toMatchObject({
       success: false,
       payload: { error: { message: expect.stringContaining("start with `/api/v1/`") } },
     });

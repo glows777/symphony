@@ -8,6 +8,7 @@ import type { AgentToolExecuteOpts, AgentToolOutcome, AgentToolSpec } from "../t
 export const GITEA_API_TOOL = "gitea_api";
 const GITEA_API_PATH_PREFIX = "/api/v1/";
 const GITEA_API_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+const PATH_VALIDATION_ORIGIN = "https://symphony.invalid";
 
 const GITEA_API_DESCRIPTION =
   "Execute a raw Gitea API request using Symphony's configured endpoint and token. Paths must stay under /api/v1/.\n";
@@ -122,11 +123,43 @@ function normalizePath(path: unknown): Result<string, unknown> {
   if (!trimmed.startsWith(GITEA_API_PATH_PREFIX) || trimmed.includes("\\")) {
     return err({ tag: "invalid_path" });
   }
-  const pathname = trimmed.split("?", 1)[0]?.split("#", 1)[0] ?? trimmed;
-  if (pathname.split("/").some((segment) => segment === "..")) {
+  try {
+    const parsed = new URL(trimmed, PATH_VALIDATION_ORIGIN);
+    if (
+      parsed.origin !== PATH_VALIDATION_ORIGIN ||
+      !isSafeApiPathname(parsed.pathname, GITEA_API_PATH_PREFIX)
+    ) {
+      return err({ tag: "invalid_path" });
+    }
+  } catch {
     return err({ tag: "invalid_path" });
   }
   return ok(trimmed);
+}
+
+function isSafeApiPathname(pathname: string, prefix: string): boolean {
+  if (!pathname.startsWith(prefix)) {
+    return false;
+  }
+  let decoded = pathname;
+  try {
+    // URL normalizes one level of dot segments. Decode twice as well so a
+    // doubly-encoded traversal cannot be delegated to a downstream router.
+    for (let depth = 0; depth < 2; depth += 1) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) {
+        break;
+      }
+      decoded = next;
+    }
+  } catch {
+    return false;
+  }
+  return (
+    !decoded.includes("\\") &&
+    !decoded.includes("\0") &&
+    !decoded.split("/").some((segment) => segment === "." || segment === "..")
+  );
 }
 
 function normalizeBody(body: unknown): Result<Record<string, unknown> | null, unknown> {

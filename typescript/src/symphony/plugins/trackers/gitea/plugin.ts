@@ -105,24 +105,32 @@ export const GiteaPlugin: TrackerPlugin = {
   },
 
   fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>> {
-    return normalizeReadResult(clientModule().fetchCandidateIssues());
+    return normalizeReadCall(() => clientModule().fetchCandidateIssues());
   },
   fetchIssuesByStates(states: string[]): Promise<Result<Issue[], TrackerError>> {
-    return normalizeReadResult(clientModule().fetchIssuesByStates(states));
+    return normalizeReadCall(() => clientModule().fetchIssuesByStates(states));
   },
   fetchIssueStatesByIds(ids: string[]): Promise<Result<Issue[], TrackerError>> {
-    return normalizeReadResult(clientModule().fetchIssueStatesByIds(ids));
+    return normalizeReadCall(() => clientModule().fetchIssueStatesByIds(ids));
   },
 
   comments: {
     createComment: async (issueId, body): Promise<Result<undefined, TrackerError>> => {
-      return normalizeWriteResult(await clientModule().createComment(issueId, body));
+      try {
+        return normalizeWriteResult(await clientModule().createComment(issueId, body));
+      } catch (error) {
+        return err(toTrackerError(error));
+      }
     },
   },
 
   stateUpdates: {
     updateIssueState: async (issueId, stateName): Promise<Result<undefined, TrackerError>> => {
-      return normalizeWriteResult(await clientModule().updateIssueState(issueId, stateName));
+      try {
+        return normalizeWriteResult(await clientModule().updateIssueState(issueId, stateName));
+      } catch (error) {
+        return err(toTrackerError(error));
+      }
     },
   },
 
@@ -144,6 +152,14 @@ export const GiteaPlugin: TrackerPlugin = {
     workItemNoun: "Gitea issue",
   },
 };
+
+async function normalizeReadCall(operation: () => unknown): Promise<Result<Issue[], TrackerError>> {
+  try {
+    return await normalizeReadResult(operation());
+  } catch (error) {
+    return err(toTrackerError(error));
+  }
+}
 
 function castAliasString(
   raw: JsonMap,

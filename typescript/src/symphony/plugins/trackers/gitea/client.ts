@@ -14,6 +14,7 @@ const API_PREFIX = "/api/v1";
 const ISSUE_PAGE_SIZE = 50;
 const LABEL_PAGE_SIZE = 50;
 const MAX_ERROR_BODY_LOG_BYTES = 1_000;
+const PATH_VALIDATION_ORIGIN = "https://symphony.invalid";
 
 const OPEN_STATE_ALIASES = new Set(["open", "active", "todo", "in progress"]);
 const CLOSED_STATE_ALIASES = new Set([
@@ -393,6 +394,9 @@ async function requestRaw(
     return err(transportError(path, response.error));
   }
   const { status, body: responseBody, headers } = response.value;
+  if (!Number.isInteger(status) || status < 100 || status >= 600) {
+    return err(invalidPayloadError(path, { status, body: responseBody }));
+  }
   if (status < 200 || status >= 300) {
     logger.error(
       `Gitea API request failed status=${status} path=${path} body=${summarizeErrorBody(responseBody)}`,
@@ -546,7 +550,8 @@ function nextPagePath(
 function nextLink(linkHeader: string): string | null {
   const links = [...linkHeader.matchAll(/<([^>]+)>\s*;\s*rel=["']?([^,;"']+)["']?/gi)];
   for (const match of links) {
-    if (match[2]?.trim().toLowerCase() === "next" && match[1] !== undefined) {
+    const relations = match[2]?.trim().toLowerCase().split(/\s+/) ?? [];
+    if (relations.includes("next") && match[1] !== undefined) {
       return match[1];
     }
   }
@@ -917,7 +922,43 @@ function parseIssueNumber(issueId: string, repository: RepositoryContext): numbe
 }
 
 function isApiPath(path: string): boolean {
-  return path === API_PREFIX || (path.startsWith(`${API_PREFIX}/`) && !path.includes("\\"));
+  if (path === API_PREFIX) {
+    return true;
+  }
+  if (!path.startsWith(`${API_PREFIX}/`) || path.includes("\\")) {
+    return false;
+  }
+  try {
+    const parsed = new URL(path, PATH_VALIDATION_ORIGIN);
+    return (
+      parsed.origin === PATH_VALIDATION_ORIGIN && safeApiPathname(parsed.pathname, `${API_PREFIX}/`)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function safeApiPathname(pathname: string, prefix: string): boolean {
+  if (!pathname.startsWith(prefix)) {
+    return false;
+  }
+  let decoded = pathname;
+  try {
+    for (let depth = 0; depth < 2; depth += 1) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) {
+        break;
+      }
+      decoded = next;
+    }
+  } catch {
+    return false;
+  }
+  return (
+    !decoded.includes("\\") &&
+    !decoded.includes("\0") &&
+    !decoded.split("/").some((segment) => segment === "." || segment === "..")
+  );
 }
 
 function uniqueNonBlank(values: string[]): string[] {

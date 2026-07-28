@@ -378,5 +378,13 @@ describe("Gitea.Client", () => {
       requestFun: () => ({ ok: true, value: { status: 200, body: { unexpected: true } } }),
     });
     expect(invalid).toMatchObject({ ok: false, error: { code: "invalid_payload" } });
+
+    const invalidStatus = await fetchIssuesByStates(["open"], {
+      requestFun: () => ({
+        ok: true,
+        value: { status: 99, body: [] },
+      }),
+    });
+    expect(invalidStatus).toMatchObject({ ok: false, error: { code: "invalid_payload" } });
   });
 });
