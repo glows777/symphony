@@ -168,6 +168,10 @@ configured `--logs-root`. Inspect a run with
 `GET /api/v1/<issue_identifier>/output?limit=100&after=<seq>` or subscribe to
 `GET /api/v1/<issue_identifier>/output/stream` (SSE event name `agent_output`).
 
+The HTTP API binds to a loopback host by default. Remote binding is intentionally
+refused unless `server.unsafe_allow_remote: true` is set; the observability API has
+no authentication layer and may expose raw backend output.
+
 Stop the server with `Ctrl-C` (or `SIGTERM`); it shuts down cleanly with exit `0`.
 
 ## Layout

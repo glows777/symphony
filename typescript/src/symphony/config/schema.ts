@@ -78,7 +78,7 @@ export type ObservabilitySettings = {
   agentOutputMaxEventBytes: number;
   agentOutputMaxFileBytes: number;
 };
-export type ServerSettings = { port: number | null; host: string };
+export type ServerSettings = { port: number | null; host: string; unsafeAllowRemote: boolean };
 
 export type Settings = {
   tracker: TrackerSettings;
@@ -598,6 +598,8 @@ function castServer(raw: unknown, section: string, errors: FieldError[]): Server
   return {
     port: port.value,
     host: field<string>(r, "host", section, castString, "127.0.0.1", errors).value,
+    unsafeAllowRemote: field<boolean>(r, "unsafe_allow_remote", section, castBoolean, false, errors)
+      .value,
   };
 }
 

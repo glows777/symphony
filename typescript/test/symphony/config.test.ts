@@ -80,6 +80,7 @@ describe("Config", () => {
     expect(config.codex.turnTimeoutMs).toBe(3_600_000);
     expect(config.codex.readTimeoutMs).toBe(5_000);
     expect(config.codex.stallTimeoutMs).toBe(300_000);
+    expect(config.server.unsafeAllowRemote).toBe(false);
   });
 
   test("normalizes required labels (trim/downcase/uniq)", () => {

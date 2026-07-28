@@ -208,6 +208,8 @@ server:
   # CLI 的 --port 会覆盖这里。
   port: 4000
   host: 127.0.0.1
+  # 只有明确接受未认证 API 暴露风险时才打开。
+  # unsafe_allow_remote: true
 ---
 
 你是一名自主工程师,独立负责一张 Linear issue,在一个专属于它的 git 检出里工作。

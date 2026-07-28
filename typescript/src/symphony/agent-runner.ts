@@ -120,7 +120,7 @@ async function runOnWorkerHost(
   });
   const created = Workspace.createForIssue(issue, workerHost);
   if (!created.ok) {
-    output.finish("failed", created.error);
+    await output.finish("failed", created.error);
     return err(created.error);
   }
   const workspace = created.value;
@@ -129,7 +129,7 @@ async function runOnWorkerHost(
   try {
     const beforeRun = Workspace.runBeforeRunHook(workspace, issue, workerHost);
     if (!beforeRun.ok) {
-      output.finish("failed", beforeRun.error);
+      await output.finish("failed", beforeRun.error);
       return err(beforeRun.error);
     }
     const result = await runAgentTurns(
@@ -141,13 +141,13 @@ async function runOnWorkerHost(
       backend,
       output,
     );
-    output.finish(
+    await output.finish(
       opts.signal?.aborted === true ? "cancelled" : result.ok ? "completed" : "failed",
       result.ok ? null : result.error,
     );
     return result;
   } catch (error) {
-    output.finish(opts.signal?.aborted === true ? "cancelled" : "failed", error);
+    await output.finish(opts.signal?.aborted === true ? "cancelled" : "failed", error);
     throw error;
   } finally {
     Workspace.runAfterRunHook(workspace, issue, workerHost);
