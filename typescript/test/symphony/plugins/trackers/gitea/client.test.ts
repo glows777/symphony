@@ -158,6 +158,16 @@ describe("Gitea.Client", () => {
     expect(calls[0]?.headers.Authorization).toBe("token test-token");
   });
 
+  test("accepts an empty issue page without making extra requests", async () => {
+    const calls: Call[] = [];
+    const result = await fetchIssuesByStates(["open"], {
+      requestFun: fakeTransport(calls, [{ status: 200, body: [] }]),
+    });
+
+    expect(result).toEqual({ ok: true, value: [] });
+    expect(calls).toHaveLength(1);
+  });
+
   test("projects workflow state names onto Gitea open and closed", async () => {
     writeGiteaWorkflowFile(workflowFilePath(), {
       active_states: ["Todo", "In Progress"],
