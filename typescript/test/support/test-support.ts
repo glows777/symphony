@@ -274,6 +274,7 @@ export function teardownWorkflow(root: string): void {
   deleteEnv("linear_client_module");
   deleteEnv("lark_client_module");
   deleteEnv("lark_task_client_module");
+  deleteEnv("gitea_client_module");
   deleteEnv("tracker_plugin_overrides");
   deleteEnv("agent_backend_overrides");
   // The token cache is shared by the lark-family plugins (lark, lark-task).

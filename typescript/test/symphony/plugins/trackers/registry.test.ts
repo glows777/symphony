@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { putEnv } from "../../../../src/symphony/app-env.ts";
 // Side-effect import mirrors production entry points: built-ins registered.
 import "../../../../src/symphony/plugins/trackers/index.ts";
+import { GiteaPlugin } from "../../../../src/symphony/plugins/trackers/gitea/plugin.ts";
 import { LarkTaskPlugin } from "../../../../src/symphony/plugins/trackers/lark-task/plugin.ts";
 import { LarkPlugin } from "../../../../src/symphony/plugins/trackers/lark/plugin.ts";
 import { LinearPlugin } from "../../../../src/symphony/plugins/trackers/linear/plugin.ts";
@@ -22,7 +23,8 @@ describe("Plugins.Registry", () => {
     expect(trackerPlugin("memory")).toEqual(ok(MemoryPlugin));
     expect(trackerPlugin("lark")).toEqual(ok(LarkPlugin));
     expect(trackerPlugin("lark-task")).toEqual(ok(LarkTaskPlugin));
-    expect(registeredTrackerKinds()).toEqual(["linear", "memory", "lark", "lark-task"]);
+    expect(trackerPlugin("gitea")).toEqual(ok(GiteaPlugin));
+    expect(registeredTrackerKinds()).toEqual(["linear", "memory", "lark", "lark-task", "gitea"]);
   });
 
   test("reports missing and unsupported kinds with stable tags", () => {
