@@ -60,11 +60,17 @@ describe("WORKFLOW.md (Linear + codex)", () => {
     const config = parsed.value;
     expect(config.tracker.kind).toBe("linear");
     expect(config.tracker.requiredLabels).toEqual(["symphony"]);
-    expect(config.tracker.activeStates).toEqual(["Todo", "In Progress"]);
-    // "In Review" is deliberately in neither list: parked, not terminal.
-    expect(config.tracker.terminalStates).not.toContain("In Review");
+    expect(config.tracker.activeStates).toEqual(["Todo", "In Progress", "Merging", "Rework"]);
+    // "Human Review" is deliberately in neither list: parked, not terminal.
+    expect(config.tracker.terminalStates).not.toContain("Human Review");
     expect(config.agent.backend).toBe("codex");
-    expect(config.agent.maxConcurrentAgentsByState).toEqual({ todo: 2, "in progress": 3 });
+    expect(config.agent.maxConcurrentAgentsByState).toEqual({
+      todo: 2,
+      "in progress": 3,
+      rework: 3,
+      merging: 1,
+    });
+    expect(config.review.manualState).toBe("Human Review");
     expect(config.review.verificationCommand).toBe("cd typescript && bun run check");
     expect(config.hooks.afterCreate).toContain("git clone");
     expect(config.hooks.beforeRun).not.toBeNull();
@@ -134,14 +140,16 @@ describe("WORKFLOW.md (Linear + codex)", () => {
       attempt: null,
     });
 
-    expect(prompt).toContain("编号:ENG-123");
+    expect(prompt).toContain("编号：`ENG-123`");
     expect(prompt).toContain("Port the retry backoff to the new scheduler");
-    expect(prompt).toContain("标签:symphony, backend");
-    expect(prompt).toContain("Linear 建议的分支名:eng-123-retry-backoff");
+    expect(prompt).toContain("标签：`symphony, backend`");
+    expect(prompt).toContain("建议分支：`eng-123-retry-backoff`");
     expect(prompt).toContain("The old backoff is duplicated across two call sites.");
-    expect(prompt).toContain('"id": "issue-uuid"');
+    expect(prompt).toContain("Linear issue id：`issue-uuid`");
     // The control-loop section is the part the agent must not miss.
-    expect(prompt).toContain("In Review");
+    expect(prompt).toContain("Human Review");
+    expect(prompt).toContain("Merging");
+    expect(prompt).toContain("Rework");
     expect(prompt).not.toContain("重试上下文");
   });
 
@@ -155,15 +163,15 @@ describe("WORKFLOW.md (Linear + codex)", () => {
       { attempt: null },
     );
 
-    expect(prompt).toContain("**这张卡没有写描述。**");
-    expect(prompt).toContain("ENG-100(状态:Done)");
-    expect(prompt).not.toContain("Linear 建议的分支名");
+    expect(prompt).toContain("这张工单没有描述。");
+    expect(prompt).toContain("`ENG-100`，当前状态：`Done`");
+    expect(prompt).not.toContain("建议分支");
   });
 
   test("renders retry guidance when the attempt counter is set", () => {
     const prompt = buildPrompt(sampleIssue(), { attempt: 3 });
-    expect(prompt).toContain("重试上下文");
-    expect(prompt).toContain("这是第 3 次尝试");
+    expect(prompt).toContain("## 恢复运行上下文");
+    expect(prompt).toContain("这是第 3 次尝试。");
   });
 });
 

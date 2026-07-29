@@ -213,7 +213,7 @@ describe("Orchestrator decisions/reconcile seams", () => {
     fs.mkdirSync(workspace, { recursive: true });
     writeWorkflowFile(workflowFilePath(), {
       workspace_root: workspaceRoot,
-      tracker_active_states: ["Todo", "In Progress", "In Review"],
+      tracker_active_states: ["Todo", "In Progress", "Merging", "Rework"],
       tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"],
     });
 
@@ -272,6 +272,38 @@ describe("Orchestrator decisions/reconcile seams", () => {
     expect(updated.claimed.has(issueId)).toBe(true);
     expect(updated.running[issueId]?.issue.state).toBe("In Progress");
     expect(task.stopped).toBe(false);
+  });
+
+  test("reconcile stops the previous run when an issue enters Rework", () => {
+    const issueId = "issue-rework";
+    const task = stoppableTask();
+    writeWorkflowFile(workflowFilePath(), {
+      tracker_active_states: ["Todo", "In Progress", "Merging", "Rework"],
+    });
+    const state: State = newState({
+      running: {
+        [issueId]: {
+          task,
+          ref: null,
+          identifier: "MT-REWORK",
+          issue: newIssue({ id: issueId, identifier: "MT-REWORK", state: "Human Review" }),
+          started_at: new Date(),
+        },
+      },
+      claimed: new Set([issueId]),
+    });
+    const issue = newIssue({
+      id: issueId,
+      identifier: "MT-REWORK",
+      title: "Rework",
+      state: "Rework",
+      labels: [],
+    });
+
+    const updated = reconcileIssueStatesForTest([issue], state);
+    expect(issueId in updated.running).toBe(false);
+    expect(updated.claimed.has(issueId)).toBe(false);
+    expect(task.stopped).toBe(true);
   });
 
   test("reconcile stops a running issue reassigned away from this worker", () => {

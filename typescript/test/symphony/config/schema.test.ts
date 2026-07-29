@@ -131,6 +131,14 @@ describe("Config.Schema.parse", () => {
     }
   });
 
+  test("reads Linear provider settings from the official nested tracker shape", () => {
+    const linear = parseOk({
+      tracker: { kind: "linear", provider: { project_slug: "official-project" } },
+    });
+    expect(linear.tracker.plugin.project_slug).toBe("official-project");
+    expect(linear.tracker.plugin.api_key).toBe("fallback-linear-token");
+  });
+
   test("reports invalid fields with their path", () => {
     const result = parse({ tracker: { active_states: "," } });
     expect(result.ok).toBe(false);
@@ -216,13 +224,13 @@ describe("Config.Schema.parse", () => {
     const ok = parseOk({
       agent: {
         max_concurrent_agents: 10,
-        max_concurrent_agents_by_state: { todo: 1, "In Progress": 4, "In Review": 2 },
+        max_concurrent_agents_by_state: { todo: 1, "In Progress": 4, merging: 2 },
       },
     });
     expect(ok.agent.maxConcurrentAgentsByState).toEqual({
       todo: 1,
       "in progress": 4,
-      "in review": 2,
+      merging: 2,
     });
 
     const bad = parse({

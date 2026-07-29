@@ -227,7 +227,7 @@ describe("Config", () => {
         "  max_concurrent_agents_by_state:",
         "    todo: 1",
         '    "In Progress": 4',
-        '    "In Review": 2',
+        "    merging: 2",
         "---",
         "",
       ].join("\n"),
@@ -236,7 +236,7 @@ describe("Config", () => {
     expect(settingsBang().agent.maxConcurrentAgents).toBe(10);
     expect(maxConcurrentAgentsForState("Todo")).toBe(1);
     expect(maxConcurrentAgentsForState("In Progress")).toBe(4);
-    expect(maxConcurrentAgentsForState("In Review")).toBe(2);
+    expect(maxConcurrentAgentsForState("Merging")).toBe(2);
     expect(maxConcurrentAgentsForState("Closed")).toBe(10);
     expect(maxConcurrentAgentsForState(42)).toBe(10);
 

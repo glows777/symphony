@@ -308,7 +308,7 @@ function activeStateNames(team: JsonObject): string[] {
     .filter((s) => s.type !== "completed" && s.type !== "canceled")
     .map((s) => s.name)
     .filter((name): name is string => typeof name === "string");
-  return names.length === 0 ? ["Todo", "In Progress", "In Review"] : names;
+  return names.length === 0 ? ["Todo", "In Progress", "Merging", "Rework"] : names;
 }
 
 async function completedProjectStatusBang(): Promise<JsonObject> {

@@ -212,6 +212,12 @@ function reconcileIssueState(
     return terminateRunningIssue(state, issue.id, false);
   }
   if (activeIssueState(issue.state, activeStates)) {
+    if (enteredReworkState(issue, state)) {
+      logger.info(
+        `Issue entered Rework: ${issueContext(issue)}; stopping the previous agent before a clean dispatch`,
+      );
+      return terminateRunningIssue(state, issue.id, false);
+    }
     return refreshRunningIssueState(state, issue);
   }
   logger.info(
@@ -518,6 +524,18 @@ function retryCandidateIssue(issue: Issue, terminalStates: Set<string>): boolean
     candidateIssue(issue, activeStateSet(), terminalStates) &&
     !todoIssueBlockedByNonTerminal(issue, terminalStates)
   );
+}
+
+function enteredReworkState(issue: Issue, state: State): boolean {
+  if (issue.id === null || !isReworkState(issue.state)) {
+    return false;
+  }
+  const previous = state.running[issue.id]?.issue?.state;
+  return !isReworkState(previous);
+}
+
+function isReworkState(stateName: unknown): boolean {
+  return typeof stateName === "string" && normalizeIssueState(stateName) === "rework";
 }
 
 function stateSlotsAvailable(issue: Issue, running: Record<string, RunningEntry>): boolean {
@@ -2001,6 +2019,7 @@ export class Orchestrator {
     AgentRunner.run(issue, (update) => this.onWorkerUpdate(update), {
       workerHost,
       attempt,
+      rework: attempt === null && isReworkState(issue.state),
       signal: abortController.signal,
     })
       .then(() => {

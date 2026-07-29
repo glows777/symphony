@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { canonicalize } from "../../src/symphony/path-safety.ts";
+import { newIssue } from "../../src/symphony/work-item.ts";
 import { workflowFilePath } from "../../src/symphony/workflow.ts";
 import {
   createForIssue,
@@ -93,6 +94,69 @@ describe("Workspace", () => {
         "in progress\n",
       );
     }
+  });
+
+  test("rework closes the old lifecycle and recreates the issue branch from origin/main", () => {
+    const workspaceRoot = path.join(testRoot, "rework-workspaces");
+    const seed = path.join(testRoot, "seed");
+    const origin = path.join(testRoot, "origin.git");
+    const beforeRemoveMarker = path.join(testRoot, "rework-before-remove.log");
+    fs.mkdirSync(seed, { recursive: true });
+
+    const git = (cwd: string, args: string[]): string => {
+      const result = Bun.spawnSync(["git", ...args], { cwd });
+      expect(result.exitCode).toBe(0);
+      return (result.stdout?.toString() ?? "").trim();
+    };
+    git(testRoot, ["init", "--bare", origin]);
+    git(seed, ["init"]);
+    git(seed, ["config", "user.name", "Symphony Test"]);
+    git(seed, ["config", "user.email", "symphony@example.invalid"]);
+    fs.writeFileSync(path.join(seed, "README.md"), "from main\n");
+    git(seed, ["add", "README.md"]);
+    git(seed, ["commit", "-m", "seed"]);
+    git(seed, ["branch", "-M", "main"]);
+    git(seed, ["remote", "add", "origin", origin]);
+    git(seed, ["push", "-u", "origin", "main"]);
+
+    writeWorkflowFile(workflowFilePath(), {
+      workspace_root: workspaceRoot,
+      hook_after_create: [
+        "git init",
+        "git config user.name 'Symphony Test'",
+        "git config user.email symphony@example.invalid",
+        `git remote add origin '${origin}'`,
+        "git fetch origin",
+        "git switch -c 'symphony/MT-REWORK' origin/main",
+      ].join("\n"),
+      hook_before_remove: `echo closed > '${beforeRemoveMarker}'`,
+    });
+
+    const issue = newIssue({
+      id: "issue-rework-workspace",
+      identifier: "MT-REWORK",
+      title: "Reset this workspace",
+      state: "Rework",
+    });
+    const first = createForIssue(issue);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    fs.writeFileSync(path.join(first.value, "old.txt"), "old\n");
+    git(first.value, ["add", "old.txt"]);
+    git(first.value, ["commit", "-m", "old attempt"]);
+    fs.writeFileSync(path.join(first.value, "untracked.txt"), "discard\n");
+
+    const reset = createForIssue(issue, null, { rework: true });
+    expect(reset.ok).toBe(true);
+    if (!reset.ok) return;
+    expect(fs.readFileSync(path.join(reset.value, "README.md"), "utf8")).toBe("from main\n");
+    expect(fs.existsSync(path.join(reset.value, "old.txt"))).toBe(false);
+    expect(fs.existsSync(path.join(reset.value, "untracked.txt"))).toBe(false);
+    expect(git(reset.value, ["branch", "--show-current"])).toBe("symphony/MT-REWORK");
+    expect(git(reset.value, ["rev-parse", "HEAD"])).toBe(
+      git(reset.value, ["rev-parse", "origin/main"]),
+    );
+    expect(fs.readFileSync(beforeRemoveMarker, "utf8")).toBe("closed\n");
   });
 
   test("replaces stale non-directory paths", () => {

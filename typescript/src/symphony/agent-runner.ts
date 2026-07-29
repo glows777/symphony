@@ -57,6 +57,9 @@ export type IssueStateFetcher = (
 export type RunOpts = {
   workerHost?: string | null;
   maxTurns?: number;
+  // True only for the first dispatch after entering the official Rework state.
+  // Retries keep the reset workspace and must not discard their own progress.
+  rework?: boolean;
   issueStateFetcher?: IssueStateFetcher;
   attempt?: number | null;
   // Cooperative cancellation. Elixir's `Task.Supervisor.terminate_child` kills
@@ -147,7 +150,7 @@ async function runOnWorkerHost(
     backend: backend.id,
     workerHost,
   });
-  const created = Workspace.createForIssue(issue, workerHost);
+  const created = Workspace.createForIssue(issue, workerHost, { rework: opts.rework === true });
   if (!created.ok) {
     await output.finish("failed", created.error);
     return err(created.error);

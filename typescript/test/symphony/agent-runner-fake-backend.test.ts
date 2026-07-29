@@ -275,7 +275,7 @@ describe("AgentRunner with a synthetic backend", () => {
       {
         tag: "memory_tracker_state_update",
         issueId: "issue-1",
-        stateName: "In Review",
+        stateName: "Human Review",
       },
     ]);
   });

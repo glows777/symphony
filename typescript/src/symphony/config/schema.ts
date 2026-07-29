@@ -396,7 +396,8 @@ function castReview(raw: unknown, section: string, errors: FieldError[]): Review
       errors,
     ).value,
     githubToken: field<string | null>(r, "github_token", section, castString, null, errors).value,
-    manualState: field<string>(r, "manual_state", section, castString, "In Progress", errors).value,
+    manualState: field<string>(r, "manual_state", section, castString, "Human Review", errors)
+      .value,
     handoffPath: field<string>(
       r,
       "handoff_path",

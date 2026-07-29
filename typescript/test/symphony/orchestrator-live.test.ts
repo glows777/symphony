@@ -85,7 +85,7 @@ describe("Orchestrator live (core_test)", () => {
     writeWorkflowFile(workflowFilePath(), {
       tracker_kind: "memory",
       workspace_root: workspaceRoot,
-      tracker_active_states: ["Todo", "In Progress", "In Review"],
+      tracker_active_states: ["Todo", "In Progress", "Merging", "Rework"],
       tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"],
     });
     putEnv("memory_tracker_issues", []);

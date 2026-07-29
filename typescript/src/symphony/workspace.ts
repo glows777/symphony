@@ -27,9 +27,14 @@ export type RemoveResult =
   | { ok: true; value: string[] }
   | { ok: false; error: unknown; output: string };
 
+export type CreateWorkspaceOptions = {
+  rework?: boolean;
+};
+
 export function createForIssue(
   issueOrIdentifier: Issue | string | null,
   workerHost: WorkerHost = null,
+  options: CreateWorkspaceOptions = {},
 ): Result<string, unknown> {
   const issueCtx = issueContext(issueOrIdentifier);
 
@@ -48,6 +53,12 @@ export function createForIssue(
     if (!ensured.ok) {
       return err(ensured.error);
     }
+    if (options.rework === true && !ensured.value.created) {
+      const reset = resetForRework(ensured.value.workspace, issueOrIdentifier, workerHost);
+      if (!reset.ok) {
+        return err(reset.error);
+      }
+    }
     const hook = maybeRunAfterCreateHook(
       ensured.value.workspace,
       issueCtx,
@@ -64,6 +75,73 @@ export function createForIssue(
     );
     return err(error);
   }
+}
+
+// Rework is a deliberate lifecycle boundary from the official workflow: close
+// the old PR, discard the previous checkout, and recreate the issue branch from
+// origin/main before the next agent run. A failed cleanup stops the run so an
+// old PR or dirty branch cannot be mistaken for a fresh rework attempt.
+export function resetForRework(
+  workspace: string,
+  issueOrIdentifier: Issue | string | null,
+  workerHost: WorkerHost = null,
+): Result<undefined, unknown> {
+  const issueCtx = issueContext(issueOrIdentifier);
+  const validation = validateWorkspacePath(workspace, workerHost);
+  if (!validation.ok) {
+    return err(validation.error);
+  }
+
+  const beforeRemove = runBeforeRemoveHook(workspace, issueOrIdentifier, workerHost);
+  if (!beforeRemove.ok) {
+    return err({ tag: "rework_before_remove_failed", reason: beforeRemove.error });
+  }
+
+  const branchResult = runCommand(workspace, "git branch --show-current", workerHost);
+  if (!branchResult.ok) {
+    return err({ tag: "rework_branch_lookup_failed", reason: branchResult.error });
+  }
+  const [branchOutput, branchStatus] = branchResult.value;
+  const branch = branchOutput.trim();
+  if (branchStatus !== 0 || branch === "" || branch === "HEAD" || /^(main|master)$/.test(branch)) {
+    return err({ tag: "rework_branch_invalid", branch, status: branchStatus });
+  }
+
+  for (const command of ["git reset --hard HEAD", "git clean -fdx", "git fetch --prune origin"]) {
+    const result = runCommand(workspace, command, workerHost);
+    if (!result.ok) {
+      return err({ tag: "rework_reset_failed", command, reason: result.error });
+    }
+    const [, status] = result.value;
+    if (status !== 0) {
+      return err({ tag: "rework_reset_failed", command, status });
+    }
+  }
+
+  const recreate = runCommand(
+    workspace,
+    `git switch -C ${shellEscape(branch)} origin/main`,
+    workerHost,
+  );
+  if (!recreate.ok) {
+    return err({ tag: "rework_branch_recreate_failed", reason: recreate.error });
+  }
+  const [, recreateStatus] = recreate.value;
+  if (recreateStatus !== 0) {
+    return err({ tag: "rework_branch_recreate_failed", status: recreateStatus });
+  }
+
+  const cleaned = runCommand(workspace, "git clean -fdx", workerHost);
+  if (!cleaned.ok) {
+    return err({ tag: "rework_cleanup_failed", reason: cleaned.error });
+  }
+  const [, cleanStatus] = cleaned.value;
+  if (cleanStatus !== 0) {
+    return err({ tag: "rework_cleanup_failed", status: cleanStatus });
+  }
+
+  logger.info(`Reset workspace for rework ${issueLogContext(issueCtx)} branch=${branch}`);
+  return ok(undefined);
 }
 
 type EnsureResult = Result<{ workspace: string; created: boolean }, unknown>;
@@ -194,6 +272,19 @@ export function runBeforeRunHook(
     return ok(undefined);
   }
   return runHook(hooks.beforeRun, workspace, issueCtx, "before_run", workerHost);
+}
+
+export function runBeforeRemoveHook(
+  workspace: string,
+  issueOrIdentifier: Issue | string | null,
+  workerHost: WorkerHost = null,
+): Result<undefined, unknown> {
+  const issueCtx = issueContext(issueOrIdentifier);
+  const hooks = settingsBang().hooks;
+  if (hooks.beforeRemove === null) {
+    return ok(undefined);
+  }
+  return runHook(hooks.beforeRemove, workspace, issueCtx, "before_remove", workerHost);
 }
 
 export function runAfterRunHook(
@@ -361,42 +452,14 @@ function maybeRunBeforeRemoveHook(workspace: string, workerHost: WorkerHost): vo
     if (!isDir(workspace) || hooks.beforeRemove === null) {
       return;
     }
-    ignoreHookFailure(
-      runHook(
-        hooks.beforeRemove,
-        workspace,
-        { issueId: null, issueIdentifier: path.basename(workspace) },
-        "before_remove",
-        null,
-      ),
-    );
+    ignoreHookFailure(runBeforeRemoveHook(workspace, path.basename(workspace), null));
     return;
   }
 
   if (hooks.beforeRemove === null) {
     return;
   }
-  const command = hooks.beforeRemove;
-  const script = [
-    remoteShellAssign("workspace", workspace),
-    'if [ -d "$workspace" ]; then',
-    '  cd "$workspace"',
-    `  ${command}`,
-    "fi",
-  ].join("\n");
-
-  const result = runRemoteCommand(workerHost, script, settingsBang().hooks.timeoutMs);
-  if (result.ok) {
-    const [output, status] = result.value;
-    ignoreHookFailure(
-      handleHookCommandResult(
-        [output, status],
-        workspace,
-        { issueId: null, issueIdentifier: path.basename(workspace) },
-        "before_remove",
-      ),
-    );
-  }
+  ignoreHookFailure(runBeforeRemoveHook(workspace, path.basename(workspace), workerHost));
   // Remote errors (including timeout) are ignored, matching ignore_hook_failure.
 }
 

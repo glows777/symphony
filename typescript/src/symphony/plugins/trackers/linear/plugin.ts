@@ -27,13 +27,15 @@ export const LinearPlugin: TrackerPlugin = {
   configSchema: {
     cast(raw: JsonMap, section: string): { value: JsonMap; errors: PluginFieldError[] } {
       const errors: PluginFieldError[] = [];
+      const provider = providerSection(raw);
+      const providerPath = provider === raw ? section : `${section}.provider`;
       const value: JsonMap = {
         endpoint:
-          castPluginString(raw, "endpoint", section, DEFAULT_LINEAR_ENDPOINT, errors) ??
+          castPluginString(provider, "endpoint", providerPath, DEFAULT_LINEAR_ENDPOINT, errors) ??
           DEFAULT_LINEAR_ENDPOINT,
-        api_key: castPluginString(raw, "api_key", section, null, errors),
-        project_slug: castPluginString(raw, "project_slug", section, null, errors),
-        assignee: castPluginString(raw, "assignee", section, null, errors),
+        api_key: castPluginString(provider, "api_key", providerPath, null, errors),
+        project_slug: castPluginString(provider, "project_slug", providerPath, null, errors),
+        assignee: castPluginString(provider, "assignee", providerPath, null, errors),
       };
       return { value, errors };
     },
@@ -116,4 +118,11 @@ No description provided.
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function providerSection(raw: JsonMap): JsonMap {
+  const provider = raw.provider;
+  return typeof provider === "object" && provider !== null && !Array.isArray(provider)
+    ? (provider as JsonMap)
+    : raw;
 }

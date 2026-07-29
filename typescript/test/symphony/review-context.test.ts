@@ -328,7 +328,7 @@ describe("GitHub review context", () => {
     expect(prompt).toContain("pullrequestreview-4794930421");
     expect(prompt).toContain("system-owned evidence");
     expect(prompt).toContain("finding_revision");
-    expect(prompt).toContain("Do not move the tracker issue to In Review");
+    expect(prompt).toContain("Do not move the tracker issue to Human Review");
   });
 
   test("requires every finding to have a fixed, deferred, or blocked result", () => {
@@ -741,7 +741,7 @@ describe("GitHub review context", () => {
     }
   });
 
-  test("re-fetches before completion and moves only a complete handoff to In Review", async () => {
+  test("re-fetches before completion and moves only a complete handoff to Human Review", async () => {
     writeWorkflowFile(workflowFilePath(), {
       tracker_kind: "memory",
       review_repository: "glows777/symphony",
@@ -820,7 +820,7 @@ describe("GitHub review context", () => {
       expect(outcome.ok).toBe(true);
       if (outcome.ok) expect(outcome.value.status).toBe("passed");
       expect(events).toEqual([
-        { tag: "memory_tracker_state_update", issueId: "issue-review", stateName: "In Review" },
+        { tag: "memory_tracker_state_update", issueId: "issue-review", stateName: "Human Review" },
       ]);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
@@ -951,7 +951,7 @@ describe("GitHub review context", () => {
         {
           tag: "memory_tracker_state_update",
           issueId: "issue-review-empty",
-          stateName: "In Review",
+          stateName: "Human Review",
         },
       ]);
     } finally {
@@ -1148,7 +1148,7 @@ describe("GitHub review context", () => {
         {
           tag: "memory_tracker_state_update",
           issueId: "issue-review-reply-retry",
-          stateName: "In Review",
+          stateName: "Human Review",
         },
       ]);
     } finally {
@@ -1259,7 +1259,7 @@ describe("GitHub review context", () => {
     });
     const events: unknown[] = [];
     putEnv("memory_tracker_recipient", (event: unknown) => events.push(event));
-    const issue = newIssue({ id: "issue-api-failure", identifier: "SYM-3", state: "In Review" });
+    const issue = newIssue({ id: "issue-api-failure", identifier: "SYM-3", state: "Human Review" });
     const context = fixture();
     const failed = await finalizeReviewRun(issue, context, workflowRoot, {
       requestFun: async () => ({ ok: false, error: new Error("network down") }),

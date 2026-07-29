@@ -2,7 +2,7 @@
 //
 // Review comments are external data. This module keeps them separate from the
 // workflow prompt, gives every finding a provider-stable id, and owns the
-// fail-closed gate that may move a review-triggered issue to In Review.
+// fail-closed gate that may move a review-triggered issue to Human Review.
 
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -506,7 +506,7 @@ export function renderReviewHandoffPrompt(context: ReviewContext): string {
     "   - `blocked`: include `blocked_reason` and the `decision_owner` who must decide.",
     "4. Do not add commit, test, approval, or reply receipt fields to the handoff; those are",
     "   system-owned evidence and unsupported fields fail validation.",
-    "5. Do not move the tracker issue to In Review yourself during this run. The system gate does",
+    "5. Do not move the tracker issue to Human Review yourself during this run. The system gate does",
     "   that only after the fresh snapshot and every finding result pass validation.",
     "",
     "Example handoff shape:",
@@ -658,10 +658,10 @@ export async function finalizeReviewRun(
       ),
     );
   }
-  const moved = await Tracker.updateIssueState(issue.id, "In Review");
+  const moved = await Tracker.updateIssueState(issue.id, "Human Review");
   if (!moved.ok) {
     return err(
-      reviewError("review_state_update_failed", "Unable to move the issue to In Review", {
+      reviewError("review_state_update_failed", "Unable to move the issue to Human Review", {
         reason: moved.error,
       }),
     );
