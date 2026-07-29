@@ -424,6 +424,40 @@ describe("AgentOutputStore", () => {
     );
   });
 
+  test("batches burst output writes instead of truncating at an event-count limit", async () => {
+    const store = new AgentOutputStore({
+      root: tempRoot(),
+      mode: "summary",
+      maxFileBytes: 4 * 1024 * 1024,
+    });
+    const run = store.startRun({
+      issueId: "issue-burst",
+      issueIdentifier: "BURST-1",
+      backend: "codex",
+      workerHost: null,
+      runId: "burst-run",
+    });
+    const eventCount = 512;
+
+    for (let index = 0; index < eventCount; index += 1) {
+      run.record(message({ payload: { message: `stream chunk ${index}` } }), 1, `Chunk ${index}`);
+    }
+    await run.finish("completed");
+
+    const metadata = store.latestRun("BURST-1");
+    expect(metadata?.truncated).toBe(false);
+    const events = fs
+      .readFileSync(metadata?.path ?? "", "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { seq: number; event: string });
+    expect(events).toHaveLength(eventCount + 2);
+    expect(events.map((event) => event.seq)).toEqual(
+      Array.from({ length: eventCount + 2 }, (_, index) => index + 1),
+    );
+    expect(events.at(-1)?.event).toBe("run_completed");
+  });
+
   test("marks payload truncation and stops at the file limit", async () => {
     const store = new AgentOutputStore({
       root: tempRoot(),

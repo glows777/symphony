@@ -12,7 +12,9 @@ const DEFAULT_MAX_EVENT_BYTES = 64 * 1024;
 const DEFAULT_MAX_FILE_BYTES = 64 * 1024 * 1024;
 const RECENT_EVENT_BUFFER_SIZE = 200;
 const FINISHED_RUN_CACHE_SIZE = 256;
-const MAX_PENDING_WRITES = 256;
+const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
+const MAX_WRITE_BATCH_BYTES = 256 * 1024;
+const WRITE_BATCH_DELAY_MS = 10;
 const RUN_METADATA_SUFFIX = ".meta.json";
 
 export type AgentOutputEvent = {
@@ -140,13 +142,23 @@ type PersistedRun = {
   maxEventBytes: number;
   maxFileBytes: number;
   writeChain: Promise<void>;
-  pendingWrites: number;
+  pendingWrites: PendingWrite[];
+  pendingWriteBytes: number;
+  bufferedWriteBytes: number;
+  writeFlushTimer: ReturnType<typeof setTimeout> | null;
   activeChatId: string | null;
   activeChatTurn: number | null;
   chatSequence: number;
   activeActivityIds: Map<string, string>;
   activitySequence: number;
 };
+
+type PendingWrite = {
+  filePath: string;
+  contents: string;
+};
+
+type TruncationReason = "file_size" | "write_queue";
 
 export class AgentOutputRun {
   constructor(
@@ -235,7 +247,10 @@ export class AgentOutputStore {
       maxEventBytes: this.maxEventBytes,
       maxFileBytes: this.maxFileBytes,
       writeChain: Promise.resolve(),
-      pendingWrites: 0,
+      pendingWrites: [],
+      pendingWriteBytes: 0,
+      bufferedWriteBytes: 0,
+      writeFlushTimer: null,
       activeChatId: null,
       activeChatTurn: null,
       chatSequence: 0,
@@ -480,6 +495,7 @@ export class AgentOutputStore {
     }
     state.closed = true;
     this.persistMetadata(state, true);
+    this.flushPendingWrites(state);
     this.pruneCachedRuns();
     await state.writeChain;
   }
@@ -558,10 +574,10 @@ export class AgentOutputStore {
         if (state.metadata.truncated || input.terminal === true) {
           return null;
         }
-        return this.appendTruncationMarker(state);
+        return this.appendTruncationMarker(state, "file_size");
       }
       if (!this.queueWrite(state, state.metadata.path, line, input.terminal === true)) {
-        return this.appendTruncationMarker(state);
+        return this.appendTruncationMarker(state, "write_queue");
       }
       state.fileBytes += lineBytes;
       state.metadata.size = state.fileBytes;
@@ -581,7 +597,11 @@ export class AgentOutputStore {
     }
   }
 
-  private appendTruncationMarker(state: PersistedRun): AgentOutputEvent | null {
+  private appendTruncationMarker(
+    state: PersistedRun,
+    reason: TruncationReason,
+  ): AgentOutputEvent | null {
+    const message = truncationMessage(reason);
     const marker = this.boundedEvent(state, {
       at: new Date().toISOString(),
       issue_id: state.metadata.issue_id ?? undefined,
@@ -591,7 +611,8 @@ export class AgentOutputStore {
       run_id: state.metadata.run_id,
       session_id: state.metadata.session_id ?? undefined,
       event: "log_truncated",
-      message: "Agent output log reached its file size limit",
+      message,
+      truncation_reason: reason,
       activity_type: "system",
       activity_status: "completed",
       truncated: true,
@@ -600,7 +621,7 @@ export class AgentOutputStore {
     const line = `${JSON.stringify(marker)}\n`;
     if (state.fileBytes + Buffer.byteLength(line, "utf8") > state.maxFileBytes) {
       state.metadata.truncated = true;
-      logger.warning(`Agent output log reached its file size limit: ${state.metadata.path}`);
+      logger.warning(`${message}: ${state.metadata.path}`);
       return null;
     }
     try {
@@ -612,7 +633,7 @@ export class AgentOutputStore {
       state.metadata.truncated = true;
       state.recent.push(marker);
       this.notify(state.metadata.issue_identifier, marker);
-      logger.warning(`Agent output log reached its file size limit: ${state.metadata.path}`);
+      logger.warning(`${message}: ${state.metadata.path}`);
       return marker;
     } catch (error) {
       logger.warning(
@@ -623,7 +644,10 @@ export class AgentOutputStore {
     }
   }
 
-  private truncationMarkerBytes(state: PersistedRun): number {
+  private truncationMarkerBytes(
+    state: PersistedRun,
+    reason: TruncationReason = "file_size",
+  ): number {
     const marker = {
       seq: state.seq + 1,
       at: new Date().toISOString(),
@@ -634,7 +658,8 @@ export class AgentOutputStore {
       run_id: state.metadata.run_id,
       session_id: state.metadata.session_id ?? undefined,
       event: "log_truncated",
-      message: "Agent output log reached its file size limit",
+      message: truncationMessage(reason),
+      truncation_reason: reason,
       activity_type: "system",
       activity_status: "completed",
       truncated: true,
@@ -834,7 +859,10 @@ export class AgentOutputStore {
       maxEventBytes: this.maxEventBytes,
       maxFileBytes: this.maxFileBytes,
       writeChain: Promise.resolve(),
-      pendingWrites: 0,
+      pendingWrites: [],
+      pendingWriteBytes: 0,
+      bufferedWriteBytes: 0,
+      writeFlushTimer: null,
       activeChatId: null,
       activeChatTurn: null,
       chatSequence: 0,
@@ -870,30 +898,74 @@ export class AgentOutputStore {
     contents: string,
     terminal = false,
   ): boolean {
-    if (state.pendingWrites >= MAX_PENDING_WRITES && !terminal) {
+    const writeBytes = Buffer.byteLength(contents, "utf8");
+    if (state.bufferedWriteBytes + writeBytes > MAX_PENDING_WRITE_BYTES && !terminal) {
       state.metadata.truncated = true;
-      logger.warning(`Agent output write queue reached its limit: ${state.metadata.path}`);
       return false;
     }
-    state.pendingWrites += 1;
+    state.pendingWrites.push({ filePath, contents });
+    state.pendingWriteBytes += writeBytes;
+    state.bufferedWriteBytes += writeBytes;
+    if (state.pendingWriteBytes >= MAX_WRITE_BATCH_BYTES) {
+      this.flushPendingWrites(state);
+    } else {
+      this.scheduleWriteFlush(state);
+    }
+    return true;
+  }
+
+  private scheduleWriteFlush(state: PersistedRun): void {
+    if (state.writeFlushTimer !== null) {
+      return;
+    }
+    state.writeFlushTimer = setTimeout(() => {
+      state.writeFlushTimer = null;
+      this.flushPendingWrites(state);
+    }, WRITE_BATCH_DELAY_MS);
+  }
+
+  private flushPendingWrites(state: PersistedRun): void {
+    if (state.writeFlushTimer !== null) {
+      clearTimeout(state.writeFlushTimer);
+      state.writeFlushTimer = null;
+    }
+    if (state.pendingWrites.length === 0) {
+      return;
+    }
+
+    const writes = state.pendingWrites;
+    const batchBytes = state.pendingWriteBytes;
+    state.pendingWrites = [];
+    state.pendingWriteBytes = 0;
+    const grouped = new Map<string, string>();
+    for (const write of writes) {
+      if (write.filePath.endsWith(RUN_METADATA_SUFFIX)) {
+        grouped.set(write.filePath, write.contents);
+      } else {
+        grouped.set(write.filePath, `${grouped.get(write.filePath) ?? ""}${write.contents}`);
+      }
+    }
+
     state.writeChain = state.writeChain
       .then(async () => {
-        await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-        if (filePath.endsWith(RUN_METADATA_SUFFIX)) {
-          await fs.promises.writeFile(filePath, contents, "utf8");
-        } else {
-          await fs.promises.appendFile(filePath, contents, "utf8");
+        for (const [filePath, contents] of grouped) {
+          try {
+            await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+            if (filePath.endsWith(RUN_METADATA_SUFFIX)) {
+              await fs.promises.writeFile(filePath, contents, "utf8");
+            } else {
+              await fs.promises.appendFile(filePath, contents, "utf8");
+            }
+          } catch (error) {
+            logger.warning(
+              `Agent output log write failed for ${state.metadata.issue_identifier}: ${inspect(error)}`,
+            );
+          }
         }
       })
-      .catch((error) => {
-        logger.warning(
-          `Agent output log write failed for ${state.metadata.issue_identifier}: ${inspect(error)}`,
-        );
-      })
       .finally(() => {
-        state.pendingWrites -= 1;
+        state.bufferedWriteBytes = Math.max(0, state.bufferedWriteBytes - batchBytes);
       });
-    return true;
   }
 
   private persistMetadata(state: PersistedRun, terminal = false): void {
@@ -1020,6 +1092,12 @@ function statusFromEvent(event: string | undefined): AgentOutputRunMetadata["sta
     default:
       return "running";
   }
+}
+
+function truncationMessage(reason: TruncationReason): string {
+  return reason === "write_queue"
+    ? "Agent output write queue reached its buffered-byte limit"
+    : "Agent output log reached its file size limit";
 }
 
 function normalizeMessageEvent(event: string, message: AgentMessage): string {
