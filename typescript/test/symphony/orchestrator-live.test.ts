@@ -226,6 +226,25 @@ describe("Orchestrator live (core_test)", () => {
     expectDueInRange(retry?.due_at_ms ?? 0, 9_000, 10_500);
   });
 
+  test("abnormal Review Agent exit preserves the review retry kind", async () => {
+    const orch = makeOrchestrator();
+    const issueId = "issue-review-crash";
+    const ref = Symbol("ref");
+    injectRunning(orch, issueId, {
+      task: stoppableTask(),
+      ref,
+      identifier: "MT-REVIEW-CRASH",
+      issue: newIssue({ id: issueId, identifier: "MT-REVIEW-CRASH", state: "Human Review" }),
+      run_kind: "review",
+      started_at: new Date(),
+    });
+
+    await orch.cast({ tag: "down", ref, reason: ":boom" });
+
+    const retry = orch.getState().retry_attempts[issueId];
+    expect(retry?.run_kind).toBe("review");
+  });
+
   test("stale retry timer messages do not consume newer retry entries", async () => {
     const orch = makeOrchestrator();
     const issueId = "issue-stale-retry";
@@ -333,6 +352,52 @@ describe("Orchestrator live (core_test)", () => {
 
     backend.resume();
     await waitFor(() => !("issue-review-edge" in orch.getState().running));
+  });
+
+  test("review retry restores the Review Agent path from retry state", async () => {
+    const backend = blockingBackend();
+    putEnv("agent_backend_overrides", { codex: backend.plugin });
+    writeWorkflowFile(workflowFilePath(), {
+      tracker_kind: "memory",
+      tracker_required_labels: ["symphony"],
+      workspace_root: path.join(root, "review-retry-workspaces"),
+    });
+    const issueId = "issue-review-retry";
+    const issue = newIssue({
+      id: issueId,
+      identifier: "MT-REVIEW-RETRY",
+      title: "Review retry",
+      state: "Human Review",
+      labels: ["symphony"],
+    });
+    putEnv("memory_tracker_issues", [issue]);
+    const retryToken = Symbol("review-retry");
+    const orch = makeOrchestrator();
+    orch.replaceState((state) => ({
+      ...state,
+      claimed: new Set([issueId]),
+      retry_attempts: {
+        [issueId]: {
+          attempt: 2,
+          timer_ref: null,
+          retry_token: retryToken,
+          due_at_ms: nowMs(),
+          identifier: issue.identifier,
+          issue_url: issue.url,
+          error: "agent exited: :boom",
+          run_kind: "review",
+        },
+      },
+    }));
+
+    await orch.cast({ tag: "retry_issue", issueId, retryToken });
+    await waitFor(() => backend.turns.length === 1);
+
+    expect(orch.getState().running[issueId]?.run_kind).toBe("review");
+    expect(orch.getState().retry_attempts[issueId]).toBeUndefined();
+
+    backend.resume();
+    await waitFor(() => !(issueId in orch.getState().running));
   });
 
   test("normal Review Agent completion releases the issue for future state polling", async () => {

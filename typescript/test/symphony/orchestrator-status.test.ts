@@ -560,6 +560,40 @@ describe("Orchestrator status / live GenServer", () => {
     expect(retry?.due_at_ms).toBeLessThanOrEqual(beforePollMs + 10_500);
   });
 
+  test("restarts stalled Review Agents with the review retry kind", async () => {
+    writeWorkflowFile(workflowFilePath(), {
+      tracker_api_token: null,
+      codex_stall_timeout_ms: 1_000,
+    });
+    const orch = makeOrchestrator();
+    const issueId = "issue-review-stall";
+    const staleAt = new Date(Date.now() - 5_000);
+    injectRunning(
+      orch,
+      issueId,
+      runningEntry({
+        identifier: "MT-REVIEW-STALL",
+        issue: newIssue({
+          id: issueId,
+          identifier: "MT-REVIEW-STALL",
+          state: "Human Review",
+          url: "https://example.org/issues/MT-REVIEW-STALL",
+        }),
+        run_kind: "review",
+        session_id: "thread-review-stall-turn-review-stall",
+        last_codex_timestamp: staleAt,
+        last_codex_event: "notification",
+        started_at: staleAt,
+      }),
+    );
+
+    await orch.cast({ tag: "run_poll_cycle" });
+    await waitForState(orch, (s) => !(issueId in s.running));
+
+    const retry = orch.getState().retry_attempts[issueId];
+    expect(retry?.run_kind).toBe("review");
+  });
+
   test("blocks stalled workers that are waiting on MCP elicitation", async () => {
     writeWorkflowFile(workflowFilePath(), {
       tracker_api_token: null,

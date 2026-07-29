@@ -2072,6 +2072,7 @@ export class Orchestrator {
       identifier,
       issue_url: isIssue(entry.issue) ? entry.issue.url : null,
       error: `stalled for ${elapsedMs}ms without codex activity`,
+      run_kind: entry.run_kind ?? "normal",
     });
   }
 
@@ -2425,6 +2426,7 @@ export class Orchestrator {
     const error = metadata.error ?? previous.error ?? null;
     const workerHost = metadata.worker_host ?? previous.worker_host ?? null;
     const workspacePath = metadata.workspace_path ?? previous.workspace_path ?? null;
+    const runKind = metadata.run_kind ?? previous.run_kind;
 
     if (oldTimer) {
       clearTimeout(oldTimer);
@@ -2455,6 +2457,7 @@ export class Orchestrator {
           error,
           worker_host: workerHost,
           workspace_path: workspacePath,
+          ...(runKind === undefined ? {} : { run_kind: runKind }),
         },
       },
     };
@@ -2518,6 +2521,7 @@ function popRetryAttemptState(
       error: entry.error ?? null,
       worker_host: entry.worker_host ?? null,
       workspace_path: entry.workspace_path ?? null,
+      ...(entry.run_kind === undefined ? {} : { run_kind: entry.run_kind }),
     };
     return {
       ok: true,
