@@ -9,11 +9,11 @@ type RunTimelineProps = {
 };
 
 export function RunTimeline({ events, messages, loading, error }: RunTimelineProps) {
-  const [expanded, setExpanded] = useState<string | null>(null);
   const [fresh, setFresh] = useState<Set<string>>(new Set());
   const messageItems = useMemo(() => sortMessages(messages), [messages]);
+  const visibleMessageItems = useMemo(() => messageItems.filter(isVisibleActivity), [messageItems]);
   const eventItems = useMemo(() => sortEvents(events), [events]);
-  const latestKey = latestItemKey(eventItems, messageItems);
+  const latestKey = latestItemKey(eventItems, visibleMessageItems);
   const streaming = messages.some((message) => activityStatus(message) === "streaming");
 
   useEffect(() => {
@@ -39,120 +39,63 @@ export function RunTimeline({ events, messages, loading, error }: RunTimelinePro
           <h2 id="transcript-heading">Conversation</h2>
         </div>
         <div className="transcript-heading-meta">
-          <span className="transcript-count numeric">{messages.length} activities</span>
+          <span className="transcript-count numeric">{visibleMessageItems.length} activities</span>
           <span className="transcript-mode">{streaming ? "Streaming" : "Complete"}</span>
         </div>
       </div>
       {error ? <div className="inline-warning">{error}</div> : null}
-      {loading && messageItems.length === 0 && eventItems.length === 0 ? (
+      {loading && visibleMessageItems.length === 0 ? (
         <div className="transcript-empty transcript-pending">
           <span className="pending-line" />
           <span>Reading the latest agent output…</span>
         </div>
-      ) : messageItems.length === 0 ? (
-        <>
-          <div className="transcript-empty">
-            <span className="empty-glyph">⌁</span>
-            <p>No conversation yet</p>
-            <span>Raw events are available below.</span>
-          </div>
-          <RunEventsDetails
-            events={eventItems}
-            expanded={expanded}
-            fresh={fresh}
-            onToggle={(key) => setExpanded(expanded === key ? null : key)}
-          />
-        </>
+      ) : visibleMessageItems.length === 0 ? (
+        <div className="transcript-empty">
+          <span className="empty-glyph">⌁</span>
+          <p>No conversation yet</p>
+        </div>
       ) : (
-        <>
-          <div className="transcript-list">
-            {messageItems.map((message) => (
-              <ActivityRow
-                message={message}
-                key={messageKey(message)}
-                fresh={fresh.has(messageKey(message))}
-              />
-            ))}
-          </div>
-          <RunEventsDetails
-            events={eventItems}
-            expanded={expanded}
-            fresh={fresh}
-            onToggle={(key) => setExpanded(expanded === key ? null : key)}
-          />
-        </>
+        <div className="transcript-list">
+          {visibleMessageItems.map((message) => (
+            <ActivityRow
+              events={eventItems}
+              message={message}
+              key={messageKey(message)}
+              fresh={fresh.has(messageKey(message))}
+            />
+          ))}
+        </div>
       )}
     </section>
   );
 }
 
-function RunEventsDetails({
+function ActivityRow({
   events,
-  expanded,
+  message,
   fresh,
-  onToggle,
 }: {
   events: AgentOutputEvent[];
-  expanded: string | null;
-  fresh: Set<string>;
-  onToggle: (key: string) => void;
+  message: AgentOutputMessage;
+  fresh: boolean;
 }) {
-  if (events.length === 0) {
-    return null;
-  }
-  return (
-    <details className="run-events-details">
-      <summary>
-        <span>Run events</span>
-        <span className="run-events-count numeric">{events.length}</span>
-      </summary>
-      <div className="run-events-list">
-        {events.map((event) => {
-          const key = eventKey(event);
-          return (
-            <EventRow
-              event={event}
-              key={key}
-              expanded={expanded === key}
-              fresh={fresh.has(key)}
-              onToggle={() => onToggle(key)}
-            />
-          );
-        })}
-      </div>
-    </details>
-  );
-}
-
-function ActivityRow({ message, fresh }: { message: AgentOutputMessage; fresh: boolean }) {
   switch (activityType(message)) {
     case "thinking":
       return <ThinkingRow message={message} fresh={fresh} />;
     case "tool_call":
-      return <ToolCallRow message={message} fresh={fresh} />;
+      return <ToolCallRow events={events} message={message} fresh={fresh} />;
     default:
       return <ChatMessageRow message={message} fresh={fresh} />;
   }
 }
 
-function ChatMessageRow({
-  message,
-  fresh,
-}: {
-  message: AgentOutputMessage;
-  fresh: boolean;
-}) {
+function ChatMessageRow({ message, fresh }: { message: AgentOutputMessage; fresh: boolean }) {
   const streaming = activityStatus(message) === "streaming";
   return (
     <article
       className={`chat-message${fresh ? " chat-message-fresh" : ""}`}
       aria-label={`${streaming ? "Streaming" : "Completed"} assistant message`}
     >
-      <div className="chat-message-header">
-        <span className="chat-message-author">{backendLabel(message.backend)}</span>
-        <span className="chat-message-time numeric">{formatTime(message.updated_at)}</span>
-        <span className="chat-message-state">{statusLabel(message)}</span>
-      </div>
       <div
         className="chat-message-body"
         style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
@@ -177,115 +120,71 @@ function ThinkingRow({
   fresh: boolean;
 }) {
   const streaming = activityStatus(message) === "streaming";
+
   return (
     <details
       className={`activity-row thinking-row${fresh ? " activity-row-fresh" : ""}`}
       aria-label={`${statusLabel(message)} reasoning summary`}
     >
       <summary>
+        <span className="activity-icon activity-icon-thinking" aria-hidden="true" />
         <span className="activity-label">Thinking</span>
-        <span className="activity-time numeric">{formatTime(message.updated_at)}</span>
-        <span className="activity-status">{statusLabel(message)}</span>
       </summary>
-      {message.content !== "" ? (
-        <div
-          className="activity-body"
-          style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
-          aria-live={streaming ? "polite" : undefined}
-        >
-          {message.content}
-          {streaming ? (
-            <span className="chat-caret" aria-hidden="true">
-              ▋
-            </span>
-          ) : null}
-        </div>
-      ) : null}
+      <div
+        className="activity-body"
+        style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+        aria-live={streaming ? "polite" : undefined}
+      >
+        {message.content}
+        {streaming ? (
+          <span className="chat-caret" aria-hidden="true">
+            ▋
+          </span>
+        ) : null}
+      </div>
     </details>
   );
 }
 
 function ToolCallRow({
+  events,
   message,
   fresh,
 }: {
+  events: AgentOutputEvent[];
   message: AgentOutputMessage;
   fresh: boolean;
 }) {
-  const name = message.tool_name ?? (message.tool_command ? "Command" : "Tool call");
+  const label = toolActivityLabel(message, events);
   const streaming = activityStatus(message) === "streaming";
+  const hasDetails =
+    message.tool_error !== undefined ||
+    message.tool_output !== undefined ||
+    message.tool_input !== undefined;
   return (
     <article
       className={`activity-row tool-row tool-row-${activityStatus(message)}${fresh ? " activity-row-fresh" : ""}`}
-      aria-label={`${statusLabel(message)} tool call`}
+      aria-label={`${statusLabel(message)} tool call: ${label}`}
     >
       <div className="activity-header">
-        <span className="activity-label">{name}</span>
-        <span className="activity-time numeric">{formatTime(message.updated_at)}</span>
-        <span className="activity-status">{statusLabel(message)}</span>
+        <span className="activity-icon activity-icon-tool" aria-hidden="true" />
+        <span className="activity-label">{label}</span>
       </div>
-      {message.tool_command ? <code className="tool-command">{message.tool_command}</code> : null}
-      {message.tool_error ? <p className="tool-error">{message.tool_error}</p> : null}
-      {message.tool_output ? (
-        <pre className="tool-output" aria-live={streaming ? "polite" : undefined}>
-          {message.tool_output}
-          {streaming ? "▋" : ""}
-        </pre>
-      ) : null}
-      {message.tool_input !== undefined ? (
-        <details className="tool-input-details">
-          <summary>Input</summary>
-          <pre>{formatPayload(message.tool_input)}</pre>
-        </details>
-      ) : null}
-    </article>
-  );
-}
-
-function EventRow({
-  event,
-  expanded,
-  fresh,
-  onToggle,
-}: {
-  event: AgentOutputEvent;
-  expanded: boolean;
-  fresh: boolean;
-  onToggle: () => void;
-}) {
-  const hasPayload = event.payload !== undefined || event.raw !== undefined;
-  const command = commandFromPayload(event.payload);
-
-  return (
-    <article
-      className={`run-event-row run-event-row-${toneFor(event.event)}${fresh ? " run-event-row-fresh" : ""}`}
-    >
-      <div className="run-event-header">
-        <span className="run-event-label">{eventLabel(event.event)}</span>
-        <span className="run-event-time numeric">{formatTime(event.at)}</span>
-        <span className="run-event-sequence numeric">#{event.seq}</span>
-      </div>
-      <p className="run-event-message">{event.message ?? command ?? "Agent event"}</p>
-      <div className="run-event-meta">
-        <span>{backendLabel(event.backend)}</span>
-        <span>{event.stream ?? "agent"}</span>
-        {event.turn !== undefined ? <span>turn {event.turn}</span> : null}
-        {event.session_id ? (
-          <span className="event-session mono">{compactId(event.session_id)}</span>
-        ) : null}
-      </div>
-      {hasPayload ? (
-        <details
-          className="payload-details"
-          open={expanded}
-          onToggle={(e) => {
-            if (e.currentTarget.open !== expanded) {
-              onToggle();
-            }
-          }}
-        >
-          <summary>Raw payload</summary>
-          <pre>{formatPayload(event.payload ?? event.raw)}</pre>
+      {hasDetails ? (
+        <details className="tool-details">
+          <summary>Details</summary>
+          {message.tool_error ? <p className="tool-error">{message.tool_error}</p> : null}
+          {message.tool_output ? (
+            <pre className="tool-output" aria-live={streaming ? "polite" : undefined}>
+              {message.tool_output}
+              {streaming ? "▋" : ""}
+            </pre>
+          ) : null}
+          {message.tool_input !== undefined ? (
+            <pre className="tool-input" aria-label="Tool input">
+              {formatPayload(message.tool_input)}
+            </pre>
+          ) : null}
         </details>
       ) : null}
     </article>
@@ -331,6 +230,14 @@ function activityType(
   return message.activity_type ?? "assistant_message";
 }
 
+export function isVisibleActivity(message: AgentOutputMessage): boolean {
+  return activityType(message) !== "thinking" || hasThinkingSummary(message.content);
+}
+
+export function hasThinkingSummary(content: string): boolean {
+  return content.trim() !== "";
+}
+
 function activityStatus(message: AgentOutputMessage): AgentOutputMessage["status"] {
   return message.activity_status ?? message.status;
 }
@@ -340,54 +247,147 @@ function statusLabel(message: AgentOutputMessage): string {
   return status === "failed" ? "Failed" : status === "completed" ? "Completed" : "Streaming";
 }
 
-function eventLabel(event: string): string {
-  return event.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function toneFor(event: string): string {
-  if (
-    event.includes("fail") ||
-    event.includes("timeout") ||
-    event === "port_exit" ||
-    event.includes("blocked")
-  ) {
-    return "danger";
+export function toolActivityLabel(message: AgentOutputMessage, events: AgentOutputEvent[]): string {
+  const relatedEvents = events.filter(
+    (event) =>
+      (message.activity_id !== undefined && event.activity_id === message.activity_id) ||
+      (event.seq >= message.seq_start && event.seq <= message.seq_end),
+  );
+  const name = firstText([
+    message.tool_name,
+    textAtPaths(message.tool_input, toolNamePaths),
+    ...relatedEvents.map((event) => event.tool_name),
+    ...relatedEvents.map((event) => textAtPaths(event.payload, toolNamePaths)),
+    ...relatedEvents.map((event) => textAtPaths(parseRawPayload(event.raw), toolNamePaths)),
+  ]);
+  const command = firstText([
+    message.tool_command,
+    textAtPaths(message.tool_input, toolCommandPaths),
+    ...relatedEvents.map((event) => event.tool_command),
+    ...relatedEvents.map((event) => textAtPaths(event.payload, toolCommandPaths)),
+    ...relatedEvents.map((event) => textAtPaths(parseRawPayload(event.raw), toolCommandPaths)),
+  ]);
+  if (command !== undefined && command !== "") {
+    return toolCommandLabel(command, name);
   }
-  if (event.includes("approval") || event.includes("required") || event === "log_truncated") {
-    return "attention";
+  if (name !== undefined) {
+    return name;
   }
-  if (event.includes("completed") || event.includes("started")) {
-    return "success";
+  const summary = firstText(relatedEvents.map((event) => event.message));
+  return toolSummaryLabel(summary) ?? "Used a tool";
+}
+
+function toolCommandLabel(command: string, name: string | undefined): string {
+  const shellCommand = unwrapShellCommand(command);
+  if (shellCommand !== null) {
+    const summary = summarizeShellCommand(shellCommand);
+    return isGenericToolName(name) ? summary : `${name} ${summary}`;
   }
-  return "neutral";
+  return name === undefined ? `Ran ${command}` : `${name} ${command}`;
 }
 
-function backendLabel(backend: string): string {
-  return backend === "claude_code" ? "Claude Code" : backend === "codex" ? "Codex" : backend;
-}
-
-function formatTime(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? value
-    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-function compactId(value: string): string {
-  return value.length > 26 ? `${value.slice(0, 11)}…${value.slice(-8)}` : value;
-}
-
-function commandFromPayload(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+function unwrapShellCommand(command: string): { shell: string; body: string } | null {
+  const match = command.match(/^(?:\/bin\/)?(bash|zsh|sh)\s+-lc\s+([\s\S]+)$/i);
+  if (match === null) {
     return null;
   }
-  const record = payload as Record<string, unknown>;
-  for (const key of ["command", "cmd", "tool", "name", "method"]) {
-    if (typeof record[key] === "string" && record[key] !== "") {
-      return record[key] as string;
+  const body = match[2].trim();
+  if (
+    (body.startsWith('"') && body.endsWith('"')) ||
+    (body.startsWith("'") && body.endsWith("'"))
+  ) {
+    return { shell: match[1].toLowerCase(), body: body.slice(1, -1) };
+  }
+  return { shell: match[1].toLowerCase(), body };
+}
+
+function summarizeShellCommand(command: { shell: string; body: string }): string {
+  const body = command.body.replace(/\s+/g, " ").trim();
+  if (/\b(?:sed|cat|head|tail|less|more)\b/i.test(body)) {
+    return "Read files";
+  }
+  if (/\b(?:rg|grep)\b/i.test(body)) {
+    return "Searched the codebase";
+  }
+  if (/\bgit\s+status\b/i.test(body)) {
+    return "Checked git status";
+  }
+  if (/\bgit\s+diff\b/i.test(body)) {
+    return "Reviewed changes";
+  }
+  return `Ran ${body}`;
+}
+
+function isGenericToolName(name: string | undefined): boolean {
+  return (
+    name === undefined ||
+    /^(?:bash|command|exec_command|run|shell|sh|tool|tool_call|zsh)$/i.test(name)
+  );
+}
+
+function toolSummaryLabel(summary: string | undefined): string | undefined {
+  if (summary === undefined) {
+    return undefined;
+  }
+  const match = summary.match(/\b(?:dynamic|mcp) tool call[^()]*\(([^()]+)\)\s*$/i);
+  return match?.[1]?.trim() || summary;
+}
+
+const toolNamePaths = [
+  ["tool_name"],
+  ["toolName"],
+  ["name"],
+  ["tool"],
+  ["params", "name"],
+  ["params", "tool"],
+  ["params", "toolName"],
+  ["params", "item", "name"],
+  ["params", "item", "toolName"],
+  ["params", "msg", "name"],
+  ["params", "msg", "toolName"],
+];
+
+const toolCommandPaths = [
+  ["command"],
+  ["cmd"],
+  ["params", "command"],
+  ["params", "cmd"],
+  ["params", "item", "command"],
+  ["params", "item", "cmd"],
+  ["params", "msg", "command"],
+  ["params", "msg", "cmd"],
+];
+
+function firstText(values: Array<string | null | undefined>): string | undefined {
+  return values.find((value) => typeof value === "string" && value.trim() !== "")?.trim();
+}
+
+function textAtPaths(value: unknown, paths: string[][]): string | undefined {
+  for (const path of paths) {
+    let current = value;
+    for (const key of path) {
+      if (typeof current !== "object" || current === null || Array.isArray(current)) {
+        current = undefined;
+        break;
+      }
+      current = (current as Record<string, unknown>)[key];
+    }
+    if (typeof current === "string" && current.trim() !== "") {
+      return current.trim();
     }
   }
-  return null;
+  return undefined;
+}
+
+function parseRawPayload(raw: string | undefined): unknown {
+  if (raw === undefined || raw.trim() === "") {
+    return undefined;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
 }
 
 function formatPayload(value: unknown): string {

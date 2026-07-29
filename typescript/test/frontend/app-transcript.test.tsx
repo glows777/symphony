@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { mergeLiveOutput, withTranscript } from "../../frontend/src/App.tsx";
+import {
+  hasThinkingSummary,
+  isVisibleActivity,
+  toolActivityLabel,
+} from "../../frontend/src/components/RunTimeline.tsx";
 import type {
   AgentOutputEvent,
   AgentOutputMessage,
@@ -133,5 +138,79 @@ describe("frontend transcript merge", () => {
       tool_output: "pass\n",
       status: "completed",
     });
+  });
+
+  test("only marks thinking as collapsible when a summary exists", () => {
+    expect(hasThinkingSummary(" \n")).toBe(false);
+    expect(hasThinkingSummary("Checked the run state.")).toBe(true);
+    expect(isVisibleActivity(message({ activity_type: "thinking", content: " \n" }))).toBe(false);
+    expect(
+      isVisibleActivity(message({ activity_type: "thinking", content: "Checked the run state." })),
+    ).toBe(true);
+  });
+
+  test("recovers a tool command from a related raw event", () => {
+    const tool = message({
+      message_id: "cmd-2",
+      activity_id: "cmd-2",
+      activity_type: "tool_call",
+      activity_status: "completed",
+      status: "completed",
+      seq_start: 7,
+      seq_end: 7,
+    });
+    const related = event({
+      seq: 7,
+      activity_id: "cmd-2",
+      raw: JSON.stringify({
+        params: { command: "bun test test/frontend/app-transcript.test.tsx" },
+      }),
+    });
+
+    expect(toolActivityLabel(tool, [related])).toBe(
+      "Ran bun test test/frontend/app-transcript.test.tsx",
+    );
+  });
+
+  test("reduces a legacy tool event summary to its tool name", () => {
+    const tool = message({
+      message_id: "cmd-3",
+      activity_id: "cmd-3",
+      activity_type: "tool_call",
+      activity_status: "completed",
+      status: "completed",
+      seq_start: 8,
+      seq_end: 8,
+    });
+    const related = event({
+      seq: 8,
+      activity_id: "cmd-3",
+      message: "dynamic tool call requested (linear_graphql)",
+    });
+
+    expect(toolActivityLabel(tool, [related])).toBe("linear_graphql");
+  });
+
+  test("humanizes shell wrapper commands into a compact tool summary", () => {
+    const tool = message({
+      message_id: "cmd-4",
+      activity_id: "cmd-4",
+      activity_type: "tool_call",
+      activity_status: "completed",
+      status: "completed",
+      seq_start: 9,
+      seq_end: 9,
+    });
+    const related = event({
+      seq: 9,
+      activity_id: "cmd-4",
+      raw: JSON.stringify({
+        params: {
+          command: "/bin/zsh -lc \"sed -n '1,20p' typescript/src/symphony/orchestrator.ts\"",
+        },
+      }),
+    });
+
+    expect(toolActivityLabel(tool, [related])).toBe("Read files");
   });
 });
