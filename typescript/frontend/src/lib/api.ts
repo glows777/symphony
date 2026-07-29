@@ -22,7 +22,25 @@ export type RunItem = {
     total_tokens?: number;
   };
   error?: string | null;
+  blocked_reason?: string | null;
+  disposition?: "blocked" | "retryable" | "terminal" | string | null;
+  operator_prompt?: string | null;
+  raw_blocker_payload?: unknown;
+  manual_recovery?: ManualRecovery | null;
+  retry_attempt?: number | null;
   path?: string | null;
+};
+
+export type ManualRecovery = {
+  action?: string;
+  reason?: string;
+  prompt?: string | null;
+  payload?: unknown;
+  session_id?: string | null;
+  automatic_retry?: boolean;
+  resume_supported?: boolean;
+  rerun_supported?: boolean;
+  rerun_endpoint?: string | null;
 };
 
 export type AgentOutputEvent = {
@@ -130,6 +148,14 @@ export type IssueDetail = {
   last_error?: string | null;
 };
 
+export type RerunBlockedPayload = {
+  queued: true;
+  issue_id: string;
+  issue_identifier: string | null;
+  requested_at: string | null;
+  operation: "rerun_blocked";
+};
+
 export type OutputPayload = {
   events: AgentOutputEvent[];
   messages?: AgentOutputMessage[];
@@ -154,6 +180,15 @@ export async function getIssue(identifier: string, signal?: AbortSignal): Promis
 
 export async function getOutput(identifier: string, signal?: AbortSignal): Promise<OutputPayload> {
   return getOutputForRun(identifier, null, signal);
+}
+
+export async function rerunBlockedIssue(
+  identifier: string,
+  signal?: AbortSignal,
+): Promise<RerunBlockedPayload> {
+  return fetchJson<RerunBlockedPayload>(`/api/v1/${encodeURIComponent(identifier)}/rerun`, signal, {
+    method: "POST",
+  });
 }
 
 export async function getOutputForRun(
@@ -203,8 +238,10 @@ export function subscribeToOutput(
   };
 }
 
-async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, { signal, headers: { accept: "application/json" } });
+async function fetchJson<T>(url: string, signal?: AbortSignal, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  headers.set("accept", "application/json");
+  const response = await fetch(url, { ...init, signal, headers });
   const body = (await response.json()) as T | { error?: { message?: string } };
   if (!response.ok) {
     const message =

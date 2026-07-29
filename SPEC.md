@@ -613,6 +613,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `agent.max_concurrent_agents`: integer, default `10`
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
+- `agent.max_retry_attempts`: integer, default `3`
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
 - `codex.command`: shell command string, default `codex app-server`
 - `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
@@ -645,7 +646,14 @@ claim state.
 4. `RetryQueued`
    - Worker is not running, but a retry timer exists in `retry_attempts`.
 
-5. `Released`
+5. `Blocked`
+   - Worker is not running and no retry timer exists.
+   - Used for operator input / approval requests, deterministic failures, and exhausted retryable
+     failures.
+   - Snapshot/API rows preserve the session id, original blocker payload, prompt text when present,
+     failure disposition, and explicit manual rerun metadata.
+
+6. `Released`
    - Claim removed because issue is terminal, non-active, missing, or retry path completed without
      re-dispatch.
 
@@ -698,7 +706,13 @@ Distinct terminal reasons are important because retry logic and logs differ.
 - `Worker Exit (abnormal)`
   - Remove running entry.
   - Update aggregate runtime totals.
-  - Schedule exponential-backoff retry.
+  - Classify the failure before scheduling:
+    - `blocked`: operator input / approval, cancellation, config/permission/validation/tool errors.
+    - `retryable`: explicit transient failures such as `turn_timeout`, `response_timeout`,
+      `port_exit`, network disconnects, and HTTP 429/5xx.
+    - `terminal`: retryable failures after `agent.max_retry_attempts`.
+  - Only `retryable` failures schedule exponential-backoff retry.
+  - `blocked` and `terminal` failures enter the blocked map and do not auto-dispatch.
 
 - `Codex Update Event`
   - Update live session fields, token counters, and rate limits.
@@ -710,7 +724,8 @@ Distinct terminal reasons are important because retry logic and logs differ.
   - Stop runs whose issue states are terminal or no longer active.
 
 - `Stall Timeout`
-  - Kill worker and schedule retry.
+  - Kill worker and schedule retry, unless the last preserved agent event indicates operator input
+    or approval is required; that path enters `Blocked`.
 
 ### 7.4 Idempotency and Recovery Rules
 
@@ -781,12 +796,16 @@ Retry entry creation:
 
 - Cancel any existing retry timer for the same issue.
 - Store `attempt`, `identifier`, `error`, `due_at_ms`, and new timer handle.
+- Only retry entries marked as retryable failures count against `agent.max_retry_attempts`.
+- Normal continuation retries are not capped by `agent.max_retry_attempts`.
 
 Backoff formula:
 
 - Normal continuation retries after a clean worker exit use a short fixed delay of `1000` ms.
 - Failure-driven retries use `delay = min(10000 * 2^(attempt - 1), agent.max_retry_backoff_ms)`.
 - Power is capped by the configured max retry backoff (default `300000` / 5m).
+- When the next retry attempt would exceed `agent.max_retry_attempts`, the issue enters blocked
+  state with disposition `terminal` and the final error remains visible in snapshots.
 
 Retry handling behavior:
 
@@ -795,7 +814,8 @@ Retry handling behavior:
 3. If not found, release claim.
 4. If found and still candidate-eligible:
    - Dispatch if slots are available.
-   - Otherwise requeue with error `no available orchestrator slots`.
+   - Otherwise requeue the same launch attempt with error `no available orchestrator slots`; capacity
+     waits do not consume retry attempts.
 5. If found but no longer active, release claim.
 
 Note:
@@ -815,6 +835,8 @@ Part A: Stall detection
   - `last_codex_timestamp` if any event has been seen, else
   - `started_at`
 - If `elapsed_ms > codex.stall_timeout_ms`, terminate the worker and queue a retry.
+- If the last preserved agent event is `turn_input_required`, `approval_required`, or an MCP
+  elicitation request, terminate the worker and enter blocked state instead of retrying.
 - If `stall_timeout_ms <= 0`, skip stall detection entirely.
 
 Part B: Tracker state refresh
@@ -1147,6 +1169,7 @@ Error mapping (RECOMMENDED normalized categories):
 - `turn_failed`
 - `turn_cancelled`
 - `turn_input_required`
+- `approval_required`
 
 ### 10.7 Agent Runner Contract
 
@@ -1158,7 +1181,8 @@ Behavior:
 2. Build prompt from workflow template.
 3. Start app-server session.
 4. Forward app-server events to orchestrator.
-5. On any error, fail the worker attempt (the orchestrator will retry).
+5. On any error, fail the worker attempt; the orchestrator classifies the failure as blocked,
+   retryable, or terminal.
 
 Note:
 
@@ -1279,7 +1303,8 @@ instructions for:
 If prompt rendering fails:
 
 - Fail the run attempt immediately.
-- Let the orchestrator treat it like any other worker failure and decide retry behavior.
+- Let the orchestrator classify it as a deterministic failure unless a specific retryable signal is
+  present.
 
 ## 13. Logging, Status, and Observability
 
@@ -1918,10 +1943,15 @@ on_worker_exit(issue_id, reason, state):
       delay_type: continuation
     })
   else:
-    state = schedule_retry(state, issue_id, next_attempt_from(running_entry), {
-      identifier: running_entry.identifier,
-      error: format("worker exited: %reason")
-    })
+    disposition = classify_failure(reason, running_entry)
+    if disposition is retryable:
+      state = schedule_retry(state, issue_id, next_attempt_from(running_entry), {
+        identifier: running_entry.identifier,
+        error: disposition.error,
+        retry_class: retryable
+      })
+    else:
+      state.blocked[issue_id] = blocked_entry(running_entry, disposition)
 
   notify_observers()
   return state
@@ -1946,7 +1976,7 @@ on_retry_timer(issue_id, state):
     return state
 
   if available_slots(state) == 0:
-    return schedule_retry(state, issue_id, retry_entry.attempt + 1, {
+    return schedule_retry(state, issue_id, retry_entry.attempt, {
       identifier: issue.identifier,
       error: "no available orchestrator slots"
     })
