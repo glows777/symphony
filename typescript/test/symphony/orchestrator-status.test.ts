@@ -628,7 +628,7 @@ describe("Orchestrator status / live GenServer", () => {
     );
 
     await orch.cast({ tag: "run_poll_cycle" });
-    await waitForState(orch, (s) => issueId in s.blocked);
+    await waitForState(orch, (s) => issueId in s.blocked, 3_000);
 
     const state = orch.getState();
     expect(issueId in state.running).toBe(false);

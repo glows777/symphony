@@ -34,25 +34,53 @@ export type AgentOutputEvent = {
   chat_phase?: "start" | "delta" | "complete";
   chat_delta?: string;
   chat_delta_truncated?: boolean;
+  activity_type?: AgentActivityType;
+  activity_status?: AgentActivityStatus;
+  activity_id?: string;
+  parent_message_id?: string;
+  thinking_summary_delta?: string;
+  tool_name?: string;
+  tool_input?: unknown;
+  tool_command?: string;
+  tool_output_delta?: string;
+  tool_error?: string;
   payload?: unknown;
   raw?: string;
   [key: string]: unknown;
 };
 
+export type AgentActivityType =
+  | "assistant_message"
+  | "thinking"
+  | "tool_call"
+  | "system"
+  | "unknown";
+
+export type AgentActivityStatus = "streaming" | "completed" | "failed";
+
 export type AgentOutputMessage = {
   message_id: string;
+  activity_id: string;
+  activity_type: AgentActivityType;
+  activity_status: AgentActivityStatus;
   issue_identifier: string;
   backend: string;
   run_id: string;
   session_id?: string;
   turn?: number;
-  role: "assistant";
+  parent_message_id?: string;
+  role?: "assistant";
   content: string;
-  status: "streaming" | "completed";
+  status: AgentActivityStatus;
   seq_start: number;
   seq_end: number;
   at: string;
   updated_at: string;
+  tool_name?: string;
+  tool_input?: unknown;
+  tool_command?: string;
+  tool_output?: string;
+  tool_error?: string;
 };
 
 export type AgentOutputRunMetadata = {
@@ -116,6 +144,8 @@ type PersistedRun = {
   activeChatId: string | null;
   activeChatTurn: number | null;
   chatSequence: number;
+  activeActivityIds: Map<string, string>;
+  activitySequence: number;
 };
 
 export class AgentOutputRun {
@@ -209,6 +239,8 @@ export class AgentOutputStore {
       activeChatId: null,
       activeChatTurn: null,
       chatSequence: 0,
+      activeActivityIds: new Map(),
+      activitySequence: 0,
     };
     if (state.mode !== "off") {
       this.ensureUniqueRunPath(state);
@@ -378,7 +410,9 @@ export class AgentOutputStore {
       event_detail: message.event,
       message: summary ?? genericSummary(message),
     };
-    Object.assign(value, chatFieldsForMessage(state, message, turn));
+    const chatFields = chatFieldsForMessage(state, message, turn);
+    Object.assign(value, chatFields);
+    Object.assign(value, activityFieldsForMessage(state, message, turn, event, chatFields));
     for (const key of ["reason", "decision", "answer"] as const) {
       const detail = message[key];
       if (detail !== undefined) {
@@ -435,6 +469,8 @@ export class AgentOutputStore {
         session_id: state.metadata.session_id ?? undefined,
         event: status === "completed" ? "run_completed" : `run_${status}`,
         message: status === "completed" ? "Agent run completed" : `Agent run ${status}`,
+        activity_type: "system",
+        activity_status: status === "failed" ? "failed" : "completed",
         terminal: true,
         reason: terminalReason,
       });
@@ -463,6 +499,8 @@ export class AgentOutputStore {
       run_id: state.metadata.run_id,
       event: "run_started",
       message: "Agent run started",
+      activity_type: "system",
+      activity_status: "completed",
     });
     if (event !== null) {
       state.startedEventWritten = true;
@@ -554,6 +592,8 @@ export class AgentOutputStore {
       session_id: state.metadata.session_id ?? undefined,
       event: "log_truncated",
       message: "Agent output log reached its file size limit",
+      activity_type: "system",
+      activity_status: "completed",
       truncated: true,
       terminal: true,
     });
@@ -595,6 +635,8 @@ export class AgentOutputStore {
       session_id: state.metadata.session_id ?? undefined,
       event: "log_truncated",
       message: "Agent output log reached its file size limit",
+      activity_type: "system",
+      activity_status: "completed",
       truncated: true,
       terminal: true,
     };
@@ -796,6 +838,8 @@ export class AgentOutputStore {
       activeChatId: null,
       activeChatTurn: null,
       chatSequence: 0,
+      activeActivityIds: new Map(),
+      activitySequence: 0,
     };
     this.runs.set(filePath, state);
     this.pruneCachedRuns();
@@ -1086,6 +1130,375 @@ function chatFieldsForMessage(
   return fields;
 }
 
+type ActivityPhase = "start" | "delta" | "complete" | "failed";
+
+type ActivityProjection = {
+  type: AgentActivityType;
+  phase: ActivityPhase;
+  rawId: string | null;
+  parentMessageId: string | null;
+  contentDelta?: string;
+  toolName?: string;
+  toolInput?: unknown;
+  toolCommand?: string;
+  toolOutputDelta?: string;
+  toolError?: string;
+};
+
+function activityFieldsForMessage(
+  state: PersistedRun,
+  message: AgentMessage,
+  turn: number,
+  event: string,
+  chatFields: Record<string, unknown>,
+): Record<string, unknown> {
+  const chatPhase = chatFields.chat_phase;
+  if (
+    (chatPhase === "start" || chatPhase === "delta" || chatPhase === "complete") &&
+    typeof chatFields.chat_id === "string"
+  ) {
+    return {
+      activity_type: "assistant_message",
+      activity_status: chatPhase === "complete" ? "completed" : "streaming",
+      activity_id: chatFields.chat_id,
+      ...parentMessageField(message.payload),
+    };
+  }
+
+  const projection = extractActivityProjection(message.payload, event, message.event, message);
+  if (projection === null) {
+    return {
+      activity_type: fallbackActivityType(event, message.event, methodFromPayload(message.payload)),
+      activity_status: activityStatusForEvent(event, message.event),
+    };
+  }
+
+  const activityId = resolveActivityId(state, turn, projection);
+  const status = activityStatusForProjection(projection);
+  const fields: Record<string, unknown> = {
+    activity_type: projection.type,
+    activity_status: status,
+    activity_id: activityId,
+  };
+  if (projection.parentMessageId !== null) {
+    fields.parent_message_id = projection.parentMessageId;
+  }
+  if (projection.type === "thinking" && projection.contentDelta !== undefined) {
+    fields.thinking_summary_delta = projection.contentDelta;
+  }
+  if (projection.type === "tool_call") {
+    if (projection.toolName !== undefined) {
+      fields.tool_name = projection.toolName;
+    }
+    if (projection.toolInput !== undefined) {
+      fields.tool_input = projection.toolInput;
+    }
+    if (projection.toolCommand !== undefined) {
+      fields.tool_command = projection.toolCommand;
+    }
+    if (projection.toolOutputDelta !== undefined) {
+      fields.tool_output_delta = projection.toolOutputDelta;
+    }
+    if (projection.toolError !== undefined) {
+      fields.tool_error = projection.toolError;
+    }
+  }
+  return fields;
+}
+
+function extractActivityProjection(
+  payload: unknown,
+  event: string,
+  eventDetail: string,
+  message: AgentMessage,
+): ActivityProjection | null {
+  const method = methodFromPayload(payload);
+  const lifecycle = lifecyclePhase(method);
+  const itemType = firstStringAtPaths(payload, itemTypePaths());
+  const rawId = firstIdAtPaths(payload, activityIdPaths());
+  const parentMessageId = firstIdAtPaths(payload, parentMessageIdPaths());
+
+  if (method !== null && lifecycle !== null) {
+    if (isReasoningType(itemType)) {
+      return {
+        type: "thinking",
+        phase: lifecycle,
+        rawId,
+        parentMessageId,
+      };
+    }
+    if (isToolItemType(itemType)) {
+      return {
+        type: "tool_call",
+        phase: lifecycle,
+        rawId,
+        parentMessageId,
+        ...toolMetadata(payload, message),
+      };
+    }
+  }
+
+  if (method !== null && isReasoningMethod(method)) {
+    return {
+      type: "thinking",
+      phase: methodCompletionPhase(method),
+      rawId,
+      parentMessageId,
+      ...reasoningSummaryDelta(payload, method),
+    };
+  }
+
+  if (isToolActivity(method, event, eventDetail)) {
+    return {
+      type: "tool_call",
+      phase: toolPhase(method, eventDetail),
+      rawId,
+      parentMessageId,
+      ...toolMetadata(payload, message),
+    };
+  }
+
+  return null;
+}
+
+function resolveActivityId(
+  state: PersistedRun,
+  turn: number,
+  projection: ActivityProjection,
+): string {
+  if (projection.rawId !== null) {
+    const scopedRawId = `${projection.type}:${turn}:${projection.rawId}`;
+    if (projection.phase === "complete" || projection.phase === "failed") {
+      state.activeActivityIds.delete(scopedRawId);
+    } else {
+      state.activeActivityIds.set(scopedRawId, projection.rawId);
+    }
+    return projection.rawId;
+  }
+
+  const activeScope = `${projection.type}:${turn}:active`;
+  let activityId = state.activeActivityIds.get(activeScope);
+  if (activityId === undefined) {
+    state.activitySequence += 1;
+    activityId = `${state.metadata.run_id}:turn-${turn}:${activityPrefix(projection.type)}-${state.activitySequence}`;
+    state.activeActivityIds.set(activeScope, activityId);
+  }
+  if (projection.phase === "complete" || projection.phase === "failed") {
+    state.activeActivityIds.delete(activeScope);
+  }
+  return activityId;
+}
+
+function activityPrefix(type: AgentActivityType): string {
+  switch (type) {
+    case "assistant_message":
+      return "assistant";
+    case "thinking":
+      return "thinking";
+    case "tool_call":
+      return "tool";
+    case "system":
+      return "system";
+    case "unknown":
+      return "unknown";
+  }
+}
+
+function activityStatusForProjection(projection: ActivityProjection): AgentActivityStatus {
+  if (projection.phase === "failed") {
+    return "failed";
+  }
+  return projection.phase === "complete" ? "completed" : "streaming";
+}
+
+function fallbackActivityType(
+  event: string,
+  eventDetail: string,
+  method: string | null,
+): AgentActivityType {
+  if (isSystemEvent(event, eventDetail, method)) {
+    return "system";
+  }
+  return "unknown";
+}
+
+function activityStatusForEvent(event: string, eventDetail: string): AgentActivityStatus {
+  if (
+    event.includes("failed") ||
+    event.includes("timeout") ||
+    event === "port_exit" ||
+    eventDetail.includes("failed")
+  ) {
+    return "failed";
+  }
+  return "completed";
+}
+
+function isSystemEvent(event: string, eventDetail: string, method: string | null): boolean {
+  if (
+    event.startsWith("run_") ||
+    event.startsWith("turn_") ||
+    event.startsWith("approval_") ||
+    event === "session_started" ||
+    event === "startup_failed" ||
+    event === "tool_input_auto_answered" ||
+    event === "log_truncated"
+  ) {
+    return true;
+  }
+  if (eventDetail.startsWith("turn_") || eventDetail.startsWith("approval_")) {
+    return true;
+  }
+  return method !== null && (method.startsWith("turn/") || method.startsWith("thread/"));
+}
+
+function lifecyclePhase(method: string | null): ActivityPhase | null {
+  if (method === "item/started" || method?.endsWith("item_started")) {
+    return "start";
+  }
+  if (method === "item/completed" || method?.endsWith("item_completed")) {
+    return "complete";
+  }
+  return null;
+}
+
+function methodCompletionPhase(method: string): ActivityPhase {
+  if (
+    method.endsWith("/completed") ||
+    method.endsWith("_completed") ||
+    method.endsWith("/complete") ||
+    method.endsWith("_complete")
+  ) {
+    return "complete";
+  }
+  return "delta";
+}
+
+function toolPhase(method: string | null, eventDetail: string): ActivityPhase {
+  if (eventDetail === "tool_call_failed" || eventDetail === "unsupported_tool_call") {
+    return "failed";
+  }
+  if (eventDetail === "tool_call_completed") {
+    return "complete";
+  }
+  if (method === null) {
+    return "delta";
+  }
+  if (
+    method.endsWith("/completed") ||
+    method.endsWith("_completed") ||
+    method.endsWith("/complete") ||
+    method.endsWith("_complete")
+  ) {
+    return "complete";
+  }
+  if (method.endsWith("/failed") || method.endsWith("_failed")) {
+    return "failed";
+  }
+  return lifecyclePhase(method) ?? "delta";
+}
+
+function isReasoningMethod(method: string): boolean {
+  return method.startsWith("item/reasoning/") || method.includes("reasoning");
+}
+
+function isToolActivity(method: string | null, event: string, eventDetail: string): boolean {
+  if (event === "tool_call" || eventDetail.includes("tool_call")) {
+    return true;
+  }
+  if (method === null) {
+    return false;
+  }
+  return (
+    method.startsWith("item/tool/") ||
+    method.startsWith("item/commandExecution/") ||
+    method.startsWith("item/fileChange/") ||
+    method.includes("tool_call") ||
+    method.startsWith("mcp_tool_call")
+  );
+}
+
+function isReasoningType(value: string | null): boolean {
+  const normalized = normalizeType(value);
+  return normalized === "reasoning" || normalized === "reasoningitem";
+}
+
+function isToolItemType(value: string | null): boolean {
+  const normalized = normalizeType(value);
+  return (
+    normalized === "toolcall" ||
+    normalized === "commandexecution" ||
+    normalized === "filechange" ||
+    normalized === "mcpcall" ||
+    normalized === "mcptoolcall"
+  );
+}
+
+function normalizeType(value: string | null): string {
+  return value?.replace(/[^a-z]/gi, "").toLowerCase() ?? "";
+}
+
+function reasoningSummaryDelta(
+  payload: unknown,
+  method: string,
+): Pick<ActivityProjection, "contentDelta"> {
+  const summary = firstStringAtPaths(payload, reasoningSummaryPaths(method));
+  return summary === null ? {} : { contentDelta: summary };
+}
+
+function reasoningSummaryPaths(method: string): string[][] {
+  const summaryOnly = [
+    ["params", "summaryTextDelta"],
+    ["params", "summaryText"],
+    ["params", "summary"],
+    ["params", "item", "summary"],
+    ["params", "msg", "summaryTextDelta"],
+    ["params", "msg", "summaryText"],
+    ["params", "msg", "summary"],
+    ["params", "msg", "payload", "summaryTextDelta"],
+    ["params", "msg", "payload", "summaryText"],
+    ["params", "msg", "payload", "summary"],
+  ];
+  if (!method.toLowerCase().includes("summary")) {
+    return summaryOnly;
+  }
+  return [
+    ...summaryOnly,
+    ["params", "delta"],
+    ["params", "text"],
+    ["params", "msg", "delta"],
+    ["params", "msg", "text"],
+    ["params", "msg", "payload", "delta"],
+    ["params", "msg", "payload", "text"],
+  ];
+}
+
+function toolMetadata(
+  payload: unknown,
+  message: AgentMessage,
+): Pick<
+  ActivityProjection,
+  "toolName" | "toolInput" | "toolCommand" | "toolOutputDelta" | "toolError"
+> {
+  const toolName = firstStringAtPaths(payload, toolNamePaths());
+  const toolCommand = firstStringAtPaths(payload, toolCommandPaths());
+  const toolOutputDelta = firstStringAtPaths(payload, toolOutputDeltaPaths());
+  const toolInput = firstValueAtPaths(payload, toolInputPaths());
+  const toolError = firstStringAtPaths(payload, toolErrorPaths()) ?? errorText(message.reason);
+  return {
+    ...(toolName !== null ? { toolName } : {}),
+    ...(toolInput !== undefined ? { toolInput } : {}),
+    ...(toolCommand !== null ? { toolCommand } : {}),
+    ...(toolOutputDelta !== null ? { toolOutputDelta } : {}),
+    ...(toolError !== null ? { toolError } : {}),
+  };
+}
+
+function parentMessageField(payload: unknown): Record<string, unknown> {
+  const parentMessageId = firstIdAtPaths(payload, parentMessageIdPaths());
+  return parentMessageId === null ? {} : { parent_message_id: parentMessageId };
+}
+
 function allocateChatId(state: PersistedRun, turn: number): string {
   state.chatSequence += 1;
   return `${state.metadata.run_id}:turn-${turn}:assistant-${state.chatSequence}`;
@@ -1132,65 +1545,247 @@ function buildAgentOutputMessages(
 ): AgentOutputMessage[] {
   const messages: AgentOutputMessage[] = [];
   const active = new Map<string, AgentOutputMessage>();
+  const seenActivityEvents = new Set<string>();
 
   for (const event of events) {
-    if (event.event === "turn_completed" || event.event === "run_completed") {
-      closeActiveMessages(active, event.run_id, event.turn, event);
+    if (isActivityClosingEvent(event)) {
+      closeActiveMessages(active, event.run_id, event.turn, event, terminalStatusForEvent(event));
       continue;
     }
 
-    const chat = storedChatEvent(event);
-    if (chat === null) {
+    const activity = storedActivityEvent(event);
+    if (activity === null) {
       continue;
     }
+    const dedupeKey = `${event.run_id}:${activity.type}:${activity.id ?? "active"}:${event.seq}`;
+    if (seenActivityEvents.has(dedupeKey)) {
+      continue;
+    }
+    seenActivityEvents.add(dedupeKey);
 
-    const scope = chatScope(event);
+    const scope = activityScope(event, activity);
     let current = active.get(scope);
-    if (chat.phase === "start") {
-      if (current !== undefined && current.status === "streaming") {
-        current.status = "completed";
-        current.seq_end = Math.max(current.seq_end, event.seq - 1);
+    const id = activity.id ?? current?.activity_id ?? legacyActivityId(event, activity);
+    if (activity.phase === "start") {
+      if (current !== undefined && current.status === "streaming" && current.activity_id !== id) {
+        completeActivity(current, Math.max(current.seq_end, event.seq - 1), event.at);
       }
-      const id = messageIdForStoredEvent(event, chat);
-      current = createOutputMessage(event, id);
-      messages.push(current);
-      active.set(scope, current);
-    } else if (current === undefined || !sameChatId(current, chat)) {
-      if (current !== undefined && current.status === "streaming") {
-        current.status = "completed";
-        current.seq_end = Math.max(current.seq_end, event.seq - 1);
+      if (current === undefined || current.activity_id !== id) {
+        current = createOutputMessage(event, activity, id);
+        messages.push(current);
+        active.set(scope, current);
       }
-      const id = messageIdForStoredEvent(event, chat);
-      current = createOutputMessage(event, id);
+    } else if (current === undefined || current.activity_id !== id) {
+      if (current !== undefined && current.status === "streaming") {
+        completeActivity(current, Math.max(current.seq_end, event.seq - 1), event.at);
+      }
+      current = createOutputMessage(event, activity, id);
       messages.push(current);
       active.set(scope, current);
     }
 
-    if (chat.delta !== undefined) {
-      current.content += chat.delta;
-    }
+    applyActivityEvent(current, event, activity);
     current.seq_end = event.seq;
     current.updated_at = event.at;
 
-    if (chat.phase === "complete") {
-      current.status = "completed";
+    if (activity.status === "completed" || activity.status === "failed") {
+      current.status = activity.status;
+      current.activity_status = activity.status;
       active.delete(scope);
     }
   }
 
   if (runStatus !== "running") {
     for (const [scope, message] of active) {
-      message.status = "completed";
       const last = events.at(-1);
+      const status = runStatus === "failed" ? "failed" : "completed";
       if (last !== undefined && last.run_id === message.run_id) {
-        message.seq_end = Math.max(message.seq_end, last.seq);
-        message.updated_at = last.at;
+        completeActivity(message, Math.max(message.seq_end, last.seq), last.at, status);
+      } else {
+        completeActivity(message, message.seq_end, message.updated_at, status);
       }
       active.delete(scope);
     }
   }
 
   return messages;
+}
+
+type StoredActivityEvent = {
+  type: AgentActivityType;
+  phase: ActivityPhase;
+  id: string | null;
+  status: AgentActivityStatus;
+  parentMessageId: string | null;
+  contentDelta?: string;
+  toolName?: string;
+  toolInput?: unknown;
+  toolCommand?: string;
+  toolOutputDelta?: string;
+  toolError?: string;
+};
+
+function storedActivityEvent(event: AgentOutputEvent): StoredActivityEvent | null {
+  const activityType = storedActivityType(event.activity_type);
+  if (activityType === "assistant_message") {
+    const chat = storedChatEvent(event);
+    const status = storedActivityStatus(event.activity_status);
+    const phase = chat?.phase ?? phaseForStatus(status);
+    return {
+      type: "assistant_message",
+      phase,
+      id: typeof event.activity_id === "string" ? event.activity_id : (chat?.chatId ?? null),
+      status,
+      parentMessageId: typeof event.parent_message_id === "string" ? event.parent_message_id : null,
+      ...(chat?.delta !== undefined ? { contentDelta: chat.delta } : {}),
+    };
+  }
+  if (activityType === "thinking") {
+    const status = storedActivityStatus(event.activity_status);
+    return {
+      type: "thinking",
+      phase: phaseForStatus(status),
+      id: typeof event.activity_id === "string" ? event.activity_id : null,
+      status,
+      parentMessageId: typeof event.parent_message_id === "string" ? event.parent_message_id : null,
+      ...(typeof event.thinking_summary_delta === "string"
+        ? { contentDelta: event.thinking_summary_delta }
+        : {}),
+    };
+  }
+  if (activityType === "tool_call") {
+    const status = storedActivityStatus(event.activity_status);
+    return {
+      type: "tool_call",
+      phase: phaseForStatus(status),
+      id: typeof event.activity_id === "string" ? event.activity_id : null,
+      status,
+      parentMessageId: typeof event.parent_message_id === "string" ? event.parent_message_id : null,
+      ...(typeof event.tool_name === "string" ? { toolName: event.tool_name } : {}),
+      ...(event.tool_input !== undefined ? { toolInput: event.tool_input } : {}),
+      ...(typeof event.tool_command === "string" ? { toolCommand: event.tool_command } : {}),
+      ...(typeof event.tool_output_delta === "string"
+        ? { toolOutputDelta: event.tool_output_delta }
+        : {}),
+      ...(typeof event.tool_error === "string" ? { toolError: event.tool_error } : {}),
+    };
+  }
+
+  const chat = storedChatEvent(event);
+  if (chat !== null) {
+    return {
+      type: "assistant_message",
+      phase: chat.phase,
+      id: chat.chatId,
+      status: chat.phase === "complete" ? "completed" : "streaming",
+      parentMessageId: null,
+      ...(chat.delta !== undefined ? { contentDelta: chat.delta } : {}),
+    };
+  }
+
+  return storedPayloadActivityEvent(event);
+}
+
+function storedPayloadActivityEvent(event: AgentOutputEvent): StoredActivityEvent | null {
+  const method = methodFromPayload(event.payload);
+  const lifecycle = lifecyclePhase(method);
+  const itemType = firstStringAtPaths(event.payload, itemTypePaths());
+  const id = firstIdAtPaths(event.payload, activityIdPaths());
+  const parentMessageId = firstIdAtPaths(event.payload, parentMessageIdPaths());
+  if (method !== null && lifecycle !== null) {
+    if (isReasoningType(itemType)) {
+      return {
+        type: "thinking",
+        phase: lifecycle,
+        id,
+        status: lifecycle === "complete" ? "completed" : "streaming",
+        parentMessageId,
+      };
+    }
+    if (isToolItemType(itemType)) {
+      return {
+        type: "tool_call",
+        phase: lifecycle,
+        id,
+        status: lifecycle === "complete" ? "completed" : "streaming",
+        parentMessageId,
+        ...storedToolMetadata(event),
+      };
+    }
+  }
+  if (method !== null && isReasoningMethod(method)) {
+    const phase = methodCompletionPhase(method);
+    return {
+      type: "thinking",
+      phase,
+      id,
+      status: phase === "complete" ? "completed" : "streaming",
+      parentMessageId,
+      ...reasoningSummaryDelta(event.payload, method),
+    };
+  }
+  if (isToolActivity(method, event.event, event.event_detail ?? event.event)) {
+    const phase = toolPhase(method, event.event_detail ?? event.event);
+    const status = activityStatusForProjection({
+      type: "tool_call",
+      phase,
+      rawId: id,
+      parentMessageId,
+    });
+    return {
+      type: "tool_call",
+      phase,
+      id,
+      status,
+      parentMessageId,
+      ...storedToolMetadata(event),
+    };
+  }
+  return null;
+}
+
+function storedToolMetadata(
+  event: AgentOutputEvent,
+): Pick<
+  StoredActivityEvent,
+  "toolName" | "toolInput" | "toolCommand" | "toolOutputDelta" | "toolError"
+> {
+  const toolName = firstStringAtPaths(event.payload, toolNamePaths());
+  const toolCommand = firstStringAtPaths(event.payload, toolCommandPaths());
+  const toolOutputDelta = firstStringAtPaths(event.payload, toolOutputDeltaPaths());
+  const toolInput = firstValueAtPaths(event.payload, toolInputPaths());
+  const toolError =
+    firstStringAtPaths(event.payload, toolErrorPaths()) ??
+    errorText(event.reason) ??
+    (typeof event.tool_error === "string" ? event.tool_error : null);
+  return {
+    ...(toolName !== null ? { toolName } : {}),
+    ...(toolInput !== undefined ? { toolInput } : {}),
+    ...(toolCommand !== null ? { toolCommand } : {}),
+    ...(toolOutputDelta !== null ? { toolOutputDelta } : {}),
+    ...(toolError !== null ? { toolError } : {}),
+  };
+}
+
+function storedActivityType(value: unknown): AgentActivityType | null {
+  return value === "assistant_message" ||
+    value === "thinking" ||
+    value === "tool_call" ||
+    value === "system" ||
+    value === "unknown"
+    ? value
+    : null;
+}
+
+function storedActivityStatus(value: unknown): AgentActivityStatus {
+  return value === "completed" || value === "failed" || value === "streaming" ? value : "streaming";
+}
+
+function phaseForStatus(status: AgentActivityStatus): ActivityPhase {
+  if (status === "failed") {
+    return "failed";
+  }
+  return status === "completed" ? "complete" : "delta";
 }
 
 function storedChatEvent(event: AgentOutputEvent): StoredChatEvent | null {
@@ -1227,40 +1822,45 @@ function storedChatEvent(event: AgentOutputEvent): StoredChatEvent | null {
   return null;
 }
 
-function chatScope(event: AgentOutputEvent): string {
-  return `${event.run_id}:${event.turn ?? "unknown"}`;
+function activityScope(event: AgentOutputEvent, activity: StoredActivityEvent): string {
+  return `${event.run_id}:${event.turn ?? "unknown"}:${activity.type}:${activity.id ?? "active"}`;
 }
 
-function messageIdForStoredEvent(event: AgentOutputEvent, chat: StoredChatEvent): string {
-  if (chat.source === "stored" && chat.chatId !== null) {
-    return chat.chatId;
-  }
-  return `legacy:${chat.chatId ?? "assistant"}:${event.seq}`;
+function legacyActivityId(event: AgentOutputEvent, activity: StoredActivityEvent): string {
+  return `legacy:${activity.type}:${event.run_id}:${event.turn ?? "unknown"}:${event.seq}`;
 }
 
-function sameChatId(message: AgentOutputMessage, chat: StoredChatEvent): boolean {
-  return chat.chatId === null || message.message_id === chat.chatId || chat.source === "legacy";
-}
-
-function createOutputMessage(event: AgentOutputEvent, messageId: string): AgentOutputMessage {
+function createOutputMessage(
+  event: AgentOutputEvent,
+  activity: StoredActivityEvent,
+  messageId: string,
+): AgentOutputMessage {
   const message: AgentOutputMessage = {
     message_id: messageId,
+    activity_id: messageId,
+    activity_type: activity.type,
+    activity_status: activity.status,
     issue_identifier: event.issue_identifier,
     backend: event.backend,
     run_id: event.run_id,
-    role: "assistant",
     content: "",
-    status: "streaming",
+    status: activity.status,
     seq_start: event.seq,
     seq_end: event.seq,
     at: event.at,
     updated_at: event.at,
   };
+  if (activity.type === "assistant_message") {
+    message.role = "assistant";
+  }
   if (event.session_id !== undefined) {
     message.session_id = event.session_id;
   }
   if (event.turn !== undefined) {
     message.turn = event.turn;
+  }
+  if (activity.parentMessageId !== null) {
+    message.parent_message_id = activity.parentMessageId;
   }
   return message;
 }
@@ -1270,6 +1870,7 @@ function closeActiveMessages(
   runId: string,
   turn: number | undefined,
   event: AgentOutputEvent,
+  status: AgentActivityStatus = "completed",
 ): void {
   for (const [scope, message] of active) {
     if (
@@ -1278,11 +1879,80 @@ function closeActiveMessages(
     ) {
       continue;
     }
-    message.status = "completed";
-    message.seq_end = Math.max(message.seq_end, event.seq);
-    message.updated_at = event.at;
+    completeActivity(message, Math.max(message.seq_end, event.seq), event.at, status);
     active.delete(scope);
   }
+}
+
+function applyActivityEvent(
+  message: AgentOutputMessage,
+  event: AgentOutputEvent,
+  activity: StoredActivityEvent,
+): void {
+  message.activity_status = activity.status;
+  message.status = activity.status;
+  if (activity.parentMessageId !== null) {
+    message.parent_message_id = activity.parentMessageId;
+  }
+  if (activity.type === "assistant_message" || activity.type === "thinking") {
+    if (activity.contentDelta !== undefined) {
+      message.content += activity.contentDelta;
+    }
+  }
+  if (activity.type === "tool_call") {
+    if (activity.toolName !== undefined) {
+      message.tool_name = activity.toolName;
+    }
+    if (activity.toolInput !== undefined) {
+      message.tool_input = activity.toolInput;
+    }
+    if (activity.toolCommand !== undefined) {
+      message.tool_command = activity.toolCommand;
+    }
+    if (activity.toolOutputDelta !== undefined) {
+      message.tool_output = `${message.tool_output ?? ""}${activity.toolOutputDelta}`;
+    }
+    if (activity.toolError !== undefined) {
+      message.tool_error = activity.toolError;
+    }
+  }
+  message.seq_end = Math.max(message.seq_end, event.seq);
+  message.updated_at = event.at;
+}
+
+function completeActivity(
+  message: AgentOutputMessage,
+  seqEnd: number,
+  updatedAt: string,
+  status: AgentActivityStatus = "completed",
+): void {
+  message.status = status;
+  message.activity_status = status;
+  message.seq_end = seqEnd;
+  message.updated_at = updatedAt;
+}
+
+function isActivityClosingEvent(event: AgentOutputEvent): boolean {
+  return (
+    event.event === "turn_completed" ||
+    event.event === "turn_failed" ||
+    event.event === "turn_cancelled" ||
+    event.event === "turn_timeout" ||
+    event.event === "turn_input_required" ||
+    event.event === "port_exit" ||
+    event.event === "run_completed" ||
+    event.event === "run_failed" ||
+    event.event === "run_cancelled"
+  );
+}
+
+function terminalStatusForEvent(event: AgentOutputEvent): AgentActivityStatus {
+  return event.event === "run_failed" ||
+    event.event === "turn_failed" ||
+    event.event === "turn_timeout" ||
+    event.event === "port_exit"
+    ? "failed"
+    : "completed";
 }
 
 function firstStringAtPaths(value: unknown, paths: string[][]): string | null {
@@ -1295,6 +1965,38 @@ function firstStringAtPaths(value: unknown, paths: string[][]): string | null {
   return null;
 }
 
+function methodFromPayload(payload: unknown): string | null {
+  return firstStringAtPaths(payload, [
+    ["method"],
+    ["params", "method"],
+    ["params", "msg", "method"],
+    ["params", "msg", "payload", "method"],
+  ]);
+}
+
+function firstIdAtPaths(value: unknown, paths: string[][]): string | null {
+  for (const path of paths) {
+    const candidate = valueAtPath(value, path);
+    if (typeof candidate === "string" && candidate.trim() !== "") {
+      return candidate;
+    }
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return String(candidate);
+    }
+  }
+  return null;
+}
+
+function firstValueAtPaths(value: unknown, paths: string[][]): unknown {
+  for (const path of paths) {
+    const candidate = valueAtPath(value, path);
+    if (candidate !== null && candidate !== undefined) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
 function valueAtPath(value: unknown, path: string[]): unknown {
   let current: unknown = value;
   for (const key of path) {
@@ -1304,6 +2006,39 @@ function valueAtPath(value: unknown, path: string[]): unknown {
     current = current[key];
   }
   return current;
+}
+
+function activityIdPaths(): string[][] {
+  return [
+    ["params", "itemId"],
+    ["params", "item", "id"],
+    ["params", "toolCallId"],
+    ["params", "callId"],
+    ["params", "id"],
+    ["params", "msg", "itemId"],
+    ["params", "msg", "item", "id"],
+    ["params", "msg", "payload", "itemId"],
+    ["params", "msg", "payload", "item", "id"],
+    ["params", "msg", "payload", "toolCallId"],
+    ["params", "msg", "payload", "callId"],
+    ["params", "msg", "payload", "id"],
+    ["params", "msg", "id"],
+    ["id"],
+  ];
+}
+
+function parentMessageIdPaths(): string[][] {
+  return [
+    ["params", "parentMessageId"],
+    ["params", "parentItemId"],
+    ["params", "parentId"],
+    ["params", "item", "parentMessageId"],
+    ["params", "item", "parentItemId"],
+    ["params", "msg", "parentMessageId"],
+    ["params", "msg", "parentItemId"],
+    ["params", "msg", "payload", "parentMessageId"],
+    ["params", "msg", "payload", "parentItemId"],
+  ];
 }
 
 function chatIdPaths(): string[][] {
@@ -1318,6 +2053,98 @@ function chatIdPaths(): string[][] {
     ["params", "msg", "payload", "id"],
     ["params", "msg", "id"],
   ];
+}
+
+function toolNamePaths(): string[][] {
+  return [
+    ["params", "name"],
+    ["params", "tool"],
+    ["params", "toolName"],
+    ["params", "item", "name"],
+    ["params", "item", "toolName"],
+    ["params", "msg", "name"],
+    ["params", "msg", "toolName"],
+    ["params", "msg", "payload", "name"],
+    ["params", "msg", "payload", "toolName"],
+  ];
+}
+
+function toolInputPaths(): string[][] {
+  return [
+    ["params", "arguments"],
+    ["params", "args"],
+    ["params", "input"],
+    ["params", "item", "arguments"],
+    ["params", "item", "args"],
+    ["params", "item", "input"],
+    ["params", "msg", "arguments"],
+    ["params", "msg", "args"],
+    ["params", "msg", "input"],
+    ["params", "msg", "payload", "arguments"],
+    ["params", "msg", "payload", "args"],
+    ["params", "msg", "payload", "input"],
+  ];
+}
+
+function toolCommandPaths(): string[][] {
+  return [
+    ["params", "command"],
+    ["params", "cmd"],
+    ["params", "item", "command"],
+    ["params", "item", "cmd"],
+    ["params", "msg", "command"],
+    ["params", "msg", "cmd"],
+    ["params", "msg", "payload", "command"],
+    ["params", "msg", "payload", "cmd"],
+  ];
+}
+
+function toolOutputDeltaPaths(): string[][] {
+  return [
+    ["params", "outputDelta"],
+    ["params", "delta"],
+    ["params", "output"],
+    ["params", "item", "outputDelta"],
+    ["params", "item", "delta"],
+    ["params", "item", "output"],
+    ["params", "msg", "outputDelta"],
+    ["params", "msg", "delta"],
+    ["params", "msg", "output"],
+    ["params", "msg", "payload", "outputDelta"],
+    ["params", "msg", "payload", "delta"],
+    ["params", "msg", "payload", "output"],
+  ];
+}
+
+function toolErrorPaths(): string[][] {
+  return [
+    ["params", "error"],
+    ["params", "error", "message"],
+    ["params", "item", "error"],
+    ["params", "item", "error", "message"],
+    ["params", "msg", "error"],
+    ["params", "msg", "error", "message"],
+    ["params", "msg", "payload", "error"],
+    ["params", "msg", "payload", "error", "message"],
+  ];
+}
+
+function errorText(value: unknown): string | null {
+  if (typeof value === "string" && value.trim() !== "") {
+    return value;
+  }
+  if (isRecord(value)) {
+    if (typeof value.message === "string") {
+      return value.message;
+    }
+    if (typeof value.error === "string") {
+      return value.error;
+    }
+    if (typeof value.tag === "string") {
+      return value.tag;
+    }
+  }
+  return null;
 }
 
 function deltaPaths(): string[][] {
@@ -1350,7 +2177,7 @@ function itemTypePaths(): string[][] {
 }
 
 function isAgentMessageType(value: string | null): boolean {
-  return value?.replace(/[^a-z]/gi, "").toLowerCase() === "agentmessage";
+  return normalizeType(value) === "agentmessage";
 }
 
 function dateFromMessage(value: Date): string {

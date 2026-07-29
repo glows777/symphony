@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { RunHeader } from "./components/RunHeader";
 import { RunSidebar } from "./components/RunSidebar";
-import { type AgentOutputMessage, RunTimeline } from "./components/RunTimeline";
+import { RunTimeline } from "./components/RunTimeline";
 import {
+  type AgentActivityStatus,
   type AgentOutputEvent,
+  type AgentOutputMessage,
   type IssueDetail,
   type OutputPayload,
   type RunItem,
@@ -203,7 +205,7 @@ function mergeEvents(current: AgentOutputEvent[], next: AgentOutputEvent[]): Age
   return sortEvents(next.reduce(upsertEvent, current));
 }
 
-function withTranscript(output: OutputPayload): TranscriptOutput {
+export function withTranscript(output: OutputPayload): TranscriptOutput {
   const messages = (output as OutputPayload & { messages?: unknown }).messages;
   return {
     ...output,
@@ -211,7 +213,10 @@ function withTranscript(output: OutputPayload): TranscriptOutput {
   };
 }
 
-function mergeOutput(current: TranscriptOutput | null, next: TranscriptOutput): TranscriptOutput {
+export function mergeOutput(
+  current: TranscriptOutput | null,
+  next: TranscriptOutput,
+): TranscriptOutput {
   if (current === null) {
     return next;
   }
@@ -236,7 +241,7 @@ function mergeOutput(current: TranscriptOutput | null, next: TranscriptOutput): 
   };
 }
 
-function mergeLiveOutput(
+export function mergeLiveOutput(
   current: TranscriptOutput | null,
   event: AgentOutputEvent,
 ): TranscriptOutput {
@@ -259,7 +264,7 @@ function mergeLiveOutput(
   return {
     ...base,
     events: sortEvents(upsertEvent(base.events, event)),
-    messages: mergeLiveChatMessages(base.messages, event),
+    messages: mergeLiveActivities(base.messages, event),
     next_cursor: Math.max(base.next_cursor ?? 0, event.seq),
     run,
   };
@@ -276,124 +281,225 @@ function mergeMessageSnapshots(
     if (
       previous === undefined ||
       message.seq_end > previous.seq_end ||
-      (message.seq_end === previous.seq_end && message.status === "completed")
+      (message.seq_end === previous.seq_end && isTerminalStatus(message.status))
     ) {
       merged.set(key, message);
     }
   }
-  return [...merged.values()].sort((left, right) => left.seq_start - right.seq_start);
+  return sortMessages([...merged.values()]);
 }
 
-function mergeLiveChatMessages(
+type LiveActivity = {
+  type: NonNullable<AgentOutputMessage["activity_type"]>;
+  id: string;
+  phase: ChatPhase | "failed";
+  status: AgentActivityStatus;
+  contentDelta?: string;
+  toolName?: string;
+  toolInput?: unknown;
+  toolCommand?: string;
+  toolOutputDelta?: string;
+  toolError?: string;
+};
+
+function mergeLiveActivities(
   messages: AgentOutputMessage[],
   event: AgentOutputEvent,
 ): AgentOutputMessage[] {
-  const phase = chatPhaseFor(event);
-  if (phase === null) {
-    if (event.event !== "turn_completed" && event.event !== "run_completed") {
-      return messages;
-    }
-    return messages.map((message) => {
-      if (
-        message.run_id !== event.run_id ||
-        (event.turn !== undefined && message.turn !== undefined && message.turn !== event.turn)
-      ) {
-        return message;
-      }
-      return {
-        ...message,
-        status: "completed",
-        seq_end: Math.max(message.seq_end, event.seq),
-        updated_at: event.at,
-      };
-    });
+  const activity = liveActivityFromEvent(event);
+  if (activity === null) {
+    return isTerminalEvent(event) ? closeLiveActivities(messages, event) : messages;
   }
 
-  const chatId = typeof event.chat_id === "string" ? event.chat_id : null;
-  if (chatId === null) {
-    return messages;
-  }
-  const index = messages.findIndex(
-    (message) =>
-      message.run_id === event.run_id &&
-      message.message_id === chatId &&
-      message.turn === event.turn,
-  );
+  const index = messages.findIndex((message) => messageMatchesActivity(message, event, activity));
   const previous = index === -1 ? undefined : messages[index];
 
-  if (phase === "start") {
+  if (activity.phase === "start") {
     if (previous !== undefined && event.seq <= previous.seq_end) {
       return messages;
     }
     if (previous !== undefined) {
       const next = [...messages];
-      next[index] = { ...previous, seq_end: event.seq, updated_at: event.at };
-      return next;
+      next[index] = applyLiveActivity(previous, event, activity);
+      return sortMessages(next);
     }
-    return [...messages, liveMessageFromEvent(event, chatId, "")];
+    return sortMessages([...messages, liveMessageFromEvent(event, activity)]);
   }
 
   if (previous === undefined) {
-    return [
-      ...messages,
-      liveMessageFromEvent(
-        event,
-        chatId,
-        typeof event.chat_delta === "string" ? event.chat_delta : "",
-        phase === "complete" ? "completed" : "streaming",
-      ),
-    ];
+    return sortMessages([...messages, liveMessageFromEvent(event, activity)]);
   }
 
-  if (phase === "delta") {
-    if (event.seq <= previous.seq_end) {
-      return messages;
-    }
-    const next = [...messages];
-    next[index] = {
-      ...previous,
-      content: previous.content + (typeof event.chat_delta === "string" ? event.chat_delta : ""),
-      status: "streaming",
-      seq_end: event.seq,
-      updated_at: event.at,
-    };
-    return next;
-  }
-
-  if (previous.status === "completed" && event.seq <= previous.seq_end) {
+  if (event.seq <= previous.seq_end) {
     return messages;
   }
   const next = [...messages];
-  next[index] = {
-    ...previous,
-    status: "completed",
-    seq_end: Math.max(previous.seq_end, event.seq),
-    updated_at: event.at,
-  };
-  return next;
+  next[index] = applyLiveActivity(previous, event, activity);
+  return sortMessages(next);
 }
 
-function liveMessageFromEvent(
-  event: AgentOutputEvent,
-  messageId: string,
-  content: string,
-  status: AgentOutputMessage["status"] = "streaming",
-): AgentOutputMessage {
-  return {
-    message_id: messageId,
+function liveMessageFromEvent(event: AgentOutputEvent, activity: LiveActivity): AgentOutputMessage {
+  const message: AgentOutputMessage = {
+    message_id: activity.id,
+    activity_id: activity.id,
+    activity_type: activity.type,
+    activity_status: activity.status,
     issue_identifier: event.issue_identifier,
     backend: event.backend,
     run_id: event.run_id,
     ...(event.session_id !== undefined ? { session_id: event.session_id } : {}),
     ...(event.turn !== undefined ? { turn: event.turn } : {}),
-    role: "assistant",
-    content,
-    status,
+    ...(typeof event.parent_message_id === "string"
+      ? { parent_message_id: event.parent_message_id }
+      : {}),
+    ...(activity.type === "assistant_message" ? { role: "assistant" as const } : {}),
+    content: "",
+    status: activity.status,
     seq_start: event.seq,
     seq_end: event.seq,
     at: event.at,
     updated_at: event.at,
   };
+  return applyLiveActivity(message, event, activity);
+}
+
+function applyLiveActivity(
+  previous: AgentOutputMessage,
+  event: AgentOutputEvent,
+  activity: LiveActivity,
+): AgentOutputMessage {
+  const next: AgentOutputMessage = {
+    ...previous,
+    activity_id: previous.activity_id ?? activity.id,
+    activity_type: activity.type,
+    activity_status: activity.status,
+    status: activity.status,
+    seq_end: Math.max(previous.seq_end, event.seq),
+    updated_at: event.at,
+  };
+  if (typeof event.parent_message_id === "string") {
+    next.parent_message_id = event.parent_message_id;
+  }
+  if (activity.type === "assistant_message" || activity.type === "thinking") {
+    next.content = previous.content + (activity.contentDelta ?? "");
+  }
+  if (activity.type === "tool_call") {
+    if (activity.toolName !== undefined) {
+      next.tool_name = activity.toolName;
+    }
+    if (activity.toolInput !== undefined) {
+      next.tool_input = activity.toolInput;
+    }
+    if (activity.toolCommand !== undefined) {
+      next.tool_command = activity.toolCommand;
+    }
+    if (activity.toolOutputDelta !== undefined) {
+      next.tool_output = `${previous.tool_output ?? ""}${activity.toolOutputDelta}`;
+    }
+    if (activity.toolError !== undefined) {
+      next.tool_error = activity.toolError;
+    }
+  }
+  return next;
+}
+
+function liveActivityFromEvent(event: AgentOutputEvent): LiveActivity | null {
+  if (event.activity_type === "assistant_message") {
+    const id = typeof event.activity_id === "string" ? event.activity_id : event.chat_id;
+    if (typeof id !== "string") {
+      return null;
+    }
+    const status = activityStatus(event.activity_status, chatPhaseFor(event));
+    return {
+      type: "assistant_message",
+      id,
+      phase: chatPhaseFor(event) ?? phaseForStatus(status),
+      status,
+      ...(typeof event.chat_delta === "string" ? { contentDelta: event.chat_delta } : {}),
+    };
+  }
+  if (event.activity_type === "thinking") {
+    if (typeof event.activity_id !== "string") {
+      return null;
+    }
+    const status = activityStatus(event.activity_status, null);
+    return {
+      type: "thinking",
+      id: event.activity_id,
+      phase: phaseForStatus(status),
+      status,
+      ...(typeof event.thinking_summary_delta === "string"
+        ? { contentDelta: event.thinking_summary_delta }
+        : {}),
+    };
+  }
+  if (event.activity_type === "tool_call") {
+    if (typeof event.activity_id !== "string") {
+      return null;
+    }
+    const status = activityStatus(event.activity_status, null);
+    return {
+      type: "tool_call",
+      id: event.activity_id,
+      phase: phaseForStatus(status),
+      status,
+      ...(typeof event.tool_name === "string" ? { toolName: event.tool_name } : {}),
+      ...(event.tool_input !== undefined ? { toolInput: event.tool_input } : {}),
+      ...(typeof event.tool_command === "string" ? { toolCommand: event.tool_command } : {}),
+      ...(typeof event.tool_output_delta === "string"
+        ? { toolOutputDelta: event.tool_output_delta }
+        : {}),
+      ...(typeof event.tool_error === "string" ? { toolError: event.tool_error } : {}),
+    };
+  }
+
+  const phase = chatPhaseFor(event);
+  const chatId = typeof event.chat_id === "string" ? event.chat_id : null;
+  if (phase === null || chatId === null) {
+    return null;
+  }
+  return {
+    type: "assistant_message",
+    id: chatId,
+    phase,
+    status: phase === "complete" ? "completed" : "streaming",
+    ...(typeof event.chat_delta === "string" ? { contentDelta: event.chat_delta } : {}),
+  };
+}
+
+function closeLiveActivities(
+  messages: AgentOutputMessage[],
+  event: AgentOutputEvent,
+): AgentOutputMessage[] {
+  const status = terminalStatus(event);
+  return messages.map((message) => {
+    if (
+      message.run_id !== event.run_id ||
+      (event.turn !== undefined && message.turn !== undefined && message.turn !== event.turn) ||
+      isTerminalStatus(message.status)
+    ) {
+      return message;
+    }
+    return {
+      ...message,
+      status,
+      activity_status: status,
+      seq_end: Math.max(message.seq_end, event.seq),
+      updated_at: event.at,
+    };
+  });
+}
+
+function messageMatchesActivity(
+  message: AgentOutputMessage,
+  event: AgentOutputEvent,
+  activity: LiveActivity,
+): boolean {
+  return (
+    message.run_id === event.run_id &&
+    (message.activity_id ?? message.message_id) === activity.id &&
+    message.turn === event.turn
+  );
 }
 
 function chatPhaseFor(event: AgentOutputEvent): ChatPhase | null {
@@ -404,8 +510,56 @@ function chatPhaseFor(event: AgentOutputEvent): ChatPhase | null {
     : null;
 }
 
+function activityStatus(
+  value: AgentOutputEvent["activity_status"],
+  phase: ChatPhase | null,
+): AgentActivityStatus {
+  if (value === "streaming" || value === "completed" || value === "failed") {
+    return value;
+  }
+  return phase === "complete" ? "completed" : "streaming";
+}
+
+function phaseForStatus(status: AgentActivityStatus): LiveActivity["phase"] {
+  if (status === "failed") {
+    return "failed";
+  }
+  return status === "completed" ? "complete" : "delta";
+}
+
+function isTerminalEvent(event: AgentOutputEvent): boolean {
+  return (
+    event.event === "turn_completed" ||
+    event.event === "turn_failed" ||
+    event.event === "turn_cancelled" ||
+    event.event === "turn_timeout" ||
+    event.event === "turn_input_required" ||
+    event.event === "port_exit" ||
+    event.event === "run_completed" ||
+    event.event === "run_failed" ||
+    event.event === "run_cancelled"
+  );
+}
+
+function terminalStatus(event: AgentOutputEvent): AgentActivityStatus {
+  return event.event === "run_failed" ||
+    event.event === "turn_failed" ||
+    event.event === "turn_timeout" ||
+    event.event === "port_exit"
+    ? "failed"
+    : "completed";
+}
+
+function isTerminalStatus(status: AgentActivityStatus): boolean {
+  return status === "completed" || status === "failed";
+}
+
 function messageKey(message: AgentOutputMessage): string {
-  return `${message.run_id}:${message.turn ?? "unknown"}:${message.message_id}`;
+  return `${message.run_id}:${message.turn ?? "unknown"}:${message.activity_id ?? message.message_id}`;
+}
+
+function sortMessages(messages: AgentOutputMessage[]): AgentOutputMessage[] {
+  return [...messages].sort((left, right) => left.seq_start - right.seq_start);
 }
 
 function sortEvents(events: AgentOutputEvent[]): AgentOutputEvent[] {
