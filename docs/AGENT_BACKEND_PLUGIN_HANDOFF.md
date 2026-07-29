@@ -56,10 +56,11 @@ Claude Code、……)可以通过实现插件接入。本次交付 **P1–P4 四
    ≈571–1173)建立在 codex 原始 method 名(`turn/*`、`item/*`、
    `codex/event/*`)上,且被 golden snapshot 固定。
 
-**关键的减负事实**:事件层已经「半规范化」。orchestrator 的 blocker 判定几乎
-只依赖 app-server **包装后的事件名**(`turn_input_required` /
-`approval_required`,orchestrator.ts ≈890–891、924–928),而非 codex 原始
-method。所以「规范化事件层」的成本主要是**声明与冻结**,不是重写。
+**关键的减负事实**:事件层已经「半规范化」。orchestrator 的 blocker 判定依赖
+app-server **包装后的事件名**(`turn_input_required` / `approval_required`)和
+MCP elicitation method 兜底,而非 codex 原始 method。该 blocker 上下文必须被
+单独保留;后续展示用的 `turn_ended_with_error` 不能覆盖最终处置语义。所以
+「规范化事件层」的成本主要是**声明与冻结**,不是重写。
 
 **工具桥已分层正确**:tracker 插件的 `agentTools` capability 输出语义结果
 `AgentToolOutcome {success, payload}`(plugins/trackers/types.ts:103),codex wire 编码
@@ -242,9 +243,15 @@ export type AgentBackendPlugin = {
 - `runTurn` 期间 MUST 经 `onMessage` 发出 `session_started`,并以
   `turn_completed`(ok)或 `turn_failed` / `turn_cancelled` /
   `turn_input_required` / `approval_required`(err,err 值携带同名 tag)终结;
+- `turn_input_required` / `approval_required` 是 blocked 处置,不是 retryable
+  failure;如果还发 `turn_ended_with_error` 作为展示事件,不得覆盖 blocker
+  payload、prompt 和 session id;
 - 审批/用户输入 MUST NOT 无限期挂起:要么按策略自动解决(发
   `approval_auto_approved` / `tool_input_auto_answered`),要么发
   `approval_required` / `turn_input_required` 并使 turn 失败;
+- 只有显式 transient 信号(`turn_timeout`、`response_timeout`、`port_exit`、
+  网络断开、HTTP 429/5xx)进入有限 retry;确定性错误和未知错误进入 blocked,
+  retry 上限耗尽进入 terminal blocked;
 - `usage` MUST 是会话内累计绝对值(实现只拿到逐 turn 增量就必须自行累加;
   发增量会导致 orchestrator 统计翻倍——fake-backend 测试显式覆盖此语义);
 - 不认识的后端流量 MUST 以 `notification` / `other_message` + `payload`

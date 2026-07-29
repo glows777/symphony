@@ -61,14 +61,39 @@ export type RunningEntry = {
   turn_count?: number;
   completion?: unknown;
   blocked_at?: Date | null;
+  blocker_codex_message?: unknown;
+  blocker_codex_event?: string | null;
+  blocker_codex_timestamp?: Date | null;
+  blocker_session_id?: string | null;
   [key: string]: unknown;
+};
+
+export type FailureDispositionKind = "blocked" | "retryable" | "terminal";
+
+export type ManualRecoveryInfo = {
+  action: string;
+  reason: string;
+  prompt: string | null;
+  payload: unknown;
+  session_id: string | null;
+  automatic_retry: false;
+  resume_supported: false;
+  rerun_supported: true;
 };
 
 export type BlockedEntry = {
   identifier?: string | null;
   issue?: Issue;
+  title?: string | null;
+  issue_url?: string | null;
   backend?: string | null;
   error?: unknown;
+  blocked_reason?: unknown;
+  disposition?: FailureDispositionKind;
+  operator_prompt?: string | null;
+  raw_blocker_payload?: unknown;
+  manual_recovery?: ManualRecoveryInfo | null;
+  retry_attempt?: number | null;
   worker_host?: string | null;
   [key: string]: unknown;
 };
@@ -80,6 +105,7 @@ export type RetryMetadata = {
   worker_host?: string | null;
   workspace_path?: string | null;
   delay_type?: string;
+  retry_class?: "retryable";
   run_kind?: RunKind;
 };
 
@@ -978,6 +1004,25 @@ export type RequestRefreshReply = {
   operations: string[];
 };
 
+export type RerunBlockedReply =
+  | {
+      queued: true;
+      issue_id: string;
+      issue_identifier: string | null;
+      requested_at: Date;
+      operation: "rerun_blocked";
+    }
+  | {
+      queued: false;
+      error:
+        | "blocked_issue_not_found"
+        | "issue_refresh_failed"
+        | "issue_not_active"
+        | "no_dispatch_capacity";
+      requested_at: Date;
+      reason?: unknown;
+    };
+
 function isObj(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -989,6 +1034,9 @@ function numOr0(value: unknown): number {
 function inspectReason(reason: unknown): string {
   if (typeof reason === "string") {
     return reason;
+  }
+  if (reason instanceof Error) {
+    return reason.message;
   }
   try {
     return JSON.stringify(reason);
@@ -1080,11 +1128,12 @@ function inputRequiredBlocker(entry: RunningEntry | null | undefined): boolean {
   if (!entry) {
     return false;
   }
-  const event = entry.last_codex_event;
+  const event = entry.blocker_codex_event ?? entry.last_codex_event;
   return (
     (typeof event === "string" &&
       (event === "turn_input_required" || event === "approval_required")) ||
     inputRequiredCompletionOutcome(entry.completion) !== null ||
+    inputRequiredReason(entry.last_codex_message) !== null ||
     codexMessageMethod(entry.last_codex_message) === "mcpServer/elicitation/request"
   );
 }
@@ -1109,8 +1158,10 @@ function normalizeInputRequiredOutcome(outcome: unknown): string | null {
 
 function blockerError(entry: RunningEntry, fallback: string): string {
   return (
+    codexEventBlockerError(entry.blocker_codex_event) ??
     codexEventBlockerError(entry.last_codex_event) ??
     completionBlockerError(entry.completion) ??
+    codexMessageBlockerError(entry.blocker_codex_message) ??
     codexMessageBlockerError(entry.last_codex_message) ??
     fallback
   );
@@ -1141,6 +1192,13 @@ function codexMessageBlockerError(message: unknown): string | null {
   if (codexMessageMethod(message) === "mcpServer/elicitation/request") {
     return "codex MCP elicitation requires operator input";
   }
+  const reason = inputRequiredReason(message);
+  if (reason === "turn_input_required") {
+    return "codex turn requires operator input";
+  }
+  if (reason === "approval_required") {
+    return "codex turn requires approval";
+  }
   return null;
 }
 
@@ -1154,6 +1212,203 @@ function codexMessageMethod(message: unknown): string | null {
   }
   if (typeof message.method === "string") {
     return message.method;
+  }
+  return null;
+}
+
+function blockerEventForUpdate(update: CodexUpdate, summary: unknown): string | null {
+  if (update.event === "turn_input_required" || update.event === "approval_required") {
+    return update.event;
+  }
+  const reason = inputRequiredReason(update.reason) ?? inputRequiredReason(summary);
+  if (reason !== null) {
+    return reason;
+  }
+  return codexMessageMethod(summary) === "mcpServer/elicitation/request"
+    ? "turn_input_required"
+    : null;
+}
+
+function inputRequiredReason(value: unknown): string | null {
+  const tag = failureTag(value);
+  if (tag === "turn_input_required" || tag === "input_required" || tag === "needs_input") {
+    return "turn_input_required";
+  }
+  if (tag === "approval_required") {
+    return "approval_required";
+  }
+  if (!isObj(value)) {
+    return null;
+  }
+  return inputRequiredReason(value.reason) ?? inputRequiredReason(value.error);
+}
+
+type AgentFailureDisposition =
+  | { kind: "blocked"; error: string }
+  | { kind: "retryable"; error: string };
+
+function classifyAgentFailure(reason: unknown, entry: RunningEntry): AgentFailureDisposition {
+  if (inputRequiredBlocker(entry)) {
+    return {
+      kind: "blocked",
+      error: blockerError(entry, `agent exited: ${inspectReason(reason)}`),
+    };
+  }
+  const error = nonRetryableOrRetryableError(reason, entry);
+  return retryableFailure(reason, entry)
+    ? { kind: "retryable", error }
+    : { kind: "blocked", error: `agent failure is not retryable: ${error}` };
+}
+
+function nonRetryableOrRetryableError(reason: unknown, entry: RunningEntry): string {
+  const event = typeof entry.last_codex_event === "string" ? entry.last_codex_event : null;
+  const tag = firstFailureTag(reason, entry);
+  if (event === "turn_cancelled" || tag === "turn_cancelled") {
+    return "agent turn was cancelled";
+  }
+  if (event === "unsupported_tool_call" || tag === "unsupported_tool_call") {
+    return "agent requested an unsupported tool";
+  }
+  if (event === "tool_call_failed" || tag === "tool_call_failed") {
+    return "agent tool call failed";
+  }
+  if (event === "turn_failed" || tag === "turn_failed") {
+    return "agent turn failed";
+  }
+  return `agent exited: ${inspectReason(reason)}`;
+}
+
+function retryableFailure(reason: unknown, entry: RunningEntry): boolean {
+  return failureSignals(reason, entry).some(retryableSignal);
+}
+
+function firstFailureTag(reason: unknown, entry: RunningEntry): string | null {
+  for (const signal of failureSignals(reason, entry)) {
+    const tag = failureTag(signal);
+    if (tag !== null) {
+      return tag;
+    }
+  }
+  return null;
+}
+
+function failureSignals(reason: unknown, entry: RunningEntry): unknown[] {
+  return [
+    reason,
+    entry.completion,
+    entry.last_codex_event,
+    entry.last_codex_message,
+    entry.blocker_codex_event,
+    entry.blocker_codex_message,
+  ];
+}
+
+function retryableSignal(signal: unknown): boolean {
+  const tag = failureTag(signal);
+  if (
+    tag === "turn_timeout" ||
+    tag === "port_exit" ||
+    tag === "response_timeout" ||
+    tag === "network_error" ||
+    tag === "network_disconnected" ||
+    tag === "connection_reset" ||
+    tag === "connection_refused" ||
+    tag === "socket_closed"
+  ) {
+    return true;
+  }
+  return retryableHttpSignal(signal, 0);
+}
+
+function failureTag(value: unknown): string | null {
+  if (typeof value === "string") {
+    return failureTagFromString(value);
+  }
+  if (!isObj(value)) {
+    return null;
+  }
+  for (const key of ["tag", "type", "code", "shutdown", "outcome"]) {
+    const field = value[key];
+    if (typeof field === "string" && field.trim() !== "") {
+      return field.trim();
+    }
+  }
+  return (
+    failureTag(value.reason) ??
+    failureTag(value.error) ??
+    failureTag(value.payload) ??
+    failureTag(value.params) ??
+    failureTag(value.details)
+  );
+}
+
+function failureTagFromString(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return null;
+  }
+  try {
+    return failureTag(JSON.parse(trimmed));
+  } catch {
+    // Keep scanning below.
+  }
+  const jsonTag = /"(?:tag|type|code|shutdown|outcome)"\s*:\s*"([^"]+)"/.exec(trimmed);
+  if (jsonTag) {
+    return jsonTag[1] ?? null;
+  }
+  for (const tag of [
+    "turn_input_required",
+    "approval_required",
+    "turn_timeout",
+    "port_exit",
+    "response_timeout",
+    "turn_cancelled",
+    "turn_failed",
+    "unsupported_tool_call",
+    "tool_call_failed",
+  ]) {
+    if (trimmed.includes(tag)) {
+      return tag;
+    }
+  }
+  return null;
+}
+
+function retryableHttpSignal(value: unknown, depth: number): boolean {
+  if (depth > 4) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return /\b(?:HTTP\s*)?(429|5\d\d)\b/i.test(value);
+  }
+  if (!isObj(value)) {
+    return false;
+  }
+  const status = httpStatus(value);
+  if (status === 429 || (status >= 500 && status <= 599)) {
+    return true;
+  }
+  return ["reason", "error", "payload", "params", "details", "cause", "message"].some((key) =>
+    retryableHttpSignal(value[key], depth + 1),
+  );
+}
+
+function httpStatus(value: Record<string, unknown>): number {
+  for (const key of ["status", "statusCode", "http_status", "httpStatus", "code"]) {
+    const status = integerFromUnknown(value[key]);
+    if (status !== null) {
+      return status;
+    }
+  }
+  return 0;
+}
+
+function integerFromUnknown(value: unknown): number | null {
+  if (typeof value === "number" && Number.isInteger(value)) {
+    return value;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return Number.parseInt(value.trim(), 10);
   }
   return null;
 }
@@ -1175,20 +1430,35 @@ function blockIssueFromEntry(
   issueId: string,
   entry: RunningEntry,
   error: string,
+  disposition: FailureDispositionKind = "blocked",
 ): State {
+  const lastMessage = entry.blocker_codex_message ?? entry.last_codex_message;
+  const lastEvent = entry.blocker_codex_event ?? entry.last_codex_event;
+  const lastTimestamp = entry.blocker_codex_timestamp ?? entry.last_codex_timestamp;
+  const sessionId = entry.blocker_session_id ?? runningEntrySessionId(entry);
+  const payload = rawBlockerPayload(lastMessage);
+  const prompt = operatorPromptFromPayload(payload);
   const blockedEntry: BlockedEntry = {
     issue_id: issueId,
     identifier: (entry.identifier as string | null | undefined) ?? issueId,
     issue: entry.issue,
+    title: isIssue(entry.issue) ? entry.issue.title : null,
+    issue_url: isIssue(entry.issue) ? entry.issue.url : null,
     backend: entry.backend ?? null,
     worker_host: entry.worker_host ?? null,
     workspace_path: entry.workspace_path ?? null,
-    session_id: runningEntrySessionId(entry),
+    session_id: sessionId,
     error,
+    blocked_reason: error,
+    disposition,
+    operator_prompt: prompt,
+    raw_blocker_payload: payload,
+    manual_recovery: manualRecoveryInfo(disposition, error, prompt, payload, sessionId),
+    retry_attempt: normalizeRetryAttempt(entry.retry_attempt),
     blocked_at: new Date(),
-    last_codex_message: entry.last_codex_message,
-    last_codex_event: entry.last_codex_event,
-    last_codex_timestamp: entry.last_codex_timestamp,
+    last_codex_message: lastMessage,
+    last_codex_event: lastEvent,
+    last_codex_timestamp: lastTimestamp,
   };
   return {
     ...state,
@@ -1197,6 +1467,115 @@ function blockIssueFromEntry(
     claimed: new Set(state.claimed).add(issueId),
     blocked: { ...state.blocked, [issueId]: blockedEntry },
   };
+}
+
+function blockIssueFromRetryMetadata(
+  state: State,
+  issueId: string,
+  attempt: number,
+  metadata: RetryMetadata,
+  error: string,
+): State {
+  const sessionId = null;
+  const payload = metadata.error ?? null;
+  const blockedEntry: BlockedEntry = {
+    issue_id: issueId,
+    identifier: metadata.identifier ?? issueId,
+    issue_url: metadata.issue_url ?? null,
+    worker_host: metadata.worker_host ?? null,
+    workspace_path: metadata.workspace_path ?? null,
+    session_id: sessionId,
+    error,
+    blocked_reason: error,
+    disposition: "terminal",
+    operator_prompt: null,
+    raw_blocker_payload: payload,
+    manual_recovery: manualRecoveryInfo("terminal", error, null, payload, sessionId),
+    retry_attempt: attempt,
+    blocked_at: new Date(),
+    last_codex_message: payload,
+    last_codex_event: "retry_attempts_exhausted",
+    last_codex_timestamp: new Date(),
+  };
+  return {
+    ...state,
+    retry_attempts: omitKey(state.retry_attempts, issueId),
+    claimed: new Set(state.claimed).add(issueId),
+    blocked: { ...state.blocked, [issueId]: blockedEntry },
+  };
+}
+
+function manualRecoveryInfo(
+  disposition: FailureDispositionKind,
+  error: string,
+  prompt: string | null,
+  payload: unknown,
+  sessionId: string | null,
+): ManualRecoveryInfo {
+  return {
+    action:
+      disposition === "terminal"
+        ? "inspect_failure_then_rerun"
+        : "provide_required_input_or_approval_then_rerun",
+    reason: error,
+    prompt,
+    payload,
+    session_id: sessionId,
+    automatic_retry: false,
+    resume_supported: false,
+    rerun_supported: true,
+  };
+}
+
+function rawBlockerPayload(message: unknown): unknown {
+  const payload = summarizedMessagePayload(message);
+  if (isObj(payload)) {
+    const reason = payload.reason;
+    if (isObj(reason) && "payload" in reason) {
+      return reason.payload;
+    }
+    if ("payload" in payload && !("method" in payload)) {
+      return payload.payload;
+    }
+  }
+  return payload;
+}
+
+function summarizedMessagePayload(message: unknown): unknown {
+  if (isObj(message) && "message" in message) {
+    return message.message;
+  }
+  return message;
+}
+
+function operatorPromptFromPayload(payload: unknown): string | null {
+  for (const path of [
+    ["params", "message"],
+    ["params", "prompt"],
+    ["params", "reason"],
+    ["params", "title"],
+    ["message"],
+    ["prompt"],
+    ["reason"],
+    ["title"],
+  ]) {
+    const value = valueAtPath(payload, path);
+    if (typeof value === "string" && value.trim() !== "") {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function valueAtPath(payload: unknown, path: string[]): unknown {
+  let current: unknown = payload;
+  for (const key of path) {
+    if (!isObj(current)) {
+      return null;
+    }
+    current = current[key];
+  }
+  return current;
 }
 
 // ---- completion / retry bookkeeping ----------------------------------------
@@ -1250,6 +1629,15 @@ function findIssueIdForRef(running: Record<string, RunningEntry>, ref: unknown):
   return null;
 }
 
+function findBlockedEntry(state: State, issueIdentifier: string): [string, BlockedEntry] | null {
+  for (const [issueId, entry] of Object.entries(state.blocked)) {
+    if (issueId === issueIdentifier || entry.identifier === issueIdentifier) {
+      return [issueId, entry];
+    }
+  }
+  return null;
+}
+
 function maybePutRuntimeValue(
   entry: RunningEntry,
   key: "worker_host" | "workspace_path",
@@ -1276,13 +1664,27 @@ function integrateCodexUpdate(
   const lastReportedTotal = numOr0(entry.codex_last_reported_total_tokens);
   const turnCount = numOr0(entry.turn_count);
   const priorSessionId = typeof entry.session_id === "string" ? entry.session_id : null;
+  const nextSessionId = sessionIdForUpdate(entry.session_id ?? null, update);
+  const summary = summarizeCodexUpdate(update);
+  const blockerEvent = blockerEventForUpdate(update, summary);
+  const blockerUpdate =
+    blockerEvent === null
+      ? {}
+      : blockerFieldsForUpdate(
+          entry,
+          blockerEvent,
+          update.event,
+          summary,
+          update.timestamp,
+          nextSessionId,
+        );
 
   return {
     entry: {
       ...entry,
       last_codex_timestamp: update.timestamp,
-      last_codex_message: summarizeCodexUpdate(update),
-      session_id: sessionIdForUpdate(entry.session_id ?? null, update),
+      last_codex_message: summary,
+      session_id: nextSessionId,
       last_codex_event: update.event,
       codex_app_server_pid: codexAppServerPidForUpdate(entry.codex_app_server_pid ?? null, update),
       codex_input_tokens: codexInput + tokenDelta.input_tokens,
@@ -1292,8 +1694,29 @@ function integrateCodexUpdate(
       codex_last_reported_output_tokens: Math.max(lastReportedOutput, tokenDelta.output_reported),
       codex_last_reported_total_tokens: Math.max(lastReportedTotal, tokenDelta.total_reported),
       turn_count: turnCountForUpdate(turnCount, priorSessionId, update),
+      ...blockerUpdate,
     },
     tokenDelta,
+  };
+}
+
+function blockerFieldsForUpdate(
+  entry: RunningEntry,
+  event: string,
+  updateEvent: string,
+  message: unknown,
+  timestamp: Date,
+  sessionId: string | null,
+): Partial<RunningEntry> {
+  const hasExistingBlocker = typeof entry.blocker_codex_event === "string";
+  if (hasExistingBlocker && updateEvent !== event) {
+    return {};
+  }
+  return {
+    blocker_codex_message: message,
+    blocker_codex_event: event,
+    blocker_codex_timestamp: timestamp,
+    blocker_session_id: sessionId,
   };
 }
 
@@ -1334,9 +1757,19 @@ function summarizeCodexUpdate(update: CodexUpdate): {
 } {
   return {
     event: update.event,
-    message: update.payload ?? update.raw,
+    message: update.payload ?? update.raw ?? terminalUpdateDetails(update),
     timestamp: update.timestamp,
   };
+}
+
+function terminalUpdateDetails(update: CodexUpdate): unknown {
+  if ("reason" in update) {
+    return { reason: update.reason };
+  }
+  if ("error" in update) {
+    return { error: update.error };
+  }
+  return null;
 }
 
 function applyCodexTokenDelta(state: State, tokenDelta: TokenDelta): State {
@@ -1567,7 +2000,10 @@ function blockedIssueState(entry: BlockedEntry): string | null | undefined {
 }
 
 function blockedIssueUrl(entry: BlockedEntry): string | null | undefined {
-  return isIssue(entry.issue) ? entry.issue.url : null;
+  if (isIssue(entry.issue)) {
+    return entry.issue.url;
+  }
+  return typeof entry.issue_url === "string" ? entry.issue_url : null;
 }
 
 function nextPollInMs(nextPollDueAtMs: number | null | undefined, now: number): number | null {
@@ -1641,11 +2077,20 @@ export class Orchestrator {
   }
 
   call(
-    msg: { tag: "snapshot" } | { tag: "request_refresh" },
-  ): Promise<Snapshot | RequestRefreshReply> {
+    msg:
+      | { tag: "snapshot" }
+      | { tag: "request_refresh" }
+      | { tag: "rerun_blocked_issue"; issueIdentifier: string },
+  ): Promise<Snapshot | RequestRefreshReply | RerunBlockedReply> {
     return this.enqueue(() => {
       if (msg.tag === "snapshot") {
         return this.handleSnapshot(this.state).then((result) => {
+          this.state = result.state;
+          return result.reply;
+        });
+      }
+      if (msg.tag === "rerun_blocked_issue") {
+        return this.handleRerunBlockedIssue(this.state, msg.issueIdentifier).then((result) => {
           this.state = result.state;
           return result.reply;
         });
@@ -1683,6 +2128,13 @@ export class Orchestrator {
 
   requestRefresh(): Promise<RequestRefreshReply> {
     return this.call({ tag: "request_refresh" }) as Promise<RequestRefreshReply>;
+  }
+
+  rerunBlockedIssue(issueIdentifier: string): Promise<RerunBlockedReply> {
+    return this.call({
+      tag: "rerun_blocked_issue",
+      issueIdentifier,
+    }) as Promise<RerunBlockedReply>;
   }
 
   // ---- test seams (Elixir `:sys.get_state` / `:sys.replace_state`) ---------
@@ -1805,7 +2257,14 @@ export class Orchestrator {
     if (inputRequiredBlocker(entry)) {
       return this.blockInputRequiredAgentDown(state, issueId, entry, sessionId, reason);
     }
-    return this.retryAgentDown(state, issueId, entry, sessionId, reason);
+    const disposition = classifyAgentFailure(reason, entry);
+    if (disposition.kind === "blocked") {
+      logger.warning(
+        `Agent task blocked for issue_id=${issueId} issue_identifier=${entry.identifier} session_id=${sessionId}: ${disposition.error}`,
+      );
+      return blockIssueFromEntry(state, issueId, entry, disposition.error);
+    }
+    return this.retryAgentDown(state, issueId, entry, sessionId, disposition.error);
   }
 
   private blockInputRequiredAgentDown(
@@ -1827,15 +2286,16 @@ export class Orchestrator {
     issueId: string,
     entry: RunningEntry,
     sessionId: string,
-    reason: unknown,
+    error: string,
   ): State {
     logger.warning(
-      `Agent task exited for issue_id=${issueId} session_id=${sessionId} reason=${inspectReason(reason)}; scheduling retry`,
+      `Agent task exited for issue_id=${issueId} session_id=${sessionId} reason=${error}; scheduling retry`,
     );
     return this.scheduleIssueRetry(state, issueId, nextRetryAttemptFromRunning(entry), {
       identifier: entry.identifier ?? null,
       issue_url: isIssue(entry.issue) ? entry.issue.url : null,
-      error: `agent exited: ${inspectReason(reason)}`,
+      error,
+      retry_class: "retryable",
       run_kind: entry.run_kind ?? "normal",
       worker_host: entry.worker_host ?? null,
       workspace_path: entry.workspace_path ?? null,
@@ -1930,6 +2390,12 @@ export class Orchestrator {
       workspace_path: entry.workspace_path ?? null,
       session_id: entry.session_id ?? null,
       error: entry.error ?? null,
+      blocked_reason: entry.blocked_reason ?? entry.error ?? null,
+      disposition: entry.disposition ?? "blocked",
+      operator_prompt: entry.operator_prompt ?? null,
+      raw_blocker_payload: entry.raw_blocker_payload ?? null,
+      manual_recovery: entry.manual_recovery ?? null,
+      retry_attempt: entry.retry_attempt ?? null,
       blocked_at: entry.blocked_at ?? null,
       last_codex_timestamp: entry.last_codex_timestamp ?? null,
       last_codex_message: entry.last_codex_message ?? null,
@@ -1963,6 +2429,66 @@ export class Orchestrator {
         coalesced,
         requested_at: new Date(),
         operations: ["poll", "reconcile"],
+      },
+      state: next,
+    };
+  }
+
+  private async handleRerunBlockedIssue(
+    state: State,
+    issueIdentifier: string,
+  ): Promise<{ reply: RerunBlockedReply; state: State }> {
+    const requestedAt = new Date();
+    const found = findBlockedEntry(state, issueIdentifier);
+    if (found === null) {
+      return {
+        reply: { queued: false, error: "blocked_issue_not_found", requested_at: requestedAt },
+        state,
+      };
+    }
+    const [issueId, entry] = found;
+    const fetched = await Tracker.fetchIssueStatesByIds([issueId]);
+    if (!fetched.ok) {
+      return {
+        reply: {
+          queued: false,
+          error: "issue_refresh_failed",
+          requested_at: requestedAt,
+          reason: fetched.error,
+        },
+        state,
+      };
+    }
+    const issue = fetched.value[0] ?? null;
+    if (issue === null || !retryCandidateIssue(issue, terminalStateSet())) {
+      return {
+        reply: { queued: false, error: "issue_not_active", requested_at: requestedAt },
+        state,
+      };
+    }
+    if (
+      !dispatchSlotsAvailable(issue, state) ||
+      !workerSlotsAvailable(state, entry.worker_host ?? null)
+    ) {
+      return {
+        reply: { queued: false, error: "no_dispatch_capacity", requested_at: requestedAt },
+        state,
+      };
+    }
+    const unblocked = {
+      ...state,
+      blocked: omitKey(state.blocked, issueId),
+      retry_attempts: omitKey(state.retry_attempts, issueId),
+      claimed: setWithout(state.claimed, issueId),
+    };
+    const next = await this.dispatchIssue(unblocked, issue, null, entry.worker_host ?? null);
+    return {
+      reply: {
+        queued: true,
+        issue_id: issueId,
+        issue_identifier: issue.identifier ?? null,
+        requested_at: requestedAt,
+        operation: "rerun_blocked",
       },
       state: next,
     };
@@ -2072,6 +2598,7 @@ export class Orchestrator {
       identifier,
       issue_url: isIssue(entry.issue) ? entry.issue.url : null,
       error: `stalled for ${elapsedMs}ms without codex activity`,
+      retry_class: "retryable",
       run_kind: entry.run_kind ?? "normal",
     });
   }
@@ -2316,6 +2843,7 @@ export class Orchestrator {
       return this.scheduleIssueRetry(state, issueId, attempt + 1, {
         ...metadata,
         error: `retry poll failed: ${inspectReason(candidates.error)}`,
+        retry_class: "retryable",
       });
     }
     const issue = findIssueById(candidates.value, issueId);
@@ -2336,6 +2864,7 @@ export class Orchestrator {
       return this.scheduleIssueRetry(state, issueId, attempt + 1, {
         ...metadata,
         error: `review retry refresh failed: ${inspectReason(fetched.error)}`,
+        retry_class: "retryable",
         run_kind: "review",
       });
     }
@@ -2417,8 +2946,20 @@ export class Orchestrator {
     const previous = state.retry_attempts[issueId] ?? { attempt: 0 };
     const nextAttempt =
       typeof attempt === "number" && Number.isInteger(attempt) ? attempt : previous.attempt + 1;
-    const delayMs = retryDelay(nextAttempt, metadata);
     const oldTimer = previous.timer_ref;
+    if (oldTimer) {
+      clearTimeout(oldTimer);
+      this.timers.delete(oldTimer);
+    }
+    if (retryAttemptsExhausted(nextAttempt, metadata)) {
+      const maxAttempts = settingsBang().agent.maxRetryAttempts;
+      const error = `retry attempts exhausted after ${maxAttempts} attempts: ${metadata.error ?? "retryable agent failure"}`;
+      logger.warning(
+        `Retry exhausted issue_id=${issueId} issue_identifier=${metadata.identifier ?? issueId} attempts=${maxAttempts} error=${error}`,
+      );
+      return blockIssueFromRetryMetadata(state, issueId, maxAttempts, metadata, error);
+    }
+    const delayMs = retryDelay(nextAttempt, metadata);
     const retryToken = Symbol("retry");
     const dueAtMs = nowMs() + delayMs;
     const identifier = pickRetryString(issueId, previous, metadata.identifier, previous.identifier);
@@ -2428,10 +2969,6 @@ export class Orchestrator {
     const workspacePath = metadata.workspace_path ?? previous.workspace_path ?? null;
     const runKind = metadata.run_kind ?? previous.run_kind;
 
-    if (oldTimer) {
-      clearTimeout(oldTimer);
-      this.timers.delete(oldTimer);
-    }
     const timerRef = setTimeout(() => {
       this.timers.delete(timerRef);
       this.cast({ tag: "retry_issue", issueId, retryToken });
@@ -2457,6 +2994,7 @@ export class Orchestrator {
           error,
           worker_host: workerHost,
           workspace_path: workspacePath,
+          ...(metadata.retry_class === undefined ? {} : { retry_class: metadata.retry_class }),
           ...(runKind === undefined ? {} : { run_kind: runKind }),
         },
       },
@@ -2508,6 +3046,13 @@ export class Orchestrator {
   }
 }
 
+function retryAttemptsExhausted(attempt: number, metadata: RetryMetadata): boolean {
+  if (metadata.retry_class !== "retryable") {
+    return false;
+  }
+  return attempt > settingsBang().agent.maxRetryAttempts;
+}
+
 function popRetryAttemptState(
   state: State,
   issueId: string,
@@ -2521,6 +3066,7 @@ function popRetryAttemptState(
       error: entry.error ?? null,
       worker_host: entry.worker_host ?? null,
       workspace_path: entry.workspace_path ?? null,
+      ...(entry.retry_class === undefined ? {} : { retry_class: entry.retry_class }),
       ...(entry.run_kind === undefined ? {} : { run_kind: entry.run_kind }),
     };
     return {

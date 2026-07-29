@@ -239,7 +239,7 @@ function blockedSection(blocked: Json[]): string {
     blocked.length === 0
       ? `<p class="empty-state">No blocked sessions.</p>`
       : `<div class="table-wrap"><table class="data-table" style="min-width: 760px;">
-        <thead><tr><th>Issue</th><th>State</th><th>Session</th><th>Blocked at</th><th>Last update</th><th>Error</th></tr></thead>
+        <thead><tr><th>Issue</th><th>State</th><th>Session</th><th>Blocked at</th><th>Last update</th><th>Reason</th><th>Action</th></tr></thead>
         <tbody>${blocked.map(blockedRow).join("")}</tbody>
       </table></div>`;
   return section(
@@ -257,8 +257,25 @@ function blockedRow(entry: Json): string {
     <td>${sessionCell(entry.session_id)}</td>
     <td class="mono">${escapeHtml(str(entry.blocked_at) || "n/a")}</td>
     <td>${eventCell(entry)}</td>
-    <td>${escapeHtml(str(entry.error) || "n/a")}</td>
+    <td>${blockedReasonCell(entry)}</td>
+    <td>${blockedActionCell(entry)}</td>
   </tr>`;
+}
+
+function blockedReasonCell(entry: Json): string {
+  const reason = str(entry.blocked_reason) || str(entry.error) || "n/a";
+  const prompt = str(entry.operator_prompt);
+  const promptFragment =
+    prompt === "" ? "" : `<span class="muted event-meta">${escapeHtml(prompt)}</span>`;
+  return `<div class="detail-stack"><span>${escapeHtml(reason)}</span>${promptFragment}</div>`;
+}
+
+function blockedActionCell(entry: Json): string {
+  const endpoint = str(asObj(entry.manual_recovery).rerun_endpoint);
+  if (endpoint === "") {
+    return `<span class="muted">n/a</span>`;
+  }
+  return `<form method="post" action="${escapeAttr(endpoint)}"><button type="submit" class="subtle-button">Rerun</button></form>`;
 }
 
 function retrySection(retrying: Json[]): string {

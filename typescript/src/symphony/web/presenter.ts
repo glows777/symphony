@@ -14,7 +14,12 @@ import {
   getAgentOutputStore,
 } from "../agent-output-store.ts";
 import { settingsBang } from "../config.ts";
-import type { RequestRefreshReply, Snapshot, SnapshotRunning } from "../orchestrator.ts";
+import type {
+  RequestRefreshReply,
+  RerunBlockedReply,
+  Snapshot,
+  SnapshotRunning,
+} from "../orchestrator.ts";
 import { humanizeCodexMessageExport } from "../status-dashboard.ts";
 
 export type SnapshotResult = Snapshot | "timeout" | "unavailable";
@@ -22,6 +27,7 @@ export type SnapshotResult = Snapshot | "timeout" | "unavailable";
 export type SnapshotProvider = {
   snapshot(timeoutMs: number): Promise<SnapshotResult>;
   requestRefresh(): Promise<RequestRefreshReply | "unavailable">;
+  rerunBlockedIssue?(issueIdentifier: string): Promise<RerunBlockedReply | "unavailable">;
 };
 
 type LooseEntry = Record<string, unknown>;
@@ -32,6 +38,19 @@ export type IssuePayloadResult =
   | { ok: false; error: "issue_not_found" };
 
 export type RefreshPayloadResult = { ok: true; value: Json } | { ok: false; error: "unavailable" };
+export type RerunBlockedPayloadResult =
+  | { ok: true; value: Json; status: 202 }
+  | {
+      ok: false;
+      status: 404 | 409 | 503;
+      error:
+        | "unavailable"
+        | "blocked_issue_not_found"
+        | "issue_refresh_failed"
+        | "issue_not_active"
+        | "no_dispatch_capacity";
+      reason?: unknown;
+    };
 
 export async function statePayload(
   provider: SnapshotProvider,
@@ -145,6 +164,35 @@ export async function refreshPayload(provider: SnapshotProvider): Promise<Refres
   return {
     ok: true,
     value: { ...payload, requested_at: iso8601(payload.requested_at) },
+  };
+}
+
+export async function rerunBlockedPayload(
+  issueIdentifier: string,
+  provider: SnapshotProvider,
+): Promise<RerunBlockedPayloadResult> {
+  if (provider.rerunBlockedIssue === undefined) {
+    return { ok: false, status: 503, error: "unavailable" };
+  }
+  const payload = await provider.rerunBlockedIssue(issueIdentifier);
+  if (payload === "unavailable") {
+    return { ok: false, status: 503, error: "unavailable" };
+  }
+  if (payload.queued) {
+    return {
+      ok: true,
+      status: 202,
+      value: {
+        ...payload,
+        requested_at: iso8601(payload.requested_at),
+      },
+    };
+  }
+  return {
+    ok: false,
+    status: rerunErrorStatus(payload.error),
+    error: payload.error,
+    reason: payload.reason,
   };
 }
 
@@ -267,6 +315,12 @@ function blockedEntryPayload(entry: LooseEntry): Json {
     issue_url: entry.issue_url ?? null,
     state: entry.state,
     error: entry.error,
+    blocked_reason: entry.blocked_reason ?? entry.error ?? null,
+    disposition: entry.disposition ?? "blocked",
+    operator_prompt: entry.operator_prompt ?? null,
+    raw_blocker_payload: entry.raw_blocker_payload ?? null,
+    manual_recovery: manualRecoveryPayload(entry),
+    retry_attempt: entry.retry_attempt ?? null,
     worker_host: entry.worker_host ?? null,
     workspace_path: entry.workspace_path ?? null,
     session_id: entry.session_id,
@@ -317,11 +371,35 @@ function blockedIssuePayload(blocked: LooseEntry): Json {
     session_id: blocked.session_id,
     state: blocked.state,
     error: blocked.error,
+    blocked_reason: blocked.blocked_reason ?? blocked.error ?? null,
+    disposition: blocked.disposition ?? "blocked",
+    operator_prompt: blocked.operator_prompt ?? null,
+    raw_blocker_payload: blocked.raw_blocker_payload ?? null,
+    manual_recovery: manualRecoveryPayload(blocked),
+    retry_attempt: blocked.retry_attempt ?? null,
     blocked_at: iso8601(blocked.blocked_at),
     last_event: blocked.last_codex_event,
     last_message: summarizeMessage(blocked.last_codex_message),
     last_event_at: iso8601(blocked.last_codex_timestamp),
   };
+}
+
+function manualRecoveryPayload(entry: LooseEntry): Json | null {
+  const recovery = entry.manual_recovery;
+  if (!isRecord(recovery)) {
+    return null;
+  }
+  return {
+    ...recovery,
+    rerun_endpoint: rerunEndpoint(str(entry, "identifier")),
+  };
+}
+
+function rerunEndpoint(identifier: string | null): string | null {
+  if (identifier === null || identifier.trim() === "") {
+    return null;
+  }
+  return `/api/v1/${encodeURIComponent(identifier)}/rerun`;
 }
 
 function workspacePath(
@@ -442,9 +520,31 @@ function errorBody(code: string, message: string): Json {
   return { code, message };
 }
 
+function rerunErrorStatus(
+  error:
+    | "blocked_issue_not_found"
+    | "issue_refresh_failed"
+    | "issue_not_active"
+    | "no_dispatch_capacity",
+): 404 | 409 | 503 {
+  switch (error) {
+    case "blocked_issue_not_found":
+      return 404;
+    case "issue_not_active":
+    case "no_dispatch_capacity":
+      return 409;
+    case "issue_refresh_failed":
+      return 503;
+  }
+}
+
 function str(entry: LooseEntry, key: string): string | null {
   const value = entry[key];
   return typeof value === "string" ? value : null;
+}
+
+function isRecord(value: unknown): value is Json {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function dueAtIso8601(dueInMs: unknown): string | null {

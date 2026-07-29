@@ -35,6 +35,23 @@ function stoppableTask(): RunningTask & { stopped: boolean } {
   return task;
 }
 
+function codexScript(traceFile: string, cases: string): string {
+  return `#!/bin/sh
+trace_file="${traceFile}"
+count=0
+while IFS= read -r line; do
+  count=$((count + 1))
+  printf 'JSON:%s\\n' "$line" >> "$trace_file"
+  case "$count" in
+${cases}
+  *)
+    exit 0
+    ;;
+  esac
+done
+`;
+}
+
 function expectDueInRange(dueAtMs: number, minRemaining: number, maxRemaining: number): void {
   const remaining = dueAtMs - nowMs();
   expect(remaining).toBeGreaterThanOrEqual(minRemaining);
@@ -183,7 +200,7 @@ describe("Orchestrator live (core_test)", () => {
     expectDueInRange(retry?.due_at_ms ?? 0, 500, 1_100);
   });
 
-  test("abnormal worker exit increments retry attempt progressively", async () => {
+  test("retryable worker exit increments retry attempt progressively", async () => {
     const orch = makeOrchestrator();
     const issueId = "issue-crash";
     const ref = Symbol("ref");
@@ -196,16 +213,16 @@ describe("Orchestrator live (core_test)", () => {
       started_at: new Date(),
     });
 
-    await orch.cast({ tag: "down", ref, reason: ":boom" });
+    await orch.cast({ tag: "down", ref, reason: { tag: "turn_timeout" } });
 
     const retry = orch.getState().retry_attempts[issueId];
     expect(retry?.attempt).toBe(3);
     expect(retry?.identifier).toBe("MT-559");
-    expect(retry?.error).toBe("agent exited: :boom");
+    expect(retry?.error).toBe('agent exited: {"tag":"turn_timeout"}');
     expectDueInRange(retry?.due_at_ms ?? 0, 39_500, 40_500);
   });
 
-  test("first abnormal worker exit waits before retrying", async () => {
+  test("first retryable worker exit waits before retrying", async () => {
     const orch = makeOrchestrator();
     const issueId = "issue-crash-initial";
     const ref = Symbol("ref");
@@ -217,16 +234,37 @@ describe("Orchestrator live (core_test)", () => {
       started_at: new Date(),
     });
 
-    await orch.cast({ tag: "down", ref, reason: ":boom" });
+    await orch.cast({ tag: "down", ref, reason: { tag: "turn_timeout" } });
 
     const retry = orch.getState().retry_attempts[issueId];
     expect(retry?.attempt).toBe(1);
     expect(retry?.identifier).toBe("MT-560");
-    expect(retry?.error).toBe("agent exited: :boom");
+    expect(retry?.error).toBe('agent exited: {"tag":"turn_timeout"}');
     expectDueInRange(retry?.due_at_ms ?? 0, 9_000, 10_500);
   });
 
-  test("abnormal Review Agent exit preserves the review retry kind", async () => {
+  test("unclassified worker exits block instead of retrying blind", async () => {
+    const orch = makeOrchestrator();
+    const issueId = "issue-unclassified-crash";
+    const ref = Symbol("ref");
+    injectRunning(orch, issueId, {
+      task: stoppableTask(),
+      ref,
+      identifier: "MT-UNCLASSIFIED",
+      issue: newIssue({ id: issueId, identifier: "MT-UNCLASSIFIED", state: "In Progress" }),
+      started_at: new Date(),
+    });
+
+    await orch.cast({ tag: "down", ref, reason: ":boom" });
+
+    const state = orch.getState();
+    expect(issueId in state.retry_attempts).toBe(false);
+    expect(state.blocked[issueId]?.error).toBe(
+      "agent failure is not retryable: agent exited: :boom",
+    );
+  });
+
+  test("retryable Review Agent exit preserves the review retry kind", async () => {
     const orch = makeOrchestrator();
     const issueId = "issue-review-crash";
     const ref = Symbol("ref");
@@ -239,10 +277,117 @@ describe("Orchestrator live (core_test)", () => {
       started_at: new Date(),
     });
 
-    await orch.cast({ tag: "down", ref, reason: ":boom" });
+    await orch.cast({ tag: "down", ref, reason: { tag: "turn_timeout" } });
 
     const retry = orch.getState().retry_attempts[issueId];
     expect(retry?.run_kind).toBe("review");
+  });
+
+  test("app-server input required blocks live orchestrator without retry or redispatch", async () => {
+    const workspaceRoot = path.join(root, "codex-live-workspaces");
+    const codexBinary = path.join(root, "fake-codex-live");
+    const traceFile = path.join(root, "fake-codex-live.trace");
+    const cases = `  1)
+    printf '%s\\n' '{"id":1,"result":{}}'
+    ;;
+  2)
+    ;;
+  3)
+    printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-live-input"}}}'
+    ;;
+  4)
+    printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-live-input"}}}'
+    printf '%s\\n' '{"method":"mcpServer/elicitation/request","params":{"message":"Allow GitHub to run tool update_pull_request?"}}'
+    ;;`;
+    fs.writeFileSync(codexBinary, codexScript(traceFile, cases));
+    fs.chmodSync(codexBinary, 0o755);
+    writeWorkflowFile(workflowFilePath(), {
+      tracker_kind: "memory",
+      tracker_required_labels: ["symphony"],
+      workspace_root: workspaceRoot,
+      codex_command: `${codexBinary} app-server`,
+      max_retry_backoff_ms: 20,
+    });
+    const issue = newIssue({
+      id: "issue-live-input",
+      identifier: "MT-LIVE-INPUT",
+      title: "Live input",
+      state: "In Progress",
+      labels: ["symphony"],
+      url: "https://example.org/issues/MT-LIVE-INPUT",
+    });
+    putEnv("memory_tracker_issues", [issue]);
+    const orch = makeOrchestrator();
+
+    await orch.cast({ tag: "run_poll_cycle" });
+    await waitFor(() => "issue-live-input" in orch.getState().blocked, 3_000);
+    await sleep(120);
+
+    const state = orch.getState();
+    expect("issue-live-input" in state.running).toBe(false);
+    expect("issue-live-input" in state.retry_attempts).toBe(false);
+    expect(state.blocked["issue-live-input"]?.operator_prompt).toBe(
+      "Allow GitHub to run tool update_pull_request?",
+    );
+    expect(state.blocked["issue-live-input"]?.session_id).toBe("thread-live-input-turn-live-input");
+
+    const trace = fs
+      .readFileSync(traceFile, "utf8")
+      .split("\n")
+      .filter((line) => line.startsWith("JSON:"))
+      .map((line) => JSON.parse(line.slice("JSON:".length)));
+    expect(trace.filter((message) => message.method === "turn/start")).toHaveLength(1);
+  });
+
+  test("manual rerun dispatches a blocked issue only after the explicit action", async () => {
+    const backend = blockingBackend();
+    putEnv("agent_backend_overrides", { codex: backend.plugin });
+    writeWorkflowFile(workflowFilePath(), {
+      tracker_kind: "memory",
+      tracker_required_labels: ["symphony"],
+      workspace_root: path.join(root, "manual-rerun-workspaces"),
+    });
+    const issueId = "issue-manual-rerun";
+    const issue = newIssue({
+      id: issueId,
+      identifier: "MT-MANUAL-RERUN",
+      title: "Manual rerun",
+      state: "In Progress",
+      labels: ["symphony"],
+    });
+    putEnv("memory_tracker_issues", [issue]);
+    const orch = makeOrchestrator();
+    orch.replaceState((state) => ({
+      ...state,
+      claimed: new Set([issueId]),
+      blocked: {
+        [issueId]: {
+          issue_id: issueId,
+          identifier: issue.identifier,
+          issue,
+          error: "codex turn requires operator input",
+          worker_host: null,
+          workspace_path: null,
+        },
+      },
+    }));
+
+    await sleep(50);
+    expect(backend.turns).toHaveLength(0);
+
+    const reply = await orch.rerunBlockedIssue("MT-MANUAL-RERUN");
+    expect(reply).toMatchObject({
+      queued: true,
+      issue_id: issueId,
+      issue_identifier: "MT-MANUAL-RERUN",
+      operation: "rerun_blocked",
+    });
+    await waitFor(() => backend.turns.length === 1);
+    expect(issueId in orch.getState().blocked).toBe(false);
+    expect(orch.getState().running[issueId]?.identifier).toBe("MT-MANUAL-RERUN");
+
+    backend.resume();
+    await waitFor(() => !(issueId in orch.getState().running));
   });
 
   test("stale retry timer messages do not consume newer retry entries", async () => {
