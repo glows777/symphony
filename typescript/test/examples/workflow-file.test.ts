@@ -65,6 +65,7 @@ describe("WORKFLOW.md (Linear + codex)", () => {
     expect(config.tracker.terminalStates).not.toContain("In Review");
     expect(config.agent.backend).toBe("codex");
     expect(config.agent.maxConcurrentAgentsByState).toEqual({ todo: 2, "in progress": 3 });
+    expect(config.review.verificationCommand).toBe("cd typescript && bun run check");
     expect(config.hooks.afterCreate).toContain("git clone");
     expect(config.hooks.beforeRun).not.toBeNull();
     expect(config.hooks.beforeRemove).toContain("gh pr");

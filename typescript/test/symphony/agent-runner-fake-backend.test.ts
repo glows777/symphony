@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,8 +11,10 @@ import type {
   AgentSession,
   OnAgentMessage,
   ToolProvider,
+  TurnContext,
 } from "../../src/symphony/plugins/agents/types.ts";
 import { ok } from "../../src/symphony/result.ts";
+import type { GitHubRequest, ReviewContext } from "../../src/symphony/review-context.ts";
 import { type Issue, newIssue } from "../../src/symphony/work-item.ts";
 import { workflowFilePath } from "../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";
@@ -46,6 +49,7 @@ function fakeBackend(caps: {
   backendId?: "codex" | "claude_code";
   // Blocks each turn until resolved, so a test can abort mid-turn.
   turnGate?: () => Promise<void>;
+  onTurn?: (session: AgentSession, context: TurnContext) => void | Promise<void>;
 }): {
   plugin: AgentBackendPlugin;
   turns: TurnRecord[];
@@ -95,6 +99,7 @@ function fakeBackend(caps: {
           workerHost: session.workerHost,
           hasToolProvider: handle.toolProvider !== null,
         });
+        await caps.onTurn?.(session, context);
         // Contract: usage MUST be the cumulative absolute total for the session.
         handle.sessionTokens += 25;
         handle.onMessage?.({
@@ -120,6 +125,60 @@ function fakeBackend(caps: {
   };
 
   return { plugin, turns, sessionCount: () => sessions, stopCount: () => stops };
+}
+
+function emptyReviewContext(): ReviewContext {
+  return {
+    repository: "glows777/symphony",
+    pullRequestNumber: 15,
+    pullRequestUrl: "https://github.com/glows777/symphony/pull/15",
+    headBranch: "symphony/MT-1",
+    headSha: "a".repeat(40),
+    snapshotId: crypto.createHash("sha256").update("[]").digest("hex"),
+    fetchedAt: "2026-07-28T00:00:00Z",
+    findings: [],
+    submissions: [],
+    replyReceipts: {},
+  };
+}
+
+function emptyReviewRequest(context: ReviewContext): GitHubRequest {
+  return async (url, init) => {
+    if (init.method === "POST") {
+      return ok({
+        status: 200,
+        body: {
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        },
+      });
+    }
+    if (url.includes("/pulls?")) {
+      return ok({
+        status: 200,
+        body: [
+          {
+            number: context.pullRequestNumber,
+            html_url: context.pullRequestUrl,
+            state: "open",
+            head: { ref: context.headBranch, sha: context.headSha },
+          },
+        ],
+      });
+    }
+    if (url.includes("/issues/15/comments") || url.includes("/pulls/15/reviews")) {
+      return ok({ status: 200, body: [] });
+    }
+    return ok({ status: 404, body: { message: "unexpected test URL" } });
+  };
 }
 
 function codexUpdates(
@@ -168,6 +227,90 @@ describe("AgentRunner with a synthetic backend", () => {
     expect(backend.turns[0]?.prompt).not.toContain("Continuation guidance");
     expect(backend.turns[1]?.prompt).toContain("Continuation guidance");
     expect(backend.turns[2]?.prompt).toContain("continuation turn #3 of 3");
+  });
+
+  test("review runs execute one turn and immediately apply the completion gate", async () => {
+    const context = emptyReviewContext();
+    const backend = fakeBackend({
+      multiTurn: true,
+      onTurn: (session) => {
+        const handoffDir = path.join(session.workspace, ".symphony");
+        fs.mkdirSync(handoffDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(handoffDir, "review-handoff.json"),
+          JSON.stringify({
+            version: 2,
+            baseline_head_sha: context.headSha,
+            snapshot_id: context.snapshotId,
+            findings: [],
+          }),
+        );
+      },
+    });
+    putEnv("agent_backend_overrides", { codex: backend.plugin });
+    const events: unknown[] = [];
+    putEnv("memory_tracker_recipient", (event: unknown) => events.push(event));
+    writeWorkflowFile(workflowFilePath(), {
+      tracker_kind: "memory",
+      workspace_root: workspaceRoot,
+      review_repository: context.repository,
+      review_github_token: "test-token",
+    });
+    issue = newIssue({
+      ...issue,
+      state: "In Progress",
+      labels: ["symphony-review"],
+    });
+
+    await run(issue, null, {
+      maxTurns: 5,
+      issueStateFetcher: staysActive,
+      reviewContext: context,
+      reviewProviderOptions: { requestFun: emptyReviewRequest(context) },
+    });
+
+    expect(backend.turns.map((turn) => turn.turnNumber)).toEqual([1]);
+    expect(backend.turns.map((turn) => turn.maxTurns)).toEqual([1]);
+    expect(events).toEqual([
+      {
+        tag: "memory_tracker_state_update",
+        issueId: "issue-1",
+        stateName: "In Review",
+      },
+    ]);
+  });
+
+  test("an incomplete review handoff is a structured failure after one turn", async () => {
+    const context = emptyReviewContext();
+    const backend = fakeBackend({ multiTurn: true });
+    putEnv("agent_backend_overrides", { codex: backend.plugin });
+    writeWorkflowFile(workflowFilePath(), {
+      tracker_kind: "memory",
+      workspace_root: workspaceRoot,
+      review_repository: context.repository,
+      review_github_token: "test-token",
+    });
+    issue = newIssue({
+      ...issue,
+      state: "In Progress",
+      labels: ["symphony-review"],
+    });
+
+    let thrown: unknown;
+    try {
+      await run(issue, null, {
+        maxTurns: 5,
+        issueStateFetcher: staysActive,
+        reviewContext: context,
+        reviewProviderOptions: { requestFun: emptyReviewRequest(context) },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toEqual(expect.objectContaining({ tag: "review_incomplete" }));
+    expect(backend.turns.map((turn) => turn.turnNumber)).toEqual([1]);
+    expect(backend.turns.map((turn) => turn.maxTurns)).toEqual([1]);
   });
 
   test("uses the backend session run id for the JSONL file", async () => {

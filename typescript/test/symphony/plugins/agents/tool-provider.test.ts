@@ -40,6 +40,70 @@ describe("Plugins.Agents.ToolProvider", () => {
     expect(outcome.payload).toEqual({ data: { viewer: { id: "usr_1" } } });
   });
 
+  test("blocks all direct Linear mutations during a review run", async () => {
+    let called = false;
+    const outcome = await trackerToolProvider({
+      reviewStateGate: true,
+      linearClient: () => {
+        called = true;
+        return ok({ data: { issueUpdate: { success: true } } });
+      },
+    }).execute("linear_graphql", {
+      query:
+        'mutation MoveIssue { issueUpdate(id: "issue-1", input: {stateId: "review"}) { success } }',
+    });
+
+    expect(outcome.success).toBe(false);
+    expect(called).toBe(false);
+    expect(outcome.payload).toEqual({
+      error: {
+        message:
+          "Review runs cannot execute Linear mutations directly. Complete the per-finding handoff; Symphony applies the completion gate.",
+        tag: "review_state_gate",
+      },
+    });
+  });
+
+  test("does not let GraphQL comments bypass the review mutation gate", async () => {
+    let called = false;
+    const outcome = await trackerToolProvider({
+      reviewStateGate: true,
+      linearClient: () => {
+        called = true;
+        return ok({ data: { issueUpdate: { success: true } } });
+      },
+    }).execute("linear_graphql", {
+      query:
+        'mutation MoveIssue { issueUpdate # gate-bypass\n (id: "issue-1", input: {stateId: "review"}) { success } }',
+    });
+
+    expect(outcome.success).toBe(false);
+    expect(called).toBe(false);
+    expect(outcome.payload).toEqual({
+      error: {
+        message:
+          "Review runs cannot execute Linear mutations directly. Complete the per-finding handoff; Symphony applies the completion gate.",
+        tag: "review_state_gate",
+      },
+    });
+  });
+
+  test("does not mistake query strings or comments for a mutation operation", async () => {
+    let called = false;
+    const outcome = await trackerToolProvider({
+      reviewStateGate: true,
+      linearClient: () => {
+        called = true;
+        return ok({ data: { issue: { id: "issue-1" } } });
+      },
+    }).execute("linear_graphql", {
+      query: 'query ReadIssue { issue(id: "mutation") { id } } # mutation is data',
+    });
+
+    expect(outcome.success).toBe(true);
+    expect(called).toBe(true);
+  });
+
   test("returns an unsupported-tool payload carrying the supported tool list", async () => {
     const outcome = await trackerToolProvider().execute("not_a_real_tool", {});
     expect(outcome.success).toBe(false);

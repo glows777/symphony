@@ -328,6 +328,7 @@ Returned workflow object:
 Top-level keys:
 
 - `tracker`
+- `review`
 - `polling`
 - `workspace`
 - `hooks`
@@ -368,7 +369,58 @@ Fields:
 - `terminal_states` (list of strings)
   - Default: `Closed`, `Cancelled`, `Canceled`, `Duplicate`, `Done`
 
-#### 5.3.2 `polling` (object)
+#### 5.3.2 `review` (object)
+
+Review runs are explicit and opt-in. An issue must carry `trigger_label` (default
+`symphony-review`) before Symphony contacts GitHub.
+
+Fields:
+
+- `trigger_label` (string)
+  - Default: `symphony-review`.
+- `repository` (string or null)
+  - GitHub `owner/name`; required when the trigger is present.
+- `head_branch` (string)
+  - Default: `symphony/{{ issue.identifier }}`.
+- `github_api_url` (string)
+  - Default: `https://api.github.com`.
+- `github_token` (string or `$VAR_NAME`)
+  - Defaults to `$GITHUB_TOKEN`; missing credentials fail closed.
+- `manual_state` (string)
+  - Default: `In Progress`; API failures and incomplete handoffs stay here.
+- `handoff_path` (relative path)
+  - Default: `.symphony/review-handoff.json`.
+- `verification_command` (string or null)
+  - Default: `null`.
+  - Trusted operator-owned command run in the selected workspace after the review turn.
+  - A fixed finding can pass only when this command exits successfully on a clean worktree whose
+    `HEAD` matches the latest pushed PR head.
+
+The provider locates exactly one open PR, reads paginated top-level comments,
+review submissions, and unresolved GraphQL review threads (including outdated
+threads and their complete comment history). The latest `CHANGES_REQUESTED`
+submission from each reviewer is also a finding unless a later submission by
+that reviewer supersedes it. The provider pins the baseline PR head and a
+content revision for every finding. Review text is serialized inside one
+untrusted JSON data boundary.
+
+A review run gets one agent turn and writes a version-2 claim-only handoff with
+the baseline head, snapshot id, finding id, finding revision, and one `fixed`,
+`deferred`, or `blocked` result per finding. Commit, test, approval, and reply
+receipt fields are provider-owned and MUST NOT be accepted from the handoff.
+Only `fixed` findings count as complete; `deferred` and `blocked` findings remain
+in manual handling. Fixed claims require a pushed descendant PR head and a
+successful configured verification command bound to that exact clean commit.
+
+Symphony reads and verifies the handoff on the selected local or remote worker,
+posts idempotent provider-marked replies, re-fetches GitHub again immediately
+before the transition, refreshes tracker routing state, and moves the issue to
+`In Review` only when every current finding is fixed. Missing or incomplete
+handoffs and provider, snapshot, verification, or routing failures are
+structured review failures; the orchestrator blocks automatic retries and one
+fail-closed owner keeps the issue in `manual_state`.
+
+#### 5.3.3 `polling` (object)
 
 Fields:
 
@@ -376,7 +428,7 @@ Fields:
   - Default: `30000`
   - Changes SHOULD be re-applied at runtime and affect future tick scheduling without restart.
 
-#### 5.3.3 `workspace` (object)
+#### 5.3.4 `workspace` (object)
 
 Fields:
 
@@ -386,7 +438,7 @@ Fields:
   - Relative paths are resolved relative to the directory containing `WORKFLOW.md`.
   - The effective workspace root is normalized to an absolute path before use.
 
-#### 5.3.4 `hooks` (object)
+#### 5.3.5 `hooks` (object)
 
 Fields:
 
@@ -410,7 +462,7 @@ Fields:
   - Invalid values fail configuration validation.
   - Changes SHOULD be re-applied at runtime for future hook executions.
 
-#### 5.3.5 `agent` (object)
+#### 5.3.6 `agent` (object)
 
 Fields:
 
@@ -429,7 +481,7 @@ Fields:
   - State keys are normalized (`lowercase`) for lookup.
   - Invalid entries (non-positive or non-numeric) are ignored.
 
-#### 5.3.6 `codex` (object)
+#### 5.3.7 `codex` (object)
 
 Fields:
 

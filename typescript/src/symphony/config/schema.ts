@@ -34,6 +34,16 @@ export type TrackerSettings = {
 export type PollingSettings = { intervalMs: number };
 export type WorkspaceSettings = { root: string };
 export type WorkerSettings = { sshHosts: string[]; maxConcurrentAgentsPerHost: number | null };
+export type ReviewSettings = {
+  triggerLabel: string;
+  repository: string | null;
+  headBranchTemplate: string;
+  githubApiUrl: string;
+  githubToken: string | null;
+  manualState: string;
+  handoffPath: string;
+  verificationCommand: string | null;
+};
 export type AgentSettings = {
   // Selects the agent backend plugin ("codex" by default; zero migration for
   // existing WORKFLOW.md files). Resolved once per run and pinned by the runner.
@@ -82,6 +92,7 @@ export type ServerSettings = { port: number | null; host: string; unsafeAllowRem
 
 export type Settings = {
   tracker: TrackerSettings;
+  review: ReviewSettings;
   polling: PollingSettings;
   workspace: WorkspaceSettings;
   worker: WorkerSettings;
@@ -194,6 +205,7 @@ function changeset(attrs: JsonMap): { settings: Settings; errors: FieldError[] }
   const errors: FieldError[] = [];
 
   const tracker = castTracker(attrs.tracker, "tracker", errors);
+  const review = castReview(attrs.review, "review", errors);
   const polling = castPolling(attrs.polling, "polling", errors);
   const workspace = castWorkspace(attrs.workspace, "workspace", errors);
   const worker = castWorker(attrs.worker, "worker", errors);
@@ -204,7 +216,18 @@ function changeset(attrs: JsonMap): { settings: Settings; errors: FieldError[] }
   const server = castServer(attrs.server, "server", errors);
 
   return {
-    settings: { tracker, polling, workspace, worker, agent, codex, hooks, observability, server },
+    settings: {
+      tracker,
+      review,
+      polling,
+      workspace,
+      worker,
+      agent,
+      codex,
+      hooks,
+      observability,
+      server,
+    },
     errors,
   };
 }
@@ -347,6 +370,49 @@ function castTracker(raw: unknown, section: string, errors: FieldError[]): Track
       errors,
     ).value,
     plugin: castTrackerPluginSection(raw, kind, section, errors),
+  };
+}
+
+function castReview(raw: unknown, section: string, errors: FieldError[]): ReviewSettings {
+  const r = castSection(raw, section, errors);
+  return {
+    triggerLabel: field<string>(r, "trigger_label", section, castString, "symphony-review", errors)
+      .value,
+    repository: field<string | null>(r, "repository", section, castString, null, errors).value,
+    headBranchTemplate: field<string>(
+      r,
+      "head_branch",
+      section,
+      castString,
+      "symphony/{{ issue.identifier }}",
+      errors,
+    ).value,
+    githubApiUrl: field<string>(
+      r,
+      "github_api_url",
+      section,
+      castString,
+      "https://api.github.com",
+      errors,
+    ).value,
+    githubToken: field<string | null>(r, "github_token", section, castString, null, errors).value,
+    manualState: field<string>(r, "manual_state", section, castString, "In Progress", errors).value,
+    handoffPath: field<string>(
+      r,
+      "handoff_path",
+      section,
+      castString,
+      ".symphony/review-handoff.json",
+      errors,
+    ).value,
+    verificationCommand: field<string | null>(
+      r,
+      "verification_command",
+      section,
+      castString,
+      null,
+      errors,
+    ).value,
   };
 }
 
@@ -612,6 +678,10 @@ function finalizeSettings(settings: Settings): Settings {
       ...settings.tracker,
       plugin: finalizeTrackerPluginSection(settings.tracker),
     },
+    review: {
+      ...settings.review,
+      githubToken: resolveSecretValue(settings.review.githubToken, "GITHUB_TOKEN"),
+    },
     agent: {
       ...settings.agent,
       backendConfig: finalizeAgentBackendSection(settings.agent),
@@ -626,6 +696,24 @@ function finalizeSettings(settings: Settings): Settings {
       turnSandboxPolicy: normalizeOptionalMap(settings.codex.turnSandboxPolicy),
     },
   };
+}
+
+function resolveSecretValue(value: string | null, fallbackName: string): string | null {
+  if (value === null) {
+    return normalizeSecretValue(process.env[fallbackName]);
+  }
+  const name = envReferenceName(value);
+  if (name === null) {
+    return normalizeSecretValue(value);
+  }
+  return normalizeSecretValue(process.env[name]);
+}
+
+function normalizeSecretValue(value: unknown): string | null {
+  if (typeof value !== "string" || value === "") {
+    return null;
+  }
+  return value;
 }
 
 // Plugin finalization pass ($VAR references, canonical env fallbacks such as

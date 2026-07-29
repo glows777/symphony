@@ -71,6 +71,22 @@ tracker:
     - Duplicate
     - Closed
 
+review:
+  # Review runs are explicitly opted into; ordinary symphony issues never call GitHub.
+  trigger_label: symphony-review
+  # owner/name of the repository whose PR is reviewed.
+  repository: glows777/symphony
+  # Defaults to symphony/<issue.identifier>; keep this aligned with the PR branch.
+  head_branch: symphony/{{ issue.identifier }}
+  github_api_url: https://api.github.com
+  # Keep the token out of git; Bun resolves this through the environment.
+  github_token: $GITHUB_TOKEN
+  # Fail-closed review runs remain active here for manual follow-up.
+  manual_state: In Progress
+  handoff_path: .symphony/review-handoff.json
+  # System-owned evidence: run against a clean commit and bind the receipt to PR HEAD.
+  verification_command: cd typescript && bun run check
+
 polling:
   # Linear API 有限流,issue 也不会每秒变。30s 是默认值,共享项目下别再往下调。
   interval_ms: 30000

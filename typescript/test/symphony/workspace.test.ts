@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { canonicalize } from "../../src/symphony/path-safety.ts";
 import { workflowFilePath } from "../../src/symphony/workflow.ts";
-import { createForIssue, remove, removeIssueWorkspaces } from "../../src/symphony/workspace.ts";
+import {
+  createForIssue,
+  remove,
+  removeIssueWorkspaces,
+  runVerificationCommand,
+} from "../../src/symphony/workspace.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";
 
 function canonical(p: string): string {
@@ -258,6 +263,48 @@ describe("Workspace", () => {
     removeIssueWorkspaces("MT-HOOKS");
     expect(fs.readFileSync(beforeRemoveMarker, "utf8")).toBe("before_remove\n");
     expect(fs.existsSync(first.value)).toBe(false);
+  });
+
+  test("binds review verification to a clean commit while allowing runtime handoff files", () => {
+    const workspaceRoot = path.join(testRoot, "verification-workspaces");
+    const workspace = path.join(workspaceRoot, "VERIFY-1");
+    fs.mkdirSync(workspace, { recursive: true });
+    writeWorkflowFile(workflowFilePath(), { workspace_root: workspaceRoot });
+    fs.writeFileSync(path.join(workspace, "tracked.txt"), "committed\n");
+    expect(Bun.spawnSync(["git", "init"], { cwd: workspace }).exitCode).toBe(0);
+    expect(Bun.spawnSync(["git", "add", "tracked.txt"], { cwd: workspace }).exitCode).toBe(0);
+    expect(
+      Bun.spawnSync(
+        [
+          "git",
+          "-c",
+          "user.name=Symphony Test",
+          "-c",
+          "user.email=symphony@example.invalid",
+          "commit",
+          "-m",
+          "test fixture",
+        ],
+        { cwd: workspace },
+      ).exitCode,
+    ).toBe(0);
+    fs.mkdirSync(path.join(workspace, ".symphony"), { recursive: true });
+    fs.writeFileSync(path.join(workspace, ".symphony/review-handoff.json"), "{}");
+
+    const verified = runVerificationCommand(workspace, "test -f tracked.txt");
+    expect(verified.ok).toBe(true);
+    if (verified.ok) {
+      expect(verified.value?.exitCode).toBe(0);
+      expect(verified.value?.headSha).toMatch(/^[0-9a-f]{40}$/);
+    }
+
+    fs.writeFileSync(path.join(workspace, "tracked.txt"), "uncommitted\n");
+    const dirty = runVerificationCommand(workspace, "touch should-not-run");
+    expect(dirty).toEqual({
+      ok: false,
+      error: expect.objectContaining({ tag: "review_workspace_dirty" }),
+    });
+    expect(fs.existsSync(path.join(workspace, "should-not-run"))).toBe(false);
   });
 
   test("remove continues when the before_remove hook fails", () => {
