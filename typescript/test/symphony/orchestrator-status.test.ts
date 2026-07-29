@@ -19,11 +19,13 @@ import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/t
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-function stoppableTask(): RunningTask & { stopped: boolean } {
+function stoppableTask(): RunningTask & { stopped: boolean; reason: unknown } {
   const task = {
     stopped: false,
-    stop() {
+    reason: null as unknown,
+    stop(reason?: unknown) {
       task.stopped = true;
+      task.reason = reason;
     },
   };
   return task;
@@ -551,6 +553,11 @@ describe("Orchestrator status / live GenServer", () => {
 
     const state = orch.getState();
     expect(issueId in state.running).toBe(false);
+    expect(task.reason).toMatchObject({
+      tag: "agent_run_cancelled",
+      reason: "issue_stalled",
+      session_id: "thread-stall-turn-stall",
+    });
     const retry = state.retry_attempts[issueId];
     expect(retry?.attempt).toBe(1);
     expect(retry?.identifier).toBe("MT-STALL");

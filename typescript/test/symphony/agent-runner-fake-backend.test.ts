@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AgentOutputStore } from "../../src/symphony/agent-output-store.ts";
 import { type IssueStateFetcher, type WorkerUpdate, run } from "../../src/symphony/agent-runner.ts";
 import { putEnv } from "../../src/symphony/app-env.ts";
+import { logger } from "../../src/symphony/logger.ts";
 import type {
   AgentBackendPlugin,
   AgentSession,
@@ -12,7 +13,7 @@ import type {
   ToolProvider,
   TurnContext,
 } from "../../src/symphony/plugins/agents/types.ts";
-import { ok } from "../../src/symphony/result.ts";
+import { type Result, err, ok } from "../../src/symphony/result.ts";
 import { type Issue, newIssue } from "../../src/symphony/work-item.ts";
 import { workflowFilePath } from "../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";
@@ -48,6 +49,10 @@ function fakeBackend(caps: {
   // Blocks each turn until resolved, so a test can abort mid-turn.
   turnGate?: () => Promise<void>;
   onTurn?: (session: AgentSession, context: TurnContext) => void | Promise<void>;
+  turnResult?: (
+    session: AgentSession,
+    context: TurnContext,
+  ) => Result<{ sessionId: string }, unknown> | Promise<Result<{ sessionId: string }, unknown>>;
 }): {
   plugin: AgentBackendPlugin;
   turns: TurnRecord[];
@@ -98,6 +103,10 @@ function fakeBackend(caps: {
           hasToolProvider: handle.toolProvider !== null,
         });
         await caps.onTurn?.(session, context);
+        const overriddenResult = await caps.turnResult?.(session, context);
+        if (overriddenResult !== undefined) {
+          return overriddenResult;
+        }
         // Contract: usage MUST be the cumulative absolute total for the session.
         handle.sessionTokens += 25;
         handle.onMessage?.({
@@ -300,6 +309,93 @@ describe("AgentRunner with a synthetic backend", () => {
     expect(backend.turns).toHaveLength(1);
   });
 
+  test("aborted runs treat the backend port_exit 143 as cancellation", async () => {
+    const outputRoot = path.join(testRoot, "logs-cancelled-port-exit");
+    putEnv("agent_output_root", outputRoot);
+    writeWorkflowFile(workflowFilePath(), {
+      workspace_root: workspaceRoot,
+      observability_agent_output: "raw",
+    });
+
+    let releaseTurn: () => void = () => {};
+    const turnStarted = Promise.withResolvers<void>();
+    const gate = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const backend = fakeBackend({
+      multiTurn: true,
+      turnGate: () => {
+        turnStarted.resolve();
+        return gate;
+      },
+      turnResult: () => err({ tag: "port_exit", status: 143 }),
+    });
+    putEnv("agent_backend_overrides", { codex: backend.plugin });
+    const errorSpy = spyOn(logger, "error").mockImplementation(() => {});
+
+    try {
+      const controller = new AbortController();
+      const runPromise = run(issue, null, {
+        maxTurns: 3,
+        issueStateFetcher: staysActive,
+        signal: controller.signal,
+      });
+
+      await turnStarted.promise;
+      controller.abort();
+      releaseTurn();
+      await runPromise;
+
+      const loggedErrors = errorSpy.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(loggedErrors).not.toContain("Agent run failed");
+      const output = new AgentOutputStore({ root: outputRoot, mode: "raw" }).readIssueOutput(
+        "MT-1",
+        { limit: 100 },
+      );
+      expect(output.run?.status).toBe("cancelled");
+      const terminal = output.events.find((event) => event.event === "run_cancelled");
+      expect(terminal?.reason).toMatchObject({
+        tag: "agent_run_cancelled",
+        cause: { tag: "port_exit", status: 143 },
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test("unexpected port_exit 143 remains a failed agent run", async () => {
+    const outputRoot = path.join(testRoot, "logs-failed-port-exit");
+    putEnv("agent_output_root", outputRoot);
+    writeWorkflowFile(workflowFilePath(), {
+      workspace_root: workspaceRoot,
+      observability_agent_output: "raw",
+    });
+    const backend = fakeBackend({
+      multiTurn: true,
+      turnResult: () => err({ tag: "port_exit", status: 143 }),
+    });
+    putEnv("agent_backend_overrides", { codex: backend.plugin });
+    const errorSpy = spyOn(logger, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        run(issue, null, { maxTurns: 1, issueStateFetcher: staysActive }),
+      ).rejects.toThrow("port_exit");
+
+      const loggedErrors = errorSpy.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(loggedErrors).toContain("Agent run failed");
+      const output = new AgentOutputStore({ root: outputRoot, mode: "raw" }).readIssueOutput(
+        "MT-1",
+        { limit: 100 },
+      );
+      expect(output.run?.status).toBe("failed");
+      const terminal = output.events.find((event) => event.event === "run_failed");
+      expect(terminal?.reason).toMatchObject({ tag: "port_exit", status: 143 });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test("a run aborted before it starts never opens a session", async () => {
     const backend = fakeBackend({ multiTurn: true });
     putEnv("agent_backend_overrides", { codex: backend.plugin });
@@ -307,9 +403,11 @@ describe("AgentRunner with a synthetic backend", () => {
     const controller = new AbortController();
     controller.abort();
 
-    await expect(
-      run(issue, null, { maxTurns: 1, issueStateFetcher: staysActive, signal: controller.signal }),
-    ).rejects.toThrow("aborted");
+    await run(issue, null, {
+      maxTurns: 1,
+      issueStateFetcher: staysActive,
+      signal: controller.signal,
+    });
     expect(backend.sessionCount()).toBe(0);
   });
 
