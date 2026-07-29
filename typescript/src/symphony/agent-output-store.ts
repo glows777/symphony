@@ -153,6 +153,7 @@ export class AgentOutputStore {
   private readonly knownAgentsRoots: Set<string>;
   private readonly runs = new Map<string, PersistedRun>();
   private readonly listeners = new Map<string, Set<AgentOutputListener>>();
+  private lastStartedAtMs = 0;
 
   constructor(options: AgentOutputStoreOptions) {
     this.agentsRoot = path.join(path.resolve(options.root), "log", "agents");
@@ -174,6 +175,7 @@ export class AgentOutputStore {
   startRun(context: StartAgentOutputRun): AgentOutputRun {
     const runId = context.runId ?? `run-${Date.now()}-${crypto.randomUUID()}`;
     const issueIdentifier = context.issueIdentifier.trim() || "unknown-issue";
+    const startedAt = this.nextStartedAt();
     const metadata: AgentOutputRunMetadata = {
       issue_id: context.issueId,
       issue_identifier: issueIdentifier,
@@ -184,7 +186,7 @@ export class AgentOutputStore {
       session_id: null,
       path: this.runPath(issueIdentifier, runId),
       size: 0,
-      started_at: new Date().toISOString(),
+      started_at: startedAt,
       ended_at: null,
       status: "running",
       event_count: 0,
@@ -214,6 +216,12 @@ export class AgentOutputStore {
       this.pruneCachedRuns();
     }
     return new AgentOutputRun(this, state);
+  }
+
+  private nextStartedAt(): string {
+    const next = Math.max(Date.now(), this.lastStartedAtMs + 1);
+    this.lastStartedAtMs = next;
+    return new Date(next).toISOString();
   }
 
   latestRun(issueIdentifier: string): AgentOutputRunMetadata | null {

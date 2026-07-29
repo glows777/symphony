@@ -40,58 +40,45 @@ describe("Plugins.Agents.ToolProvider", () => {
     expect(outcome.payload).toEqual({ data: { viewer: { id: "usr_1" } } });
   });
 
-  test("blocks all direct Linear mutations during a review run", async () => {
+  test("passes Linear mutations through the ordinary tracker tool", async () => {
     let called = false;
     const outcome = await trackerToolProvider({
-      reviewStateGate: true,
-      linearClient: () => {
+      linearClient: (query: string) => {
         called = true;
+        expect(query).toContain("issueUpdate");
         return ok({ data: { issueUpdate: { success: true } } });
       },
     }).execute("linear_graphql", {
       query:
-        'mutation MoveIssue { issueUpdate(id: "issue-1", input: {stateId: "review"}) { success } }',
+        'mutation MoveIssue { issueUpdate(id: "issue-1", input: {stateId: "rework"}) { success } }',
     });
 
-    expect(outcome.success).toBe(false);
-    expect(called).toBe(false);
-    expect(outcome.payload).toEqual({
-      error: {
-        message:
-          "Review runs cannot execute Linear mutations directly. Complete the per-finding handoff; Symphony applies the completion gate.",
-        tag: "review_state_gate",
-      },
-    });
+    expect(outcome.success).toBe(true);
+    expect(called).toBe(true);
+    expect(outcome.payload).toEqual({ data: { issueUpdate: { success: true } } });
   });
 
-  test("does not let GraphQL comments bypass the review mutation gate", async () => {
+  test("passes Linear comment mutations through the ordinary tracker tool", async () => {
     let called = false;
     const outcome = await trackerToolProvider({
-      reviewStateGate: true,
-      linearClient: () => {
+      linearClient: (query: string) => {
         called = true;
-        return ok({ data: { issueUpdate: { success: true } } });
+        expect(query).toContain("commentCreate");
+        return ok({ data: { commentCreate: { success: true } } });
       },
     }).execute("linear_graphql", {
       query:
-        'mutation MoveIssue { issueUpdate # gate-bypass\n (id: "issue-1", input: {stateId: "review"}) { success } }',
+        'mutation Comment { commentCreate(input: {issueId: "issue-1", body: "needs rework"}) { success } }',
     });
 
-    expect(outcome.success).toBe(false);
-    expect(called).toBe(false);
-    expect(outcome.payload).toEqual({
-      error: {
-        message:
-          "Review runs cannot execute Linear mutations directly. Complete the per-finding handoff; Symphony applies the completion gate.",
-        tag: "review_state_gate",
-      },
-    });
+    expect(outcome.success).toBe(true);
+    expect(called).toBe(true);
+    expect(outcome.payload).toEqual({ data: { commentCreate: { success: true } } });
   });
 
-  test("does not mistake query strings or comments for a mutation operation", async () => {
+  test("does not mistake query strings or comments for unsupported operations", async () => {
     let called = false;
     const outcome = await trackerToolProvider({
-      reviewStateGate: true,
       linearClient: () => {
         called = true;
         return ok({ data: { issue: { id: "issue-1" } } });
