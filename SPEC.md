@@ -371,15 +371,13 @@ Fields:
 
 #### 5.3.2 `review` (object)
 
-Review runs are explicit and opt-in. An issue must carry `trigger_label` (default
-`symphony-review`) before Symphony contacts GitHub.
+Review runs are explicit and opt-in. An issue must enter the `Rework` state
+before Symphony contacts GitHub.
 
 Fields:
 
-- `trigger_label` (string)
-  - Default: `symphony-review`.
 - `repository` (string or null)
-  - GitHub `owner/name`; required when the trigger is present.
+  - GitHub `owner/name`; required when the issue is in `Rework`.
 - `head_branch` (string)
   - Default: `symphony/{{ issue.identifier }}`.
 - `github_api_url` (string)
@@ -409,11 +407,15 @@ the baseline head, snapshot id, finding id, finding revision, and one `fixed`,
 `deferred`, or `blocked` result per finding. Commit, test, approval, and reply
 receipt fields are provider-owned and MUST NOT be accepted from the handoff.
 Only `fixed` findings count as complete; `deferred` and `blocked` findings remain
-in manual handling. Fixed claims require a pushed descendant PR head and a
-successful configured verification command bound to that exact clean commit.
+in manual handling. Fixed claims require a pushed PR head and a successful
+configured verification command bound to that exact clean commit. For a `Rework`
+run, the old PR is closed and replaced from `origin/main`; the replacement must
+use the configured branch, have no new findings, and is allowed to start a new
+commit ancestry rather than descending from the closed PR.
 
 Symphony reads and verifies the handoff on the selected local or remote worker,
-posts idempotent provider-marked replies, re-fetches GitHub again immediately
+posts idempotent provider-marked replies (as top-level comments on a replacement
+PR when the original inline thread was closed), re-fetches GitHub again immediately
 before the transition, refreshes tracker routing state, and moves the issue to
 `In Review` only when every current finding is fixed. Missing or incomplete
 handoffs and provider, snapshot, verification, or routing failures are

@@ -67,8 +67,8 @@ export type RunOpts = {
   // the runner stops the backend session, which tears down its subprocess.
   signal?: AbortSignal;
   // Review context is injectable for offline tests. Production review runs
-  // resolve it from the explicit `symphony-review` label before a workspace
-  // or backend session is started.
+  // resolve it from the Rework state before a workspace or backend session is
+  // started.
   reviewContext?: ReviewContext | null;
   reviewProviderOptions?: ReviewProviderOptions;
 };

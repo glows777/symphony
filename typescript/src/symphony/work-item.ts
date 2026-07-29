@@ -86,6 +86,10 @@ export function routable(item: WorkItem, requiredLabels: string[]): boolean {
   return requiredLabels.every((label) => itemLabels.has(normalizeLabel(label)));
 }
 
+export function isReworkState(value: unknown): boolean {
+  return typeof value === "string" && value.trim().toLowerCase() === "rework";
+}
+
 function normalizeLabel(label: string): string {
   return label.trim().toLowerCase();
 }

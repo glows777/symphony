@@ -79,16 +79,16 @@ passed. Points worth knowing before the first run, all covered inline:
   `basename "$PWD"` recovers it.
 - **Normal prompts see `issue.identifier`, `issue.title`, and `issue.description`
   (plus the rest of the [`issue.*` scope](./src/symphony/prompt-builder.ts)); they
-  do not receive tracker comments.** An issue carrying the configured
-  `review.trigger_label` (default `symphony-review`) receives a fresh GitHub PR
-  review handoff before the agent starts. The handoff includes the PR head SHA,
+  do not receive tracker comments.** An issue entering the `Rework` state
+  receives a GitHub PR review handoff before the agent starts. The handoff includes the PR head SHA,
   unresolved inline threads, top-level conversation findings, review submissions,
   stable finding IDs, and an explicit untrusted-data boundary.
 - **Review runs are fail-closed.** The agent writes one `fixed`, `deferred`, or
   `blocked` result per finding to the version-2
   `.symphony/review-handoff.json`. The handoff contains claims only: Symphony
   obtains commit ancestry, clean-worktree test evidence, and reply receipts
-  itself. Only `fixed` findings complete automatically; deferred or blocked
+  itself. On `Rework`, the old PR is replaced from `origin/main`; the gate binds
+  the handoff to the replacement PR on the same branch. Only `fixed` findings complete automatically; deferred or blocked
   findings stay in manual handling. Review runs get one agent turn, then
   Symphony verifies the selected local or remote workspace, re-fetches GitHub,
   posts idempotent replies, re-fetches once more, and moves the issue to `In

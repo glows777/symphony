@@ -35,7 +35,6 @@ export type PollingSettings = { intervalMs: number };
 export type WorkspaceSettings = { root: string };
 export type WorkerSettings = { sshHosts: string[]; maxConcurrentAgentsPerHost: number | null };
 export type ReviewSettings = {
-  triggerLabel: string;
   repository: string | null;
   headBranchTemplate: string;
   githubApiUrl: string;
@@ -376,8 +375,6 @@ function castTracker(raw: unknown, section: string, errors: FieldError[]): Track
 function castReview(raw: unknown, section: string, errors: FieldError[]): ReviewSettings {
   const r = castSection(raw, section, errors);
   return {
-    triggerLabel: field<string>(r, "trigger_label", section, castString, "symphony-review", errors)
-      .value,
     repository: field<string | null>(r, "repository", section, castString, null, errors).value,
     headBranchTemplate: field<string>(
       r,

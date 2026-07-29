@@ -258,8 +258,7 @@ describe("AgentRunner with a synthetic backend", () => {
     });
     issue = newIssue({
       ...issue,
-      state: "In Progress",
-      labels: ["symphony-review"],
+      state: "Rework",
     });
 
     await run(issue, null, {
@@ -292,8 +291,7 @@ describe("AgentRunner with a synthetic backend", () => {
     });
     issue = newIssue({
       ...issue,
-      state: "In Progress",
-      labels: ["symphony-review"],
+      state: "Rework",
     });
 
     let thrown: unknown;

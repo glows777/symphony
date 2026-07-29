@@ -10,7 +10,7 @@ import { logger } from "./logger.ts";
 import { markReviewFailure } from "./review-context.ts";
 import { notifyUpdate as notifyDashboard } from "./status-dashboard.ts";
 import * as Tracker from "./tracker/tracker.ts";
-import { type Issue, isIssue, routable } from "./work-item.ts";
+import { type Issue, isIssue, isReworkState, routable } from "./work-item.ts";
 import * as Workspace from "./workspace.ts";
 
 const CONTINUATION_RETRY_DELAY_MS = 1_000;
@@ -532,10 +532,6 @@ function enteredReworkState(issue: Issue, state: State): boolean {
   }
   const previous = state.running[issue.id]?.issue?.state;
   return !isReworkState(previous);
-}
-
-function isReworkState(stateName: unknown): boolean {
-  return typeof stateName === "string" && normalizeIssueState(stateName) === "rework";
 }
 
 function stateSlotsAvailable(issue: Issue, running: Record<string, RunningEntry>): boolean {

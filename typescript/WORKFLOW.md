@@ -36,8 +36,7 @@ tracker:
     - Done
 
 review:
-  # 只有带有 review 标签的工单才会触发 review 流程。
-  trigger_label: symphony-review
+  # 只有进入 Rework 状态的工单才会触发 review 流程。
   repository: glows777/symphony
   head_branch: symphony/{{ issue.identifier }}
   github_api_url: https://api.github.com

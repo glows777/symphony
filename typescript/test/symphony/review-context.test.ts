@@ -234,7 +234,7 @@ describe("GitHub review context", () => {
       ],
     });
     const result = await fetchReviewContextForTest(
-      newIssue({ id: "issue-1", identifier: "SYM-3", labels: ["symphony-review"] }),
+      newIssue({ id: "issue-1", identifier: "SYM-3", state: "Rework" }),
       { requestFun: request, now: () => new Date("2026-07-28T01:00:00Z") },
     );
 
@@ -256,9 +256,15 @@ describe("GitHub review context", () => {
     expect(result.value.submissions[0]?.state).toBe("CHANGES_REQUESTED");
   });
 
-  test("requires the explicit symphony-review label before contacting GitHub", () => {
-    expect(isReviewTriggered(newIssue({ identifier: "SYM-3", labels: ["symphony"] }))).toBe(false);
-    expect(isReviewTriggered(newIssue({ identifier: "SYM-3", labels: ["Symphony-Review"] }))).toBe(
+  test("only the Rework state triggers a review handoff", () => {
+    expect(isReviewTriggered(newIssue({ identifier: "SYM-3", state: "In Progress" }))).toBe(false);
+    expect(
+      isReviewTriggered(
+        newIssue({ identifier: "SYM-3", state: "In Progress", labels: ["review"] }),
+      ),
+    ).toBe(false);
+    expect(isReviewTriggered(newIssue({ identifier: "SYM-3", state: "Rework" }))).toBe(true);
+    expect(isReviewTriggered(newIssue({ identifier: "SYM-3", state: "Rework", labels: [] }))).toBe(
       true,
     );
   });
@@ -290,7 +296,7 @@ describe("GitHub review context", () => {
       return request(url, init);
     };
     const result = await fetchReviewContextForTest(
-      newIssue({ identifier: "SYM-3", labels: ["symphony-review"] }),
+      newIssue({ identifier: "SYM-3", state: "Rework" }),
       { requestFun: pagedRequest },
     );
     expect(result.ok).toBe(true);
@@ -305,7 +311,7 @@ describe("GitHub review context", () => {
       pullRequests: [basePullRequest(), { ...basePullRequest(), number: 16 }],
     });
     const ambiguous = await fetchReviewContextForTest(
-      newIssue({ identifier: "SYM-3", labels: ["symphony-review"] }),
+      newIssue({ identifier: "SYM-3", state: "Rework" }),
       { requestFun: ambiguousRequest },
     );
     expect(ambiguous).toEqual({
@@ -475,7 +481,7 @@ describe("GitHub review context", () => {
     });
 
     const result = await fetchReviewContextForTest(
-      newIssue({ identifier: "SYM-3", labels: ["symphony-review"] }),
+      newIssue({ identifier: "SYM-3", state: "Rework" }),
       { requestFun: request },
     );
 
@@ -489,7 +495,7 @@ describe("GitHub review context", () => {
   });
 
   test("binds handoffs to provider revisions while ignoring Symphony reply markers", async () => {
-    const issue = newIssue({ identifier: "SYM-3", labels: ["symphony-review"] });
+    const issue = newIssue({ identifier: "SYM-3", state: "Rework" });
     const initialThreads = graphqlThreads();
     const { request: initialRequest } = requestFor({ graphql: initialThreads });
     const initial = await fetchReviewContextForTest(issue, { requestFun: initialRequest });
@@ -580,7 +586,7 @@ describe("GitHub review context", () => {
       ],
     });
     const result = await fetchReviewContextForTest(
-      newIssue({ identifier: "SYM-3", labels: ["symphony-review"] }),
+      newIssue({ identifier: "SYM-3", state: "Rework" }),
       { requestFun: request },
     );
 
@@ -617,7 +623,7 @@ describe("GitHub review context", () => {
       ],
     });
     const result = await fetchReviewContextForTest(
-      newIssue({ identifier: "SYM-3", labels: ["symphony-review"] }),
+      newIssue({ identifier: "SYM-3", state: "Rework" }),
       { requestFun: request },
     );
 
@@ -774,8 +780,7 @@ describe("GitHub review context", () => {
     const issue = newIssue({
       id: "issue-review",
       identifier: "SYM-3",
-      state: "In Progress",
-      labels: ["symphony-review"],
+      state: "Rework",
     });
     const context = await fetchReviewContextForTest(issue, { requestFun: request });
     expect(context.ok).toBe(true);
@@ -827,6 +832,110 @@ describe("GitHub review context", () => {
     }
   });
 
+  test("accepts a Rework handoff when the old PR is replaced on the same branch", async () => {
+    writeWorkflowFile(workflowFilePath(), {
+      tracker_kind: "memory",
+      review_repository: "glows777/symphony",
+      review_github_token: "test-token",
+    });
+    const events: unknown[] = [];
+    putEnv("memory_tracker_recipient", (event: unknown) => events.push(event));
+    const replacementReplies: ReturnType<typeof topLevelComment>[] = [];
+    const postedBodies: string[] = [];
+    let pullLookups = 0;
+    let compareCalled = false;
+    const request: GitHubRequest = async (url, init) => {
+      if (init.method === "POST" && url.includes("/issues/16/comments")) {
+        const body = JSON.parse(init.body ?? "{}").body;
+        postedBodies.push(typeof body === "string" ? body : "");
+        const reply = topLevelComment(
+          100 + replacementReplies.length,
+          typeof body === "string" ? body : "",
+        );
+        reply.user = { login: "symphony" };
+        replacementReplies.push(reply);
+        return ok({ status: 201, body: { html_url: reply.html_url } });
+      }
+      if (init.method === "POST") {
+        return ok({
+          status: 200,
+          body:
+            url.includes("/graphql") && pullLookups === 1
+              ? graphqlThreads()
+              : emptyGraphqlThreads(),
+        });
+      }
+      if (url.includes("/compare/")) {
+        compareCalled = true;
+        return ok({
+          status: 500,
+          body: { message: "replacement PR must not use the old ancestry check" },
+        });
+      }
+      if (url.includes("/pulls?") && url.includes("state=open")) {
+        pullLookups += 1;
+        const replacement = pullLookups > 1;
+        return ok({
+          status: 200,
+          body: [
+            {
+              number: replacement ? 16 : 15,
+              html_url: `https://github.com/glows777/symphony/pull/${replacement ? 16 : 15}`,
+              state: "open",
+              head: {
+                ref: "symphony/SYM-3",
+                sha: replacement ? FIXED_HEAD : INITIAL_HEAD,
+              },
+            },
+          ],
+        });
+      }
+      if (url.includes("/issues/15/comments")) {
+        return ok({ status: 200, body: [] });
+      }
+      if (url.includes("/issues/16/comments")) {
+        return ok({ status: 200, body: replacementReplies });
+      }
+      if (url.includes("/pulls/15/reviews") || url.includes("/pulls/16/reviews")) {
+        return ok({ status: 200, body: [] });
+      }
+      return ok({ status: 404, body: { message: "unexpected test URL" } });
+    };
+    const issue = newIssue({
+      id: "issue-review-rework-pr",
+      identifier: "SYM-3",
+      state: "Rework",
+    });
+    const initial = await fetchReviewContextForTest(issue, { requestFun: request });
+    expect(initial.ok).toBe(true);
+    if (!initial.ok) return;
+    const workspace = fs.mkdtempSync(path.join(workflowRoot, "review-replacement-pr-"));
+    try {
+      writeFixedHandoff(workspace, initial.value);
+      const outcome = await finalizeReviewRun(issue, initial.value, workspace, {
+        requestFun: request,
+        verificationReceipt: { headSha: FIXED_HEAD, command: "bun test", exitCode: 0 },
+        issueStateFetcher: () => ok([issue]),
+      });
+
+      expect(outcome.ok).toBe(true);
+      if (outcome.ok) expect(outcome.value.status).toBe("passed");
+      expect(compareCalled).toBe(false);
+      expect(postedBodies).toHaveLength(1);
+      expect(postedBodies[0]).toContain("inline:thread-1@");
+      expect(postedBodies[0]).toContain(FIXED_HEAD);
+      expect(events).toEqual([
+        {
+          tag: "memory_tracker_state_update",
+          issueId: "issue-review-rework-pr",
+          stateName: "Human Review",
+        },
+      ]);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("does not transition when GitHub changes after replies but before tracker update", async () => {
     writeWorkflowFile(workflowFilePath(), {
       tracker_kind: "memory",
@@ -872,8 +981,7 @@ describe("GitHub review context", () => {
     const issue = newIssue({
       id: "issue-review-race",
       identifier: "SYM-3",
-      state: "In Progress",
-      labels: ["symphony-review"],
+      state: "Rework",
     });
     const initial = await fetchReviewContextForTest(issue, { requestFun: request });
     expect(initial.ok).toBe(true);
@@ -923,8 +1031,7 @@ describe("GitHub review context", () => {
     const issue = newIssue({
       id: "issue-review-empty",
       identifier: "SYM-3",
-      state: "In Progress",
-      labels: ["symphony-review"],
+      state: "Rework",
     });
     const context = await fetchReviewContextForTest(issue, { requestFun: request });
     expect(context.ok).toBe(true);
@@ -959,7 +1066,7 @@ describe("GitHub review context", () => {
     }
   });
 
-  test("does not transition a tracker issue that lost its review trigger", async () => {
+  test("does not transition a tracker issue that left Rework", async () => {
     writeWorkflowFile(workflowFilePath(), {
       tracker_kind: "memory",
       review_repository: "glows777/symphony",
@@ -971,8 +1078,7 @@ describe("GitHub review context", () => {
     const issue = newIssue({
       id: "issue-review-superseded",
       identifier: "SYM-3",
-      state: "In Progress",
-      labels: ["symphony-review"],
+      state: "Rework",
     });
     const initial = await fetchReviewContextForTest(issue, { requestFun: request });
     expect(initial.ok).toBe(true);
@@ -982,7 +1088,7 @@ describe("GitHub review context", () => {
       writeFixedHandoff(workspace, initial.value);
       const outcome = await finalizeReviewRun(issue, initial.value, workspace, {
         requestFun: request,
-        issueStateFetcher: () => ok([{ ...issue, labels: [] }]),
+        issueStateFetcher: () => ok([{ ...issue, state: "In Progress" }]),
       });
 
       expect(outcome).toEqual({
@@ -1010,8 +1116,7 @@ describe("GitHub review context", () => {
     const issue = newIssue({
       id: "issue-review-blocked",
       identifier: "SYM-3",
-      state: "In Progress",
-      labels: ["symphony-review"],
+      state: "Rework",
     });
     const initial = await fetchReviewContextForTest(issue, { requestFun: request });
     expect(initial.ok).toBe(true);
@@ -1114,8 +1219,7 @@ describe("GitHub review context", () => {
     const issue = newIssue({
       id: "issue-review-reply-retry",
       identifier: "SYM-3",
-      state: "In Progress",
-      labels: ["symphony-review"],
+      state: "Rework",
     });
     const initial = await fetchReviewContextForTest(issue, { requestFun: request });
     expect(initial.ok).toBe(true);
@@ -1199,8 +1303,7 @@ describe("GitHub review context", () => {
     const issue = newIssue({
       id: "issue-review-head-changed",
       identifier: "SYM-3",
-      state: "In Progress",
-      labels: ["symphony-review"],
+      state: "Rework",
     });
     putEnv("memory_tracker_issues", [issue]);
     const initial = await fetchReviewContextForTest(issue, { requestFun: request });
