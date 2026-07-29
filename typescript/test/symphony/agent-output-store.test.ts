@@ -427,6 +427,69 @@ describe("AgentOutputStore", () => {
     });
   });
 
+  test("preserves protocol tool names for command and file activities", async () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "summary" });
+    const run = store.startRun({
+      issueId: "issue-protocol-tools",
+      issueIdentifier: "ACT-PROTOCOL-TOOLS",
+      backend: "codex",
+      workerHost: null,
+      runId: "protocol-tools-run",
+    });
+    run.record(
+      message({
+        payload: {
+          method: "item/started",
+          params: { item: { id: "file-1", type: "fileChange" } },
+        },
+      }),
+      1,
+      "item started: file change (file-1, inprogress)",
+    );
+    run.record(
+      message({
+        payload: {
+          method: "item/commandExecution/outputDelta",
+          params: {
+            itemId: "command-1",
+            command: "git status --short",
+            outputDelta: " M file.ts\n",
+          },
+        },
+      }),
+      1,
+      "command output streaming",
+    );
+    run.record(
+      message({
+        payload: {
+          method: "item/completed",
+          params: { item: { id: "file-1", type: "fileChange", status: "completed" } },
+        },
+      }),
+      1,
+      "item completed: file change (file-1, completed)",
+    );
+
+    const result = store.readIssueOutput("ACT-PROTOCOL-TOOLS");
+    expect(result.events.filter((event) => event.activity_type === "tool_call")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ activity_id: "file-1", tool_name: "fileChange" }),
+        expect.objectContaining({ activity_id: "command-1", tool_name: "commandExecution" }),
+      ]),
+    );
+    expect(result.messages.find((item) => item.activity_id === "file-1")).toMatchObject({
+      activity_type: "tool_call",
+      tool_name: "fileChange",
+    });
+    expect(result.messages.find((item) => item.activity_id === "command-1")).toMatchObject({
+      activity_type: "tool_call",
+      tool_name: "commandExecution",
+      tool_command: "git status --short",
+    });
+    await run.finish("completed");
+  });
+
   test("keeps one store live across output configuration changes", async () => {
     const firstRoot = tempRoot();
     const secondRoot = tempRoot();

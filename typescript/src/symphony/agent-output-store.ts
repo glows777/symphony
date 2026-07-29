@@ -1614,7 +1614,8 @@ function toolMetadata(
   ActivityProjection,
   "toolName" | "toolInput" | "toolCommand" | "toolOutputDelta" | "toolError"
 > {
-  const toolName = firstStringAtPaths(payload, toolNamePaths());
+  const method = methodFromPayload(payload);
+  const toolName = toolNameFromMessage(message) ?? toolNameFromPayload(payload, method);
   const toolCommand = firstStringAtPaths(payload, toolCommandPaths());
   const toolOutputDelta = firstStringAtPaths(payload, toolOutputDeltaPaths());
   const toolInput = firstValueAtPaths(payload, toolInputPaths());
@@ -1626,6 +1627,54 @@ function toolMetadata(
     ...(toolOutputDelta !== null ? { toolOutputDelta } : {}),
     ...(toolError !== null ? { toolError } : {}),
   };
+}
+
+function toolNameFromMessage(message: AgentMessage): string | null {
+  return firstNonEmptyString([message.tool_name, message.toolName, message.name, message.tool]);
+}
+
+function toolNameFromPayload(payload: unknown, method: string | null): string | null {
+  const explicit = firstNonEmptyString([firstStringAtPaths(payload, toolNamePaths())]);
+  if (explicit !== null) {
+    return explicit;
+  }
+  return (
+    toolNameFromItemType(firstStringAtPaths(payload, itemTypePaths())) ?? toolNameFromMethod(method)
+  );
+}
+
+function toolNameFromItemType(itemType: string | null): string | null {
+  return canonicalToolName(itemType);
+}
+
+function toolNameFromMethod(method: string | null): string | null {
+  return canonicalToolName(method);
+}
+
+function canonicalToolName(value: unknown): string | null {
+  const normalized = normalizeType(firstNonEmptyString([value]));
+  if (normalized.includes("commandexecution")) {
+    return "commandExecution";
+  }
+  if (normalized.includes("filechange")) {
+    return "fileChange";
+  }
+  if (normalized.includes("mcptoolcall") || normalized.includes("mcpcall")) {
+    return "mcpToolCall";
+  }
+  if (normalized.includes("toolcall")) {
+    return "toolCall";
+  }
+  return null;
+}
+
+function firstNonEmptyString(values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "") {
+      return value.trim();
+    }
+  }
+  return null;
 }
 
 function parentMessageField(payload: unknown): Record<string, unknown> {
@@ -1795,13 +1844,7 @@ function storedActivityEvent(event: AgentOutputEvent): StoredActivityEvent | nul
       id: typeof event.activity_id === "string" ? event.activity_id : null,
       status,
       parentMessageId: typeof event.parent_message_id === "string" ? event.parent_message_id : null,
-      ...(typeof event.tool_name === "string" ? { toolName: event.tool_name } : {}),
-      ...(event.tool_input !== undefined ? { toolInput: event.tool_input } : {}),
-      ...(typeof event.tool_command === "string" ? { toolCommand: event.tool_command } : {}),
-      ...(typeof event.tool_output_delta === "string"
-        ? { toolOutputDelta: event.tool_output_delta }
-        : {}),
-      ...(typeof event.tool_error === "string" ? { toolError: event.tool_error } : {}),
+      ...storedToolMetadata(event),
     };
   }
 
@@ -1884,14 +1927,19 @@ function storedToolMetadata(
   StoredActivityEvent,
   "toolName" | "toolInput" | "toolCommand" | "toolOutputDelta" | "toolError"
 > {
-  const toolName = firstStringAtPaths(event.payload, toolNamePaths());
-  const toolCommand = firstStringAtPaths(event.payload, toolCommandPaths());
-  const toolOutputDelta = firstStringAtPaths(event.payload, toolOutputDeltaPaths());
-  const toolInput = firstValueAtPaths(event.payload, toolInputPaths());
+  const toolName =
+    firstNonEmptyString([event.tool_name]) ??
+    toolNameFromPayload(event.payload, methodFromPayload(event.payload));
+  const toolCommand =
+    firstStringAtPaths(event.payload, toolCommandPaths()) ?? stringOrNull(event.tool_command);
+  const toolOutputDelta =
+    firstStringAtPaths(event.payload, toolOutputDeltaPaths()) ??
+    stringOrNull(event.tool_output_delta);
+  const toolInput = firstValueAtPaths(event.payload, toolInputPaths()) ?? event.tool_input;
   const toolError =
     firstStringAtPaths(event.payload, toolErrorPaths()) ??
     errorText(event.reason) ??
-    (typeof event.tool_error === "string" ? event.tool_error : null);
+    stringOrNull(event.tool_error);
   return {
     ...(toolName !== null ? { toolName } : {}),
     ...(toolInput !== undefined ? { toolInput } : {}),
@@ -2191,15 +2239,28 @@ function chatIdPaths(): string[][] {
 
 function toolNamePaths(): string[][] {
   return [
+    ["tool_name"],
+    ["toolName"],
+    ["name"],
+    ["tool"],
     ["params", "name"],
     ["params", "tool"],
     ["params", "toolName"],
     ["params", "item", "name"],
+    ["params", "item", "tool"],
     ["params", "item", "toolName"],
     ["params", "msg", "name"],
+    ["params", "msg", "tool"],
     ["params", "msg", "toolName"],
+    ["params", "msg", "item", "name"],
+    ["params", "msg", "item", "tool"],
+    ["params", "msg", "item", "toolName"],
     ["params", "msg", "payload", "name"],
+    ["params", "msg", "payload", "tool"],
     ["params", "msg", "payload", "toolName"],
+    ["params", "msg", "payload", "item", "name"],
+    ["params", "msg", "payload", "item", "tool"],
+    ["params", "msg", "payload", "item", "toolName"],
   ];
 }
 
@@ -2306,7 +2367,9 @@ function itemTypePaths(): string[][] {
     ["params", "item", "type"],
     ["params", "itemType"],
     ["params", "msg", "type"],
+    ["params", "msg", "item", "type"],
     ["params", "msg", "payload", "type"],
+    ["params", "msg", "payload", "item", "type"],
   ];
 }
 

@@ -101,6 +101,18 @@ export function RunTimeline({
           ))}
         </div>
       )}
+      <div className="timeline-history-loader" ref={laterSentinelRef}>
+        {hasLater ? (
+          <button
+            className="timeline-load-more"
+            type="button"
+            disabled={loadingLater}
+            onClick={onLoadLater}
+          >
+            {loadingLater ? "Loading more output…" : "Load more output"}
+          </button>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -191,11 +203,14 @@ function ToolCallRow({
   fresh: boolean;
 }) {
   const label = toolActivityLabel(message, events);
+  const command = toolCommandFor(message, events);
+  const input = toolInputFor(message, events);
   const streaming = activityStatus(message) === "streaming";
   const hasDetails =
     message.tool_error !== undefined ||
     message.tool_output !== undefined ||
-    message.tool_input !== undefined;
+    input !== undefined ||
+    command !== undefined;
   return (
     <article
       className={`activity-row tool-row tool-row-${activityStatus(message)}${fresh ? " activity-row-fresh" : ""}`}
@@ -209,15 +224,20 @@ function ToolCallRow({
         <details className="tool-details">
           <summary>Details</summary>
           {message.tool_error ? <p className="tool-error">{message.tool_error}</p> : null}
+          {command !== undefined ? (
+            <pre className="tool-input" aria-label="Tool command">
+              {command}
+            </pre>
+          ) : null}
           {message.tool_output ? (
             <pre className="tool-output" aria-live={streaming ? "polite" : undefined}>
               {message.tool_output}
               {streaming ? "▋" : ""}
             </pre>
           ) : null}
-          {message.tool_input !== undefined ? (
+          {input !== undefined ? (
             <pre className="tool-input" aria-label="Tool input">
-              {formatPayload(message.tool_input)}
+              {formatPayload(input)}
             </pre>
           ) : null}
         </details>
@@ -283,11 +303,7 @@ function statusLabel(message: AgentOutputMessage): string {
 }
 
 export function toolActivityLabel(message: AgentOutputMessage, events: AgentOutputEvent[]): string {
-  const relatedEvents = events.filter(
-    (event) =>
-      (message.activity_id !== undefined && event.activity_id === message.activity_id) ||
-      (event.seq >= message.seq_start && event.seq <= message.seq_end),
-  );
+  const relatedEvents = relatedToolEvents(message, events);
   const name = firstText([
     message.tool_name,
     textAtPaths(message.tool_input, toolNamePaths),
@@ -295,21 +311,15 @@ export function toolActivityLabel(message: AgentOutputMessage, events: AgentOutp
     ...relatedEvents.map((event) => textAtPaths(event.payload, toolNamePaths)),
     ...relatedEvents.map((event) => textAtPaths(parseRawPayload(event.raw), toolNamePaths)),
   ]);
-  const command = firstText([
-    message.tool_command,
-    textAtPaths(message.tool_input, toolCommandPaths),
-    ...relatedEvents.map((event) => event.tool_command),
-    ...relatedEvents.map((event) => textAtPaths(event.payload, toolCommandPaths)),
-    ...relatedEvents.map((event) => textAtPaths(parseRawPayload(event.raw), toolCommandPaths)),
-  ]);
+  const command = toolCommandFor(message, events);
   if (command !== undefined && command !== "") {
     return toolCommandLabel(command, name);
   }
   if (name !== undefined) {
-    return name;
+    const inputLabel = toolInputLabel(toolInputFor(message, events));
+    return inputLabel === undefined ? name : `${name} · ${inputLabel}`;
   }
-  const summary = firstText(relatedEvents.map((event) => event.message));
-  return toolSummaryLabel(summary) ?? "Used a tool";
+  return "Used a tool";
 }
 
 function toolCommandLabel(command: string, name: string | undefined): string {
@@ -338,34 +348,98 @@ function unwrapShellCommand(command: string): { shell: string; body: string } | 
 
 function summarizeShellCommand(command: { shell: string; body: string }): string {
   const body = command.body.replace(/\s+/g, " ").trim();
-  if (/\b(?:sed|cat|head|tail|less|more)\b/i.test(body)) {
-    return "Read files";
+  const action = /\b(?:sed|cat|head|tail|less|more)\b/i.test(body)
+    ? "Read files"
+    : /\b(?:rg|grep)\b/i.test(body)
+      ? "Searched the codebase"
+      : /\bgit\s+status\b/i.test(body)
+        ? "Checked git status"
+        : /\bgit\s+diff\b/i.test(body)
+          ? "Reviewed changes"
+          : null;
+  const compactBody = body.length > 220 ? `${body.slice(0, 217)}…` : body;
+  if (action !== null) {
+    return `${action} · ${compactBody}`;
   }
-  if (/\b(?:rg|grep)\b/i.test(body)) {
-    return "Searched the codebase";
+  return `Ran ${compactBody}`;
+}
+
+function relatedToolEvents(
+  message: AgentOutputMessage,
+  events: AgentOutputEvent[],
+): AgentOutputEvent[] {
+  return events.filter(
+    (event) =>
+      (message.activity_id !== undefined && event.activity_id === message.activity_id) ||
+      (event.seq >= message.seq_start && event.seq <= message.seq_end),
+  );
+}
+
+function toolCommandFor(
+  message: AgentOutputMessage,
+  events: AgentOutputEvent[],
+): string | undefined {
+  const relatedEvents = relatedToolEvents(message, events);
+  return firstText([
+    message.tool_command,
+    textAtPaths(message.tool_input, toolCommandPaths),
+    ...relatedEvents.map((event) => event.tool_command),
+    ...relatedEvents.map((event) => textAtPaths(event.payload, toolCommandPaths)),
+    ...relatedEvents.map((event) => textAtPaths(parseRawPayload(event.raw), toolCommandPaths)),
+  ]);
+}
+
+function toolInputFor(message: AgentOutputMessage, events: AgentOutputEvent[]): unknown {
+  const relatedEvents = relatedToolEvents(message, events);
+  return firstValue([
+    message.tool_input,
+    ...relatedEvents.map((event) => event.tool_input),
+    ...relatedEvents.map((event) => valueAtPaths(event.payload, toolInputPaths)),
+    ...relatedEvents.map((event) => valueAtPaths(parseRawPayload(event.raw), toolInputPaths)),
+  ]);
+}
+
+function toolInputLabel(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
   }
-  if (/\bgit\s+status\b/i.test(body)) {
-    return "Checked git status";
+  if (typeof value === "string") {
+    return compactText(value);
   }
-  if (/\bgit\s+diff\b/i.test(body)) {
-    return "Reviewed changes";
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return compactText(String(value));
   }
-  return `Ran ${body}`;
+  const parts = Object.entries(value as Record<string, unknown>)
+    .slice(0, 2)
+    .map(([key, item]) => `${key}: ${inputValueLabel(item)}`);
+  return parts.length === 0 ? undefined : compactText(parts.join(", "));
+}
+
+function inputValueLabel(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "object") {
+    return "{…}";
+  }
+  return String(value);
+}
+
+function compactText(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > 180 ? `${normalized.slice(0, 177)}…` : normalized;
 }
 
 function isGenericToolName(name: string | undefined): boolean {
   return (
     name === undefined ||
-    /^(?:bash|command|exec_command|run|shell|sh|tool|tool_call|zsh)$/i.test(name)
+    /^(?:bash|command|commandExecution|command_execution|exec_command|fileChange|file_change|mcpToolCall|mcp_tool_call|run|shell|sh|tool|toolCall|tool_call|zsh)$/i.test(
+      name,
+    )
   );
-}
-
-function toolSummaryLabel(summary: string | undefined): string | undefined {
-  if (summary === undefined) {
-    return undefined;
-  }
-  const match = summary.match(/\b(?:dynamic|mcp) tool call[^()]*\(([^()]+)\)\s*$/i);
-  return match?.[1]?.trim() || summary;
 }
 
 const toolNamePaths = [
@@ -393,8 +467,27 @@ const toolCommandPaths = [
   ["params", "msg", "cmd"],
 ];
 
+const toolInputPaths = [
+  ["arguments"],
+  ["args"],
+  ["input"],
+  ["params", "arguments"],
+  ["params", "args"],
+  ["params", "input"],
+  ["params", "item", "arguments"],
+  ["params", "item", "args"],
+  ["params", "item", "input"],
+  ["params", "msg", "arguments"],
+  ["params", "msg", "args"],
+  ["params", "msg", "input"],
+];
+
 function firstText(values: Array<string | null | undefined>): string | undefined {
   return values.find((value) => typeof value === "string" && value.trim() !== "")?.trim();
+}
+
+function firstValue(values: unknown[]): unknown {
+  return values.find((value) => value !== undefined);
 }
 
 function textAtPaths(value: unknown, paths: string[][]): string | undefined {
@@ -409,6 +502,23 @@ function textAtPaths(value: unknown, paths: string[][]): string | undefined {
     }
     if (typeof current === "string" && current.trim() !== "") {
       return current.trim();
+    }
+  }
+  return undefined;
+}
+
+function valueAtPaths(value: unknown, paths: string[][]): unknown {
+  for (const path of paths) {
+    let current = value;
+    for (const key of path) {
+      if (typeof current !== "object" || current === null || Array.isArray(current)) {
+        current = undefined;
+        break;
+      }
+      current = (current as Record<string, unknown>)[key];
+    }
+    if (current !== undefined) {
+      return current;
     }
   }
   return undefined;

@@ -137,6 +137,7 @@ describe("frontend transcript merge", () => {
         activity_type: "tool_call",
         activity_status: "streaming",
         activity_id: "cmd-1",
+        tool_name: "commandExecution",
         tool_command: "bun test",
         tool_output_delta: "pass\n",
       }),
@@ -161,6 +162,7 @@ describe("frontend transcript merge", () => {
     expect(current.messages[1]).toMatchObject({
       activity_id: "cmd-1",
       activity_type: "tool_call",
+      tool_name: "commandExecution",
       tool_command: "bun test",
       tool_output: "pass\n",
       status: "completed",
@@ -199,26 +201,61 @@ describe("frontend transcript merge", () => {
     );
   });
 
-  test("reduces a legacy tool event summary to its tool name", () => {
+  test("shows a dynamic tool input summary next to its name", () => {
     const tool = message({
-      message_id: "cmd-3",
-      activity_id: "cmd-3",
+      message_id: "cmd-input",
+      activity_id: "cmd-input",
       activity_type: "tool_call",
       activity_status: "completed",
       status: "completed",
-      seq_start: 8,
-      seq_end: 8,
-    });
-    const related = event({
-      seq: 8,
-      activity_id: "cmd-3",
-      message: "dynamic tool call requested (linear_graphql)",
+      tool_name: "linear_graphql",
+      tool_input: { query: "query IssueBootstrap { issue { id } }", variables: { id: "SYM-5" } },
+      seq_start: 10,
+      seq_end: 10,
     });
 
-    expect(toolActivityLabel(tool, [related])).toBe("linear_graphql");
+    expect(toolActivityLabel(tool, [])).toBe(
+      "linear_graphql · query: query IssueBootstrap { issue { id } }, variables: {…}",
+    );
   });
 
-  test("humanizes shell wrapper commands into a compact tool summary", () => {
+  test("keeps protocol tool names visible when no command is available", () => {
+    const tool = message({
+      message_id: "file-1",
+      activity_id: "file-1",
+      activity_type: "tool_call",
+      activity_status: "completed",
+      status: "completed",
+      tool_name: "fileChange",
+      seq_start: 11,
+      seq_end: 11,
+    });
+
+    expect(toolActivityLabel(tool, [])).toBe("fileChange");
+  });
+
+  test("does not duplicate generic protocol names in command summaries", () => {
+    const tool = message({
+      message_id: "cmd-protocol",
+      activity_id: "cmd-protocol",
+      activity_type: "tool_call",
+      activity_status: "completed",
+      status: "completed",
+      tool_name: "commandExecution",
+      seq_start: 12,
+      seq_end: 12,
+    });
+    const related = event({
+      seq: 12,
+      activity_id: "cmd-protocol",
+      tool_name: "commandExecution",
+      tool_command: "/bin/zsh -lc 'git status --short'",
+    });
+
+    expect(toolActivityLabel(tool, [related])).toBe("Checked git status · git status --short");
+  });
+
+  test("keeps the action and command target for shell wrapper commands", () => {
     const tool = message({
       message_id: "cmd-4",
       activity_id: "cmd-4",
@@ -238,6 +275,8 @@ describe("frontend transcript merge", () => {
       }),
     });
 
-    expect(toolActivityLabel(tool, [related])).toBe("Read files");
+    expect(toolActivityLabel(tool, [related])).toBe(
+      "Read files · sed -n '1,20p' typescript/src/symphony/orchestrator.ts",
+    );
   });
 });
