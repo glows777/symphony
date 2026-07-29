@@ -8,7 +8,6 @@
 
 import { Liquid, type Template } from "liquidjs";
 import { workflowPrompt } from "./config.ts";
-import { type ReviewContext, renderReviewHandoffPrompt } from "./review-context.ts";
 import type { Issue } from "./work-item.ts";
 import { current as workflowCurrent } from "./workflow.ts";
 
@@ -16,17 +15,17 @@ const engine = new Liquid({ strictVariables: true, strictFilters: true });
 
 export function buildPrompt(
   issue: Issue,
-  opts: { attempt?: number | null; reviewContext?: ReviewContext | null } = {},
+  opts: { attempt?: number | null; review?: boolean } = {},
 ): string {
   const parsed = parseTemplate(promptTemplate());
   const rendered = engine.renderSync(parsed, {
     attempt: opts.attempt ?? null,
     issue: issueScope(issue),
   });
-  if (opts.reviewContext === null || opts.reviewContext === undefined) {
+  if (opts.review !== true) {
     return rendered;
   }
-  return `${rendered.trimEnd()}\n\n${renderReviewHandoffPrompt(opts.reviewContext)}`;
+  return `${rendered.trimEnd()}\n\n${reviewAgentPrompt()}`;
 }
 
 function promptTemplate(): string {
@@ -87,6 +86,27 @@ function toSolidValue(value: unknown): unknown {
     return toSolidMap(value as Record<string, unknown>);
   }
   return value;
+}
+
+function reviewAgentPrompt(): string {
+  return [
+    "## Symphony Review Agent",
+    "",
+    "You are a Review Agent started because this issue just moved from `In Progress` or `Rework` to `Human Review`.",
+    "Use the normal tracker tool, workspace, shell, hooks, and repository state available to this run.",
+    "",
+    "Review scope:",
+    "",
+    "- Read the Linear issue description, comments, workpad, current status, linked PRs, and relevant discussion with `linear_graphql` as needed.",
+    "- Inspect the local code diff and related backend/frontend behavior directly in the workspace.",
+    "- Run focused tests or browser checks when they are needed to verify the review conclusion.",
+    "- Do not expect or create a review handoff file. No GitHub review context is injected by Symphony.",
+    "",
+    "Outcome:",
+    "",
+    "- If you find issues that need agent rework, comment the review conclusion and concrete problems on the Linear issue, then move the issue to `Rework`. `Rework` is the only return state for problems.",
+    "- If no rework is needed, comment the review conclusion and leave the issue in `Human Review` for the normal human approval path.",
+  ].join("\n");
 }
 
 function inspect(value: unknown): string {

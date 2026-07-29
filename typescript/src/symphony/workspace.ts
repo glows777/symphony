@@ -300,66 +300,6 @@ export function runAfterRunHook(
   return ignoreHookFailure(runHook(hooks.afterRun, workspace, issueCtx, "after_run", workerHost));
 }
 
-export type WorkspaceVerificationReceipt = {
-  headSha: string;
-  command: string;
-  exitCode: number;
-  output: string;
-};
-
-export function runVerificationCommand(
-  workspace: string,
-  command: string | null,
-  workerHost: WorkerHost = null,
-): Result<WorkspaceVerificationReceipt | null, unknown> {
-  if (command === null || command.trim() === "") {
-    return ok(null);
-  }
-  const before = runCommand(workspace, "git rev-parse HEAD", workerHost);
-  if (!before.ok) {
-    return err(before.error);
-  }
-  const [beforeOutput, beforeStatus] = before.value;
-  const beforeHead = beforeOutput.trim();
-  if (beforeStatus !== 0 || !/^[0-9a-f]{40}$/i.test(beforeHead)) {
-    return err({ tag: "review_workspace_head_invalid", status: beforeStatus });
-  }
-  const cleanBefore = verifyWorkspaceClean(workspace, workerHost);
-  if (!cleanBefore.ok) {
-    return err(cleanBefore.error);
-  }
-
-  const verified = runCommand(workspace, command, workerHost);
-  if (!verified.ok) {
-    return err(verified.error);
-  }
-  const after = runCommand(workspace, "git rev-parse HEAD", workerHost);
-  if (!after.ok) {
-    return err(after.error);
-  }
-  const [afterOutput, afterStatus] = after.value;
-  const afterHead = afterOutput.trim();
-  if (afterStatus !== 0 || afterHead !== beforeHead) {
-    return err({
-      tag: "review_workspace_head_changed",
-      beforeHead,
-      afterHead,
-      status: afterStatus,
-    });
-  }
-  const cleanAfter = verifyWorkspaceClean(workspace, workerHost);
-  if (!cleanAfter.ok) {
-    return err(cleanAfter.error);
-  }
-  const [output, exitCode] = verified.value;
-  return ok({
-    headSha: afterHead,
-    command,
-    exitCode,
-    output: sanitizeHookOutputForLog(output, 8_192),
-  });
-}
-
 export function runCommand(
   workspace: string,
   command: string,
@@ -379,42 +319,6 @@ export function runCommand(
     return ok([output, proc.exitCode]);
   }
   return runRemoteCommand(workerHost, `cd ${shellEscape(workspace)} && ${command}`, timeoutMs);
-}
-
-function verifyWorkspaceClean(
-  workspace: string,
-  workerHost: WorkerHost,
-): Result<undefined, unknown> {
-  for (const command of ["git diff --quiet", "git diff --cached --quiet"]) {
-    const diff = runCommand(workspace, command, workerHost);
-    if (!diff.ok) {
-      return err(diff.error);
-    }
-    const [, status] = diff.value;
-    if (status !== 0) {
-      return err({ tag: "review_workspace_dirty", command, status });
-    }
-  }
-
-  const untracked = runCommand(
-    workspace,
-    "git ls-files --others --exclude-standard -z",
-    workerHost,
-  );
-  if (!untracked.ok) {
-    return err(untracked.error);
-  }
-  const [output, status] = untracked.value;
-  if (status !== 0) {
-    return err({ tag: "review_workspace_status_failed", status });
-  }
-  const unexpected = output
-    .split("\0")
-    .filter((candidate) => candidate !== "")
-    .filter((candidate) => candidate !== ".symphony" && !candidate.startsWith(".symphony/"));
-  return unexpected.length === 0
-    ? ok(undefined)
-    : err({ tag: "review_workspace_dirty", untracked: unexpected });
 }
 
 function workspacePathForIssue(safeId: string, workerHost: WorkerHost): Result<string, unknown> {

@@ -483,7 +483,6 @@ describe("Orchestrator status / live GenServer", () => {
     const orch = makeOrchestrator();
     await orch.start();
 
-    await waitForSnapshot(orch, (s) => s.polling?.checking === true);
     const settled = await waitForSnapshot(
       orch,
       (s) =>
@@ -546,7 +545,8 @@ describe("Orchestrator status / live GenServer", () => {
       }),
     );
 
-    await orch.cast({ tag: "tick", token: null });
+    const beforePollMs = nowMs();
+    await orch.cast({ tag: "run_poll_cycle" });
     await waitForState(orch, (s) => !(issueId in s.running));
 
     const state = orch.getState();
@@ -556,9 +556,8 @@ describe("Orchestrator status / live GenServer", () => {
     expect(retry?.identifier).toBe("MT-STALL");
     expect(retry?.issue_url).toBe("https://example.org/issues/MT-STALL");
     expect(String(retry?.error).startsWith("stalled for ")).toBe(true);
-    const remaining = (retry?.due_at_ms ?? 0) - nowMs();
-    expect(remaining).toBeGreaterThanOrEqual(9_500);
-    expect(remaining).toBeLessThanOrEqual(10_500);
+    expect(retry?.due_at_ms).toBeGreaterThanOrEqual(beforePollMs + 9_500);
+    expect(retry?.due_at_ms).toBeLessThanOrEqual(beforePollMs + 10_500);
   });
 
   test("blocks stalled workers that are waiting on MCP elicitation", async () => {
@@ -594,7 +593,7 @@ describe("Orchestrator status / live GenServer", () => {
       }),
     );
 
-    await orch.cast({ tag: "tick", token: null });
+    await orch.cast({ tag: "run_poll_cycle" });
     await waitForState(orch, (s) => issueId in s.blocked);
 
     const state = orch.getState();

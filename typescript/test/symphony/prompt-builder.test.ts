@@ -142,6 +142,27 @@ describe("PromptBuilder.build_prompt", () => {
     expect(prompt).toContain("No description provided.");
   });
 
+  test("appends review-agent guidance without GitHub handoff context", () => {
+    writeWorkflowFile(workflowFilePath(), { prompt: "Ticket {{ issue.identifier }}" });
+
+    const issue = newIssue({
+      identifier: "MT-779",
+      title: "Review me",
+      state: "Human Review",
+      labels: ["symphony"],
+    });
+
+    const prompt = buildPrompt(issue, { review: true });
+    expect(prompt).toContain("Ticket MT-779");
+    expect(prompt).toContain("## Symphony Review Agent");
+    expect(prompt).toContain("Read the Linear issue description");
+    expect(prompt).toContain("Inspect the local code diff");
+    expect(prompt).toContain("Run focused tests or browser checks");
+    expect(prompt).toContain("move the issue to `Rework`");
+    expect(prompt).toContain("No GitHub review context is injected");
+    expect(prompt).not.toContain("Symphony Review Handoff");
+  });
+
   test("reports workflow load failures separately from template parse errors", () => {
     const missing = path.join(path.dirname(workflowFilePath()), "missing-workflow.md");
     setWorkflowFilePath(missing);

@@ -70,8 +70,6 @@ describe("WORKFLOW.md (Linear + codex)", () => {
       rework: 3,
       merging: 1,
     });
-    expect(config.review.manualState).toBe("Human Review");
-    expect(config.review.verificationCommand).toBe("cd typescript && bun run check");
     expect(config.hooks.afterCreate).toContain("git clone");
     expect(config.hooks.beforeRun).not.toBeNull();
     expect(config.hooks.beforeRemove).toContain("gh pr");

@@ -79,31 +79,23 @@ passed. Points worth knowing before the first run, all covered inline:
   `basename "$PWD"` recovers it.
 - **Normal prompts see `issue.identifier`, `issue.title`, and `issue.description`
   (plus the rest of the [`issue.*` scope](./src/symphony/prompt-builder.ts)); they
-  do not receive tracker comments.** An issue entering the `Rework` state
-  receives a GitHub PR review handoff before the agent starts. The handoff includes the PR head SHA,
-  unresolved inline threads, top-level conversation findings, review submissions,
-  stable finding IDs, and an explicit untrusted-data boundary.
-- **Review runs are fail-closed.** The agent writes one `fixed`, `deferred`, or
-  `blocked` result per finding to the version-2
-  `.symphony/review-handoff.json`. The handoff contains claims only: Symphony
-  obtains commit ancestry, clean-worktree test evidence, and reply receipts
-  itself. On `Rework`, the old PR is replaced from `origin/main`; the gate binds
-  the handoff to the replacement PR on the same branch. Only `fixed` findings complete automatically; deferred or blocked
-  findings stay in manual handling. Review runs get one agent turn, then
-  Symphony verifies the selected local or remote workspace, re-fetches GitHub,
-  posts idempotent replies, re-fetches once more, and moves the issue to `In
-  Review` only when the fresh snapshot, pushed PR head, configured verification
-  command, and tracker routing state all pass. Missing PRs, ambiguous matches,
-  incomplete handoffs, API failures, or snapshot changes are structured review
-  failures and do not enter the normal continuation retry loop.
+  do not receive tracker comments.** Review Agent prompts are added only for
+  issues that move from `In Progress` or `Rework` into `Human Review`; the prompt
+  tells the agent to inspect the Linear issue, local diff, related backend and
+  frontend behavior, linked PRs or discussion, and focused tests/browser checks
+  as needed.
+- **Review runs are ordinary agent runs.** They use the same workspace, hooks,
+  Codex app-server session, tracker tool, event stream, and concurrency limits
+  as development runs. A Review Agent comments its conclusion on the Linear
+  issue; when it finds problems, it moves the issue to `Rework`, which is then
+  picked up by the existing normal Rework dispatch path.
 - **Issue state is the control loop.** While an issue sits in an
   `active_states` state, a normally-completed turn is continued rather than
   finished (up to `agent.max_turns`); a state in `terminal_states` stops the
-  agent and deletes the workspace. A state in *neither* list — `In Review` here
-  — parks the issue: no more dispatch, workspace and branch kept alive for
-  review. Agents move normal issues through `linear_graphql`; review runs block
-  Linear mutations and let the system-owned completion gate perform the
-  transition.
+  agent and deletes the workspace. A state in *neither* list — `Human Review`
+  here — parks the issue for normal dispatch; Review Agents enter through the
+  separate in-memory status-edge queue. Agents, including Review Agents, move
+  issues through `linear_graphql`.
 - **`codex.turn_sandbox_policy` defaults to `networkAccess: false`**, which
   cannot install dependencies or push a branch. An agent expected to open a PR
   needs the explicit override. `$VAR` is not expanded inside that map, which is
