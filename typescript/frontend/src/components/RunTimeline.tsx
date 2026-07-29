@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentOutputEvent, AgentOutputMessage } from "../lib/api";
 
 type RunTimelineProps = {
@@ -6,10 +6,22 @@ type RunTimelineProps = {
   messages: AgentOutputMessage[];
   loading: boolean;
   error: string | null;
+  hasLater: boolean;
+  loadingLater: boolean;
+  onLoadLater: () => void;
 };
 
-export function RunTimeline({ events, messages, loading, error }: RunTimelineProps) {
+export function RunTimeline({
+  events,
+  messages,
+  loading,
+  error,
+  hasLater,
+  loadingLater,
+  onLoadLater,
+}: RunTimelineProps) {
   const [fresh, setFresh] = useState<Set<string>>(new Set());
+  const laterSentinelRef = useRef<HTMLDivElement | null>(null);
   const messageItems = useMemo(() => sortMessages(messages), [messages]);
   const visibleMessageItems = useMemo(() => messageItems.filter(isVisibleActivity), [messageItems]);
   const eventItems = useMemo(() => sortEvents(events), [events]);
@@ -30,6 +42,29 @@ export function RunTimeline({ events, messages, loading, error }: RunTimelinePro
     }, 520);
     return () => window.clearTimeout(timer);
   }, [latestKey]);
+
+  useEffect(() => {
+    const sentinel = laterSentinelRef.current;
+    if (
+      sentinel === null ||
+      !hasLater ||
+      loadingLater ||
+      typeof IntersectionObserver === "undefined"
+    ) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) {
+          return;
+        }
+        onLoadLater();
+      },
+      { rootMargin: "0px 0px 160px 0px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasLater, loadingLater, onLoadLater]);
 
   return (
     <section className="transcript-panel" aria-labelledby="transcript-heading">

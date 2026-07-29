@@ -108,6 +108,8 @@ export type AgentOutputReadResult = {
   messages: AgentOutputMessage[];
   nextCursor: number | null;
   hasMore: boolean;
+  beforeCursor: number | null;
+  hasBefore: boolean;
   run: AgentOutputRunMetadata | null;
   error?: { code: string; message: string };
 };
@@ -323,13 +325,34 @@ export class AgentOutputStore {
     return latest;
   }
 
+  listRunsForIssue(issueIdentifier: string): AgentOutputRunMetadata[] {
+    return this.runsForIssue(issueIdentifier);
+  }
+
   readIssueOutput(
     issueIdentifier: string,
-    options: { limit?: number; after?: number | null } = {},
+    options: {
+      limit?: number;
+      after?: number | null;
+      before?: number | null;
+      runId?: string | null;
+    } = {},
   ): AgentOutputReadResult {
-    const run = this.latestRun(issueIdentifier);
+    const requestedRunId = options.runId?.trim() ?? "";
+    const run =
+      requestedRunId === ""
+        ? this.latestRun(issueIdentifier)
+        : this.findRun(issueIdentifier, requestedRunId);
     if (run === null) {
-      return { events: [], messages: [], nextCursor: null, hasMore: false, run: null };
+      return {
+        events: [],
+        messages: [],
+        nextCursor: null,
+        hasMore: false,
+        beforeCursor: null,
+        hasBefore: false,
+        run: null,
+      };
     }
     const loaded = this.loadRun(run.path, false);
     if (loaded === null) {
@@ -340,6 +363,8 @@ export class AgentOutputStore {
           messages: [],
           nextCursor: null,
           hasMore: false,
+          beforeCursor: null,
+          hasBefore: false,
           run: { ...active.metadata },
         };
       }
@@ -348,22 +373,45 @@ export class AgentOutputStore {
         messages: [],
         nextCursor: null,
         hasMore: false,
+        beforeCursor: null,
+        hasBefore: false,
         run,
         error: { code: "log_read_failed", message: "Agent log could not be read" },
       };
     }
     const limit = clampLimit(options.limit);
     const after = options.after === null || options.after === undefined ? null : options.after;
+    const before = options.before === null || options.before === undefined ? null : options.before;
     const ordered = loaded.events.sort((left, right) => left.seq - right.seq);
-    const filtered = after === null ? ordered : ordered.filter((event) => event.seq > after);
-    const hasMore = after === null ? filtered.length > limit : filtered.length > limit;
-    const events = after === null ? filtered.slice(-limit) : filtered.slice(0, limit);
+    const filtered =
+      before !== null
+        ? ordered.filter((event) => event.seq < before)
+        : after === null
+          ? ordered
+          : ordered.filter((event) => event.seq > after);
+    const hasMore = filtered.length > limit;
+    const events =
+      before !== null || after === null ? filtered.slice(-limit) : filtered.slice(0, limit);
     const nextCursor = events.at(-1)?.seq ?? after;
+    const beforeCursor = events[0]?.seq ?? before;
+    const hasBefore =
+      events[0] !== undefined && ordered[0] !== undefined && events[0].seq > ordered[0].seq;
+    const allMessages = buildAgentOutputMessages(ordered, loaded.metadata.status);
+    const firstEventSeq = events[0]?.seq ?? null;
+    const lastEventSeq = events.at(-1)?.seq ?? null;
+    const messages =
+      firstEventSeq === null || lastEventSeq === null
+        ? []
+        : allMessages.filter(
+            (message) => message.seq_end >= firstEventSeq && message.seq_start <= lastEventSeq,
+          );
     const result: AgentOutputReadResult = {
       events,
-      messages: buildAgentOutputMessages(ordered, loaded.metadata.status),
+      messages,
       nextCursor: nextCursor ?? null,
       hasMore,
+      beforeCursor: beforeCursor ?? null,
+      hasBefore,
       run: loaded.metadata,
     };
     if (loaded.malformed) {
@@ -373,6 +421,14 @@ export class AgentOutputStore {
       };
     }
     return result;
+  }
+
+  findRun(issueIdentifier: string, runId: string): AgentOutputRunMetadata | null {
+    const normalizedRunId = runId.trim();
+    if (normalizedRunId === "") {
+      return null;
+    }
+    return this.runsForIssue(issueIdentifier).find((run) => run.run_id === normalizedRunId) ?? null;
   }
 
   subscribe(

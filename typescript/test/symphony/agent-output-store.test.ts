@@ -70,6 +70,15 @@ describe("AgentOutputStore", () => {
     const tail = store.readIssueOutput("SYM-2", { limit: 2 });
     expect(tail.events.map((event) => event.seq)).toEqual([4, 5]);
     expect(tail.hasMore).toBe(true);
+    expect(tail.beforeCursor).toBe(4);
+    expect(tail.hasBefore).toBe(true);
+    const earlier = store.readIssueOutput("SYM-2", { limit: 2, before: 4 });
+    expect(earlier.events.map((event) => event.seq)).toEqual([2, 3]);
+    expect(earlier.beforeCursor).toBe(2);
+    expect(earlier.hasBefore).toBe(true);
+    const oldest = store.readIssueOutput("SYM-2", { limit: 2, before: 2 });
+    expect(oldest.events.map((event) => event.seq)).toEqual([1]);
+    expect(oldest.hasBefore).toBe(false);
     const incremental = store.readIssueOutput("SYM-2", { limit: 2, after: 2 });
     expect(incremental.events.map((event) => event.seq)).toEqual([3, 4]);
     expect(incremental.nextCursor).toBe(4);
@@ -364,6 +373,58 @@ describe("AgentOutputStore", () => {
       tool_error: "tool exploded",
     });
     await run.finish("completed");
+  });
+
+  test("keeps tool metadata when replaying summary-mode events", async () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "summary" });
+    const run = store.startRun({
+      issueId: "issue-summary-tool",
+      issueIdentifier: "ACT-SUMMARY",
+      backend: "codex",
+      workerHost: null,
+      runId: "summary-tool-run",
+    });
+    run.record(
+      message({
+        payload: {
+          method: "item/commandExecution/outputDelta",
+          params: {
+            itemId: "cmd-summary",
+            command: "git status --short",
+            outputDelta: " M file.ts\n",
+          },
+        },
+      }),
+      1,
+      "command output streaming",
+    );
+    run.record(
+      message({
+        payload: {
+          method: "item/tool/call",
+          params: {
+            itemId: "tool-summary",
+            name: "linear_graphql",
+            arguments: { query: "query Issue { id }" },
+          },
+        },
+      }),
+      1,
+      "tool call completed",
+    );
+    await run.finish("completed");
+
+    const result = store.readIssueOutput("ACT-SUMMARY");
+    expect(result.messages.find((item) => item.activity_id === "cmd-summary")).toMatchObject({
+      activity_type: "tool_call",
+      tool_command: "git status --short",
+      tool_output: " M file.ts\n",
+    });
+    expect(result.messages.find((item) => item.activity_id === "tool-summary")).toMatchObject({
+      activity_type: "tool_call",
+      tool_name: "linear_graphql",
+      tool_input: { query: "query Issue { id }" },
+    });
   });
 
   test("keeps one store live across output configuration changes", async () => {

@@ -106,7 +106,7 @@ export type OutputPayloadResult =
   | { ok: true; value: Json }
   | {
       ok: false;
-      error: "issue_not_found" | "snapshot_timeout" | "snapshot_unavailable";
+      error: "issue_not_found" | "run_not_found" | "snapshot_timeout" | "snapshot_unavailable";
     };
 
 export async function outputPayload(
@@ -114,7 +114,12 @@ export async function outputPayload(
   provider: SnapshotProvider,
   timeoutMs: number,
   outputStore: AgentOutputStore = getAgentOutputStore(),
-  options: { limit?: number; after?: number | null } = {},
+  options: {
+    limit?: number;
+    after?: number | null;
+    before?: number | null;
+    runId?: string | null;
+  } = {},
 ): Promise<OutputPayloadResult> {
   const snapshot = await provider.snapshot(timeoutMs);
   if (snapshot === "timeout") {
@@ -131,9 +136,18 @@ export async function outputPayload(
   if (!knownInSnapshot && latestRun === null) {
     return { ok: false, error: "issue_not_found" };
   }
+  const requestedRunId = options.runId?.trim() ?? "";
+  if (requestedRunId !== "" && outputStore.findRun(issueIdentifier, requestedRunId) === null) {
+    return { ok: false, error: "run_not_found" };
+  }
   return {
     ok: true,
-    value: outputPayloadBody(outputStore.readIssueOutput(issueIdentifier, options)),
+    value: outputPayloadBody(
+      outputStore.readIssueOutput(issueIdentifier, {
+        ...options,
+        runId: requestedRunId === "" ? null : requestedRunId,
+      }),
+    ),
   };
 }
 
@@ -384,14 +398,12 @@ function completedEntryPayload(run: AgentOutputRunMetadata): Json {
 }
 
 function logsPayload(issueIdentifier: string, outputStore: AgentOutputStore): Json {
-  const runs = outputStore
-    .listRecentRuns(50)
-    .filter((run) => run.issue_identifier === issueIdentifier);
+  const runs = outputStore.listRunsForIssue(issueIdentifier);
   const latest = runs[0] ?? null;
   return {
     // This field is retained for clients that shipped before the backend-neutral
-    // names existed. Its values now contain the same metadata as agent_runs.
-    codex_session_logs: latest === null ? [] : [latest],
+    // names existed. Keep the complete history in both fields.
+    codex_session_logs: runs,
     agent_runs: runs,
     latest_run: latest,
   };
@@ -403,6 +415,8 @@ function outputPayloadBody(result: AgentOutputReadResult): Json {
     messages: result.messages,
     next_cursor: result.nextCursor,
     has_more: result.hasMore,
+    before_cursor: result.beforeCursor,
+    has_before: result.hasBefore,
     run: result.run,
     backend: result.run?.backend ?? null,
     run_id: result.run?.run_id ?? null,

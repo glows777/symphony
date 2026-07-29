@@ -135,6 +135,8 @@ export type OutputPayload = {
   messages?: AgentOutputMessage[];
   next_cursor: number | null;
   has_more: boolean;
+  before_cursor: number | null;
+  has_before: boolean;
   run: RunMetadata | null;
   backend: Backend | null;
   run_id: string | null;
@@ -151,18 +153,39 @@ export async function getIssue(identifier: string, signal?: AbortSignal): Promis
 }
 
 export async function getOutput(identifier: string, signal?: AbortSignal): Promise<OutputPayload> {
+  return getOutputForRun(identifier, null, signal);
+}
+
+export async function getOutputForRun(
+  identifier: string,
+  runId: string | null,
+  signal?: AbortSignal,
+  options: { after?: number | null; before?: number | null } = {},
+): Promise<OutputPayload> {
+  const query = new URLSearchParams({ limit: "160" });
+  if (runId !== null) {
+    query.set("run_id", runId);
+  }
+  if (options.after !== undefined && options.after !== null) {
+    query.set("after", String(options.after));
+  }
+  if (options.before !== undefined && options.before !== null) {
+    query.set("before", String(options.before));
+  }
   return fetchJson<OutputPayload>(
-    `/api/v1/${encodeURIComponent(identifier)}/output?limit=160`,
+    `/api/v1/${encodeURIComponent(identifier)}/output?${query.toString()}`,
     signal,
   );
 }
 
 export function subscribeToOutput(
   identifier: string,
+  runId: string | null,
   onEvent: (event: AgentOutputEvent) => void,
   onError?: () => void,
 ): () => void {
-  const source = new EventSource(`/api/v1/${encodeURIComponent(identifier)}/output/stream`);
+  const query = runId === null ? "" : `?run_id=${encodeURIComponent(runId)}`;
+  const source = new EventSource(`/api/v1/${encodeURIComponent(identifier)}/output/stream${query}`);
   const handleEvent = (message: MessageEvent<string>): void => {
     try {
       onEvent(JSON.parse(message.data) as AgentOutputEvent);

@@ -19,6 +19,12 @@ import { serveStaticAsset } from "./static-assets.ts";
 
 const DEFAULT_SNAPSHOT_TIMEOUT_MS = 15_000;
 const MAX_SSE_BUFFERED_EVENTS = 256;
+type OutputQuery = {
+  limit?: number;
+  after?: number | null;
+  before?: number | null;
+  runId?: string | null;
+};
 
 const UNAVAILABLE_PROVIDER: SnapshotProvider = {
   snapshot: () => Promise.resolve("unavailable"),
@@ -157,23 +163,35 @@ function apiV1IssueOutputRoute(path: string): { issueIdentifier: string; stream:
 
 function outputQuery(
   search: URLSearchParams,
-): { ok: true; limit?: number; after?: number | null } | { ok: false; message: string } {
+): ({ ok: true } & OutputQuery) | { ok: false; message: string } {
   const limitValue = search.get("limit");
   const afterValue = search.get("after");
+  const beforeValue = search.get("before");
+  const runIdValue = search.get("run_id");
   const limit = limitValue === null ? undefined : parseNonNegativeInt(limitValue);
   const after = afterValue === null ? null : parseNonNegativeInt(afterValue);
+  const before = beforeValue === null ? null : parseNonNegativeInt(beforeValue);
+  const runId = runIdValue === null || runIdValue.trim() === "" ? null : runIdValue;
   if (limitValue !== null && (limit === null || limit === 0)) {
     return { ok: false, message: "limit must be a positive integer" };
   }
   if (afterValue !== null && after === null) {
     return { ok: false, message: "after must be a non-negative integer" };
   }
+  if (beforeValue !== null && before === null) {
+    return { ok: false, message: "before must be a non-negative integer" };
+  }
+  if (after !== null && before !== null) {
+    return { ok: false, message: "after and before cannot be combined" };
+  }
   if (limit !== undefined && limit !== null && limit > 500) {
     return { ok: false, message: "limit must be at most 500" };
   }
-  const result: { ok: true; limit?: number; after?: number | null } = {
+  const result: { ok: true } & OutputQuery = {
     ok: true,
     after: after as number | null,
+    before: before as number | null,
+    runId,
   };
   if (limit !== undefined) {
     result.limit = limit as number;
@@ -236,7 +254,7 @@ async function handleOutput(
   outputStore: AgentOutputStore,
   issueIdentifier: string,
   timeoutMs: number,
-  query: { limit?: number; after?: number | null },
+  query: OutputQuery,
 ): Promise<Response> {
   const result = await Presenter.outputPayload(
     issueIdentifier,
@@ -256,23 +274,27 @@ async function handleOutputStream(
   outputStore: AgentOutputStore,
   issueIdentifier: string,
   timeoutMs: number,
-  query: { limit?: number; after?: number | null },
+  query: OutputQuery,
 ): Promise<Response> {
   const buffered: AgentOutputEvent[] = [];
   let bufferOverflow = false;
   let ready = false;
   let deliver: (event: AgentOutputEvent) => void = () => {};
-  const unsubscribe = outputStore.subscribe(issueIdentifier, (event) => {
-    if (!ready) {
-      if (buffered.length >= MAX_SSE_BUFFERED_EVENTS) {
-        bufferOverflow = true;
-      } else {
-        buffered.push(event);
+  const unsubscribe = outputStore.subscribe(
+    issueIdentifier,
+    (event) => {
+      if (!ready) {
+        if (buffered.length >= MAX_SSE_BUFFERED_EVENTS) {
+          bufferOverflow = true;
+        } else {
+          buffered.push(event);
+        }
+        return;
       }
-      return;
-    }
-    deliver(event);
-  });
+      deliver(event);
+    },
+    query.runId,
+  );
 
   const result = await Presenter.outputPayload(
     issueIdentifier,
@@ -295,7 +317,7 @@ async function handleOutputStream(
     events?: AgentOutputEvent[];
     run?: { run_id?: string | null; status?: string } | null;
   };
-  let activeRunId = body.run?.run_id ?? null;
+  let activeRunId = body.run?.run_id ?? query.runId ?? null;
   const seen = new Set<string>();
 
   const closeNow = (): void => {
@@ -407,11 +429,13 @@ function sseAgentOutput(event: AgentOutputEvent): string {
 }
 
 function outputErrorResponse(
-  error: "issue_not_found" | "snapshot_timeout" | "snapshot_unavailable",
+  error: "issue_not_found" | "run_not_found" | "snapshot_timeout" | "snapshot_unavailable",
 ): Response {
   switch (error) {
     case "issue_not_found":
       return errorResponse(404, "issue_not_found", "Issue not found");
+    case "run_not_found":
+      return errorResponse(404, "run_not_found", "Run not found");
     case "snapshot_timeout":
       return errorResponse(504, "snapshot_timeout", "Snapshot timed out");
     case "snapshot_unavailable":

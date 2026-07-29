@@ -558,11 +558,45 @@ summary:focus-visible {
   line-height: 1;
 }
 
+.run-history-row {
+  margin-top: 18px;
+}
+
+.run-history-control {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  max-width: 760px;
+}
+
+.run-history-label {
+  color: var(--ink-faint);
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.run-history-control select {
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 10px;
+  color: var(--ink-soft);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+}
+
 .run-facts {
   display: grid;
   grid-template-columns:
     minmax(160px, 1.6fr)
     minmax(130px, 1.1fr)
+    minmax(145px, 1.2fr)
     68px
     90px
     90px
@@ -817,6 +851,36 @@ summary:focus-visible {
 
 .transcript-mode {
   color: var(--green);
+}
+
+.timeline-history-loader {
+  display: flex;
+  justify-content: center;
+  min-height: 34px;
+  margin-top: 17px;
+}
+
+.timeline-load-more {
+  min-height: 32px;
+  padding: 5px 11px;
+  color: var(--ink-faint);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  letter-spacing: 0.02em;
+}
+
+.timeline-load-more:hover:not(:disabled) {
+  color: var(--ink-soft);
+  border-color: var(--ink-faint);
+}
+
+.timeline-load-more:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .transcript-list {
@@ -1170,7 +1234,13 @@ summary:focus-visible {
   }
 
   .run-facts {
-    grid-template-columns: minmax(140px, 1.4fr) minmax(120px, 1fr) 58px 80px 80px;
+    grid-template-columns:
+      minmax(140px, 1.4fr)
+      minmax(120px, 1fr)
+      minmax(130px, 1fr)
+      58px
+      80px
+      80px;
   }
 
   .run-fact:last-child {
@@ -1221,6 +1291,15 @@ summary:focus-visible {
 
   .run-header {
     padding: 18px 16px 15px;
+  }
+
+  .run-history-control {
+    grid-template-columns: 1fr;
+    gap: 7px;
+  }
+
+  .run-history-control select {
+    width: 100%;
   }
 
   .run-title-row {

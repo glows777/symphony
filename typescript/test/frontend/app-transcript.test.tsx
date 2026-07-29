@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mergeLiveOutput, withTranscript } from "../../frontend/src/App.tsx";
+import { mergeLiveOutput, mergeOutput, withTranscript } from "../../frontend/src/App.tsx";
 import {
   hasThinkingSummary,
   isVisibleActivity,
@@ -17,6 +17,8 @@ function output(overrides: Partial<OutputPayload> = {}): ReturnType<typeof withT
     messages: [],
     next_cursor: null,
     has_more: false,
+    before_cursor: null,
+    has_before: false,
     run: null,
     backend: "codex",
     run_id: "run-1",
@@ -90,6 +92,31 @@ describe("frontend transcript merge", () => {
     expect(merged.messages).toHaveLength(1);
     expect(merged.messages[0]?.content).toBe("Hello");
     expect(merged.events).toHaveLength(1);
+  });
+
+  test("merges a later page in chronological order", () => {
+    const current = output({
+      events: [event({ seq: 1 }), event({ seq: 2 })],
+      messages: [
+        message({ message_id: "msg-1", activity_id: "msg-1", seq_start: 1, seq_end: 1 }),
+        message({ message_id: "msg-2", activity_id: "msg-2", seq_start: 2, seq_end: 2 }),
+      ],
+      next_cursor: 2,
+      has_more: true,
+    });
+    const later = output({
+      events: [event({ seq: 3 })],
+      messages: [message({ message_id: "msg-3", activity_id: "msg-3", seq_start: 3, seq_end: 3 })],
+      next_cursor: 3,
+      has_more: false,
+    });
+
+    const merged = mergeOutput(current, later);
+
+    expect(merged.events.map((item) => item.seq)).toEqual([1, 2, 3]);
+    expect(merged.messages.map((item) => item.message_id)).toEqual(["msg-1", "msg-2", "msg-3"]);
+    expect(merged.next_cursor).toBe(3);
+    expect(merged.has_more).toBe(false);
   });
 
   test("merges live thinking and tool activities by backend activity fields", () => {

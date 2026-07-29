@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RunHeader } from "./components/RunHeader";
 import { RunSidebar } from "./components/RunSidebar";
 import { RunTimeline } from "./components/RunTimeline";
@@ -11,7 +11,7 @@ import {
   type RunItem,
   type StatePayload,
   getIssue,
-  getOutput,
+  getOutputForRun,
   getState,
   subscribeToOutput,
 } from "./lib/api";
@@ -27,16 +27,68 @@ type ChatPhase = "start" | "delta" | "complete";
 export function App() {
   const [state, setState] = useState<StatePayload | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [detail, setDetail] = useState<IssueDetail | null>(null);
   const [output, setOutput] = useState<TranscriptOutput | null>(null);
   const [events, setEvents] = useState<AgentOutputEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [timelineLoading, setTimelineLoading] = useState(false);
+  const [loadingLater, setLoadingLater] = useState(false);
+  const [laterError, setLaterError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connected" | "waiting">("waiting");
+  const laterControllerRef = useRef<AbortController | null>(null);
+  const selectionKey = `${selected ?? ""}:${selectedRunId ?? ""}`;
+  const selectionKeyRef = useRef(selectionKey);
 
   const runs = useMemo(() => allRuns(state), [state]);
-  const selectedRun = runs.find((run) => run.issue_identifier === selected) ?? null;
+  const selectedRun =
+    detail?.logs?.agent_runs?.find((run) => run.run_id === selectedRunId) ??
+    runs.find((run) => run.issue_identifier === selected) ??
+    null;
+  const hasLater = output?.has_more ?? false;
+  const laterCursor = output?.next_cursor ?? null;
+
+  const loadLater = useCallback(async (): Promise<void> => {
+    if (selected === null || !hasLater || laterCursor === null || loadingLater) {
+      return;
+    }
+    const requestKey = selectionKey;
+    const controller = new AbortController();
+    laterControllerRef.current?.abort();
+    laterControllerRef.current = controller;
+    setLoadingLater(true);
+    setLaterError(null);
+    try {
+      const rawOutput = await getOutputForRun(selected, selectedRunId, controller.signal, {
+        after: laterCursor,
+      });
+      if (controller.signal.aborted || selectionKeyRef.current !== requestKey) {
+        return;
+      }
+      const nextOutput = withTranscript(rawOutput);
+      setOutput((current) => mergeOutput(current, nextOutput));
+      setEvents((current) => mergeEvents(current, nextOutput.events));
+    } catch (loadError) {
+      if (!controller.signal.aborted && selectionKeyRef.current === requestKey) {
+        setLaterError(loadError instanceof Error ? loadError.message : "Later output unavailable");
+      }
+    } finally {
+      if (laterControllerRef.current === controller) {
+        laterControllerRef.current = null;
+        setLoadingLater(false);
+      }
+    }
+  }, [hasLater, laterCursor, loadingLater, selected, selectedRunId, selectionKey]);
+
+  useEffect(() => {
+    selectionKeyRef.current = selectionKey;
+    laterControllerRef.current?.abort();
+    laterControllerRef.current = null;
+    setLoadingLater(false);
+    setLaterError(null);
+    return () => laterControllerRef.current?.abort();
+  }, [selectionKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -78,6 +130,9 @@ export function App() {
       setDetail(null);
       setOutput(null);
       setEvents([]);
+      setLoadingLater(false);
+      setLaterError(null);
+      setSelectedRunId(null);
       setStreamState("waiting");
       return;
     }
@@ -93,7 +148,7 @@ export function App() {
       try {
         const [nextDetail, rawOutput] = await Promise.all([
           getIssue(selected, controller.signal).catch(() => null),
-          getOutput(selected, controller.signal),
+          getOutputForRun(selected, selectedRunId, controller.signal, { after: 0 }),
         ]);
         if (!active) {
           return;
@@ -115,6 +170,7 @@ export function App() {
     let unsubscribe = (): void => {};
     unsubscribe = subscribeToOutput(
       selected,
+      selectedRunId,
       (event) => {
         if (!active) {
           return;
@@ -134,7 +190,7 @@ export function App() {
       controller.abort();
       unsubscribe();
     };
-  }, [selected]);
+  }, [selected, selectedRunId]);
 
   return (
     <div className="observability-app">
@@ -147,20 +203,29 @@ export function App() {
         blocked={state?.blocked ?? []}
         completed={state?.completed ?? []}
         selected={selected}
-        onSelect={setSelected}
+        onSelect={(identifier) => {
+          setSelectedRunId(null);
+          setSelected(identifier);
+        }}
       />
       <main className="workspace" id="main-content">
         <RunHeader
           identifier={selected}
           detail={detail}
           run={output?.run ?? selectedRun}
+          runHistory={detail?.logs?.agent_runs ?? (output?.run ? [output.run] : [])}
+          selectedRunId={selectedRunId ?? output?.run_id ?? null}
+          onSelectRun={setSelectedRunId}
           loading={loading || timelineLoading}
         />
         <RunTimeline
           events={events}
           messages={output?.messages ?? []}
           loading={timelineLoading}
-          error={output?.error?.message ?? (selected ? null : error)}
+          error={output?.error?.message ?? laterError ?? (selected ? null : error)}
+          hasLater={hasLater}
+          loadingLater={loadingLater}
+          onLoadLater={() => void loadLater()}
         />
         <footer className="runtime-bar">
           <span className={`runtime-status runtime-status-${streamState}`}>
@@ -236,6 +301,10 @@ export function mergeOutput(
   return {
     ...next,
     events,
+    next_cursor: Math.max(current.next_cursor ?? 0, next.next_cursor ?? 0) || null,
+    has_more: next.has_more,
+    before_cursor: next.before_cursor,
+    has_before: next.has_before,
     messages: mergeMessageSnapshots(current.messages, next.messages),
     run,
   };
@@ -252,6 +321,8 @@ export function mergeLiveOutput(
       messages: [],
       next_cursor: null,
       has_more: false,
+      before_cursor: null,
+      has_before: false,
       run: null,
       backend: event.backend,
       run_id: event.run_id,
@@ -266,6 +337,8 @@ export function mergeLiveOutput(
     events: sortEvents(upsertEvent(base.events, event)),
     messages: mergeLiveActivities(base.messages, event),
     next_cursor: Math.max(base.next_cursor ?? 0, event.seq),
+    before_cursor: base.before_cursor,
+    has_before: base.has_before,
     run,
   };
 }

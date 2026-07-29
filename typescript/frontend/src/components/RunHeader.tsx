@@ -4,13 +4,27 @@ type RunHeaderProps = {
   identifier: string | null;
   detail: IssueDetail | null;
   run: RunItem | RunMetadata | null;
+  runHistory: RunMetadata[];
+  selectedRunId: string | null;
+  onSelectRun: (runId: string) => void;
   loading: boolean;
 };
 
-export function RunHeader({ identifier, detail, run, loading }: RunHeaderProps) {
-  const snapshotRun = detail?.running ?? detail?.retry ?? detail?.blocked ?? null;
+export function RunHeader({
+  identifier,
+  detail,
+  run,
+  runHistory,
+  selectedRunId,
+  onSelectRun,
+  loading,
+}: RunHeaderProps) {
+  const metadataRun = run !== null && "event_count" in run;
+  const snapshotRun = metadataRun
+    ? null
+    : (detail?.running ?? detail?.retry ?? detail?.blocked ?? null);
   const backend = run?.backend ?? detail?.logs?.latest_run?.backend ?? "agent";
-  const status = detail?.status ?? run?.status ?? "waiting";
+  const status = run?.status ?? detail?.status ?? "waiting";
   const title = detail?.title ?? run?.title ?? identifier ?? "Select a run";
   const workspace =
     detail?.workspace?.path ??
@@ -18,12 +32,13 @@ export function RunHeader({ identifier, detail, run, loading }: RunHeaderProps) 
     (run !== null && "workspace_path" in run ? run.workspace_path : null) ??
     "Not assigned";
   const session =
-    snapshotRun?.session_id ??
     run?.session_id ??
+    snapshotRun?.session_id ??
     detail?.logs?.latest_run?.session_id ??
     "Not started";
-  const turn = snapshotRun?.turn_count ?? "n/a";
-  const tokens = snapshotRun?.tokens?.total_tokens ?? null;
+  const runId = run?.run_id ?? detail?.logs?.latest_run?.run_id ?? "Not started";
+  const turn = metadataRun ? "n/a" : (snapshotRun?.turn_count ?? "n/a");
+  const tokens = metadataRun ? null : (snapshotRun?.tokens?.total_tokens ?? null);
   const startedAt = snapshotRun?.started_at ?? run?.started_at ?? null;
   const endedAt = run?.ended_at ?? null;
 
@@ -55,8 +70,27 @@ export function RunHeader({ identifier, detail, run, loading }: RunHeaderProps) 
           <span>Read only</span>
         </div>
       </div>
+      {runHistory.length > 0 ? (
+        <div className="run-history-row">
+          <label className="run-history-control">
+            <span className="run-history-label">Run history · {runHistory.length}</span>
+            <select
+              value={selectedRunId ?? runId}
+              onChange={(event) => onSelectRun(event.target.value)}
+              aria-label="Select run history"
+            >
+              {runHistory.map((historyRun) => (
+                <option key={historyRun.run_id} value={historyRun.run_id}>
+                  {runOptionLabel(historyRun)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      ) : null}
       <div className="run-facts" aria-label="Run summary">
         <Fact label="Workspace" value={workspace} mono />
+        <Fact label="Run" value={compactId(runId)} mono />
         <Fact label="Session" value={compactId(session)} mono />
         <Fact label="Turn" value={String(turn)} numeric />
         <Fact label="Runtime" value={formatRuntime(startedAt, endedAt)} numeric />
@@ -128,6 +162,11 @@ function statusLabel(status: string): string {
 
 function compactId(value: string): string {
   return value.length > 30 ? `${value.slice(0, 12)}…${value.slice(-10)}` : value;
+}
+
+function runOptionLabel(run: RunMetadata): string {
+  const session = run.session_id === null ? "No session" : compactId(run.session_id);
+  return `${statusLabel(run.status)} · ${compactId(run.run_id)} · ${session}`;
 }
 
 function formatInt(value: number): string {

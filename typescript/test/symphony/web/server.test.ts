@@ -259,7 +259,19 @@ describe("web server / observability API", () => {
       const tailBody = (await tail.json()) as Record<string, unknown>;
       expect((tailBody.events as Array<{ seq: number }>).map((event) => event.seq)).toEqual([3, 4]);
       expect(tailBody.has_more).toBe(true);
+      expect(tailBody.before_cursor).toBe(3);
+      expect(tailBody.has_before).toBe(true);
       expect(tailBody.backend).toBe("codex");
+
+      const earlier = await route(
+        new Request("http://127.0.0.1/api/v1/MT-HTTP/output?limit=2&before=3"),
+      );
+      const earlierBody = (await earlier.json()) as Record<string, unknown>;
+      expect((earlierBody.events as Array<{ seq: number }>).map((event) => event.seq)).toEqual([
+        1, 2,
+      ]);
+      expect(earlierBody.before_cursor).toBe(1);
+      expect(earlierBody.has_before).toBe(false);
 
       const incremental = await route(
         new Request("http://127.0.0.1/api/v1/MT-HTTP/output?limit=2&after=1"),
@@ -268,8 +280,83 @@ describe("web server / observability API", () => {
       expect((incrementalBody.events as Array<{ seq: number }>).map((event) => event.seq)).toEqual([
         2, 3,
       ]);
+
+      const invalid = await route(
+        new Request("http://127.0.0.1/api/v1/MT-HTTP/output?after=1&before=3"),
+      );
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toEqual({
+        error: { code: "invalid_output_query", message: "after and before cannot be combined" },
+      });
     } finally {
       await run.finish("completed");
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("returns all issue runs and selects historical output by run_id", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-api-run-history-"));
+    const outputStore = new AgentOutputStore({ root, mode: "raw" });
+    const runCount = 52;
+    for (let index = 0; index < runCount; index += 1) {
+      const run = outputStore.startRun({
+        issueId: "issue-history-runs",
+        issueIdentifier: "MT-HISTORY-RUNS",
+        title: "Run history",
+        backend: "codex",
+        workerHost: null,
+        runId: `history-run-${index}`,
+      });
+      run.record(
+        { event: "session_started", timestamp: new Date(), sessionId: `history-session-${index}` },
+        1,
+        `Session ${index}`,
+      );
+      await run.finish("completed");
+    }
+
+    const route = createRouter(provider(staticSnapshot(), refreshReply), 50, {
+      agentOutputStore: outputStore,
+    });
+    try {
+      const detail = await route(new Request("http://127.0.0.1/api/v1/MT-HISTORY-RUNS"));
+      expect(detail.status).toBe(200);
+      const detailBody = (await detail.json()) as {
+        logs: {
+          agent_runs: Array<{ run_id: string; session_id: string | null }>;
+          codex_session_logs: Array<{ run_id: string }>;
+          latest_run: { run_id: string };
+        };
+      };
+      expect(detailBody.logs.agent_runs).toHaveLength(runCount);
+      expect(detailBody.logs.codex_session_logs).toHaveLength(runCount);
+      expect(detailBody.logs.latest_run.run_id).toBe(`history-run-${runCount - 1}`);
+
+      const historical = await route(
+        new Request("http://127.0.0.1/api/v1/MT-HISTORY-RUNS/output?run_id=history-run-0&limit=20"),
+      );
+      expect(historical.status).toBe(200);
+      const historicalBody = (await historical.json()) as {
+        run: { run_id: string; session_id: string | null };
+        events: Array<{ run_id: string; session_id?: string }>;
+      };
+      expect(historicalBody.run).toMatchObject({
+        run_id: "history-run-0",
+        session_id: "history-session-0",
+      });
+      expect(historicalBody.events.every((event) => event.run_id === "history-run-0")).toBe(true);
+      expect(historicalBody.events.some((event) => event.session_id === "history-session-0")).toBe(
+        true,
+      );
+
+      const missingRun = await route(
+        new Request("http://127.0.0.1/api/v1/MT-HISTORY-RUNS/output?run_id=missing-run"),
+      );
+      expect(missingRun.status).toBe(404);
+      expect(await missingRun.json()).toEqual({
+        error: { code: "run_not_found", message: "Run not found" },
+      });
+    } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -395,7 +482,7 @@ describe("web server / observability API", () => {
     class RaceStore extends AgentOutputStore {
       override readIssueOutput(
         issueIdentifier: string,
-        options: { limit?: number; after?: number | null } = {},
+        options: { limit?: number; after?: number | null; before?: number | null } = {},
       ) {
         const result = super.readIssueOutput(issueIdentifier, options);
         inject?.();
@@ -478,6 +565,53 @@ describe("web server / observability API", () => {
       await first.finish("completed");
     } finally {
       await reader.cancel();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("output SSE selects the requested run_id", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-api-sse-selected-run-"));
+    const outputStore = new AgentOutputStore({ root, mode: "raw" });
+    const first = outputStore.startRun({
+      issueId: "issue-http",
+      issueIdentifier: "MT-HTTP",
+      backend: "codex",
+      workerHost: null,
+      runId: "first-run",
+    });
+    first.record(
+      { event: "session_started", timestamp: new Date(), sessionId: "first-session" },
+      1,
+      "first",
+    );
+    await first.finish("completed");
+    const second = outputStore.startRun({
+      issueId: "issue-http",
+      issueIdentifier: "MT-HTTP",
+      backend: "codex",
+      workerHost: null,
+      runId: "second-run",
+    });
+    second.record(
+      { event: "session_started", timestamp: new Date(), sessionId: "second-session" },
+      1,
+      "second",
+    );
+    await second.finish("completed");
+
+    const route = createRouter(provider(staticSnapshot(), refreshReply), 50, {
+      agentOutputStore: outputStore,
+    });
+    try {
+      const response = await route(
+        new Request("http://127.0.0.1/api/v1/MT-HTTP/output/stream?run_id=first-run"),
+      );
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).toContain('"run_id":"first-run"');
+      expect(text).toContain('"session_id":"first-session"');
+      expect(text).not.toContain('"run_id":"second-run"');
+    } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
