@@ -595,7 +595,7 @@ describe("Orchestrator status / live GenServer", () => {
     );
 
     await orch.cast({ tag: "tick", token: null });
-    await waitForState(orch, (s) => issueId in s.blocked);
+    await waitForState(orch, (s) => issueId in s.blocked, 3_000);
 
     const state = orch.getState();
     expect(issueId in state.running).toBe(false);

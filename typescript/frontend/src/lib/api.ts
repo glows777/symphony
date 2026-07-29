@@ -40,10 +40,50 @@ export type AgentOutputEvent = {
   event: string;
   event_detail?: string;
   message?: string;
+  chat_id?: string;
+  chat_phase?: "start" | "delta" | "complete";
+  chat_delta?: string;
+  activity_type?: "assistant_message" | "thinking" | "tool_call" | "system" | "unknown";
+  activity_status?: "streaming" | "completed" | "failed";
+  activity_id?: string;
+  parent_message_id?: string;
+  thinking_summary_delta?: string;
+  tool_name?: string;
+  tool_input?: unknown;
+  tool_command?: string;
+  tool_output_delta?: string;
+  tool_error?: string;
   payload?: unknown;
   raw?: string;
   terminal?: boolean;
   [key: string]: unknown;
+};
+
+export type AgentActivityStatus = "streaming" | "completed" | "failed";
+
+export type AgentOutputMessage = {
+  message_id: string;
+  activity_id?: string;
+  activity_type?: "assistant_message" | "thinking" | "tool_call" | "system" | "unknown";
+  activity_status?: AgentActivityStatus;
+  issue_identifier: string;
+  backend: Backend;
+  run_id: string;
+  session_id?: string;
+  turn?: number;
+  parent_message_id?: string;
+  role?: "assistant";
+  content: string;
+  status: AgentActivityStatus;
+  seq_start: number;
+  seq_end: number;
+  at: string;
+  updated_at: string;
+  tool_name?: string;
+  tool_input?: unknown;
+  tool_command?: string;
+  tool_output?: string;
+  tool_error?: string;
 };
 
 export type RunMetadata = {
@@ -92,6 +132,7 @@ export type IssueDetail = {
 
 export type OutputPayload = {
   events: AgentOutputEvent[];
+  messages?: AgentOutputMessage[];
   next_cursor: number | null;
   has_more: boolean;
   run: RunMetadata | null;

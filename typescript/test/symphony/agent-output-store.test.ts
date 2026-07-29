@@ -205,10 +205,18 @@ describe("AgentOutputStore", () => {
     expect(streaming.messages).toHaveLength(1);
     expect(streaming.messages[0]).toMatchObject({
       message_id: "msg-1",
+      activity_id: "msg-1",
+      activity_type: "assistant_message",
+      activity_status: "streaming",
       content: "Hello\n world  ",
       status: "streaming",
     });
     const deltaEvent = streaming.events.find((event) => event.chat_delta === "Hello\n");
+    expect(deltaEvent).toMatchObject({
+      activity_type: "assistant_message",
+      activity_status: "streaming",
+      activity_id: "msg-1",
+    });
     expect(deltaEvent?.payload).toBeUndefined();
 
     run.record(
@@ -226,6 +234,138 @@ describe("AgentOutputStore", () => {
     expect(store.readIssueOutput("TRANSCRIPT-1").messages[0]?.status).toBe("completed");
   });
 
+  test("closes streaming assistant messages when the turn ends without item completion", async () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "raw" });
+    const run = store.startRun({
+      issueId: "issue-transcript-close",
+      issueIdentifier: "TRANSCRIPT-2",
+      backend: "codex",
+      workerHost: null,
+      runId: "transcript-close-run",
+    });
+    run.record(
+      message({
+        payload: {
+          method: "item/started",
+          params: { item: { id: "msg-open", type: "agentMessage" } },
+        },
+      }),
+      1,
+      "item started: agent message (msg-open)",
+    );
+    run.record(
+      message({
+        payload: {
+          method: "item/agentMessage/delta",
+          params: { itemId: "msg-open", delta: "Still exact  text\n" },
+        },
+      }),
+      1,
+      "agent message streaming",
+    );
+    run.record(message({ event: "turn_completed", payload: { method: "turn/completed" } }), 1);
+
+    const result = store.readIssueOutput("TRANSCRIPT-2");
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({
+      message_id: "msg-open",
+      content: "Still exact  text\n",
+      status: "completed",
+      activity_status: "completed",
+    });
+    await run.finish("completed");
+  });
+
+  test("projects reasoning summaries and tool calls without exposing hidden reasoning text", async () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "raw" });
+    const run = store.startRun({
+      issueId: "issue-activities",
+      issueIdentifier: "ACT-1",
+      backend: "codex",
+      workerHost: null,
+      runId: "activity-run",
+    });
+    run.record(
+      message({
+        payload: {
+          method: "item/reasoning/textDelta",
+          params: { itemId: "think-1", textDelta: "do not show this" },
+        },
+      }),
+      1,
+      "reasoning text streaming",
+    );
+    run.record(
+      message({
+        payload: {
+          method: "item/reasoning/summaryTextDelta",
+          params: { itemId: "think-1", summaryTextDelta: "Checked constraints.\n" },
+        },
+      }),
+      1,
+      "reasoning summary streaming",
+    );
+    run.record(
+      message({
+        payload: {
+          method: "item/commandExecution/outputDelta",
+          params: { itemId: "cmd-1", command: "bun test", outputDelta: "pass  one\n" },
+        },
+      }),
+      1,
+      "command output streaming",
+    );
+    run.record(
+      message({
+        event: "tool_call_failed",
+        reason: { message: "tool exploded" },
+        payload: {
+          method: "item/tool/call",
+          params: { itemId: "tool-1", name: "linear_graphql", arguments: { query: "bad" } },
+        },
+      }),
+      1,
+      "tool failed",
+    );
+    run.record(message({ event: "turn_completed", payload: { method: "turn/completed" } }), 1);
+
+    const result = store.readIssueOutput("ACT-1");
+    const hiddenEvent = result.events.find(
+      (event) =>
+        event.activity_type === "thinking" &&
+        event.payload !== undefined &&
+        (event.payload as { method?: string }).method === "item/reasoning/textDelta",
+    );
+    expect(hiddenEvent).toMatchObject({ activity_type: "thinking", activity_id: "think-1" });
+    expect(hiddenEvent?.thinking_summary_delta).toBeUndefined();
+
+    const thinking = result.messages.find((item) => item.activity_type === "thinking");
+    expect(thinking).toMatchObject({
+      activity_id: "think-1",
+      content: "Checked constraints.\n",
+      status: "completed",
+    });
+    expect(thinking?.content).not.toContain("do not show this");
+
+    const command = result.messages.find((item) => item.activity_id === "cmd-1");
+    expect(command).toMatchObject({
+      activity_type: "tool_call",
+      tool_command: "bun test",
+      tool_output: "pass  one\n",
+      status: "completed",
+    });
+
+    const failed = result.messages.find((item) => item.activity_id === "tool-1");
+    expect(failed).toMatchObject({
+      activity_type: "tool_call",
+      status: "failed",
+      tool_name: "linear_graphql",
+      tool_input: { query: "bad" },
+      tool_error: "tool exploded",
+    });
+    await run.finish("completed");
+  });
+
   test("keeps one store live across output configuration changes", async () => {
     const firstRoot = tempRoot();
     const secondRoot = tempRoot();
@@ -240,6 +380,7 @@ describe("AgentOutputStore", () => {
     first.record(message(), 1, "First");
     await first.finish("completed");
 
+    await Bun.sleep(1);
     store.reconfigure({ root: secondRoot, mode: "summary" });
     const second = store.startRun({
       issueId: "issue-config",
