@@ -293,7 +293,7 @@ function EventRow({
 }
 
 function messageKey(message: AgentOutputMessage): string {
-  return `message:${message.run_id}:${message.activity_id ?? message.message_id}`;
+  return `message:${message.run_id}:${message.turn ?? "unknown"}:${message.activity_id ?? message.message_id}`;
 }
 
 function eventKey(event: AgentOutputEvent): string {

@@ -476,7 +476,7 @@ describe("AgentOutputStore", () => {
       runId: "bad-run",
     });
     run.record(message(), 1, "Valid event");
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await run.finish("completed");
     const pathName = run.metadata().path;
     fs.appendFileSync(pathName, "not-json\n");
     const result = store.readIssueOutput("BAD-1");
