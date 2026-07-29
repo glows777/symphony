@@ -7,7 +7,6 @@
 import * as AgentRunner from "./agent-runner.ts";
 import { maxConcurrentAgentsForState, settingsBang, validate } from "./config.ts";
 import { logger } from "./logger.ts";
-import { markReviewFailure } from "./review-context.ts";
 import { notifyUpdate as notifyDashboard } from "./status-dashboard.ts";
 import * as Tracker from "./tracker/tracker.ts";
 import { type Issue, isIssue, isReworkState, routable } from "./work-item.ts";
@@ -15,6 +14,9 @@ import * as Workspace from "./workspace.ts";
 
 const CONTINUATION_RETRY_DELAY_MS = 1_000;
 const FAILURE_RETRY_BASE_MS = 10_000;
+const HUMAN_REVIEW_STATE = "Human Review";
+const REVIEW_SOURCE_STATES = ["In Progress", "Rework"] as const;
+const REVIEW_OBSERVED_STATES = [...REVIEW_SOURCE_STATES, HUMAN_REVIEW_STATE] as const;
 
 export type CodexTotals = {
   input_tokens: number;
@@ -32,12 +34,14 @@ export const EMPTY_CODEX_TOTALS: CodexTotals = {
 
 // The agent process handle (Elixir `pid`); abortable in the TS port.
 export type RunningTask = { stop(): void };
+export type RunKind = "normal" | "review";
 
 export type RunningEntry = {
   task?: RunningTask | null;
   ref?: unknown;
   identifier?: string | null;
   issue: Issue;
+  run_kind?: RunKind;
   backend?: string | null;
   worker_host?: string | null;
   workspace_path?: string | null;
@@ -76,6 +80,7 @@ export type RetryMetadata = {
   worker_host?: string | null;
   workspace_path?: string | null;
   delay_type?: string;
+  run_kind?: RunKind;
 };
 
 export type RetryAttempt = RetryMetadata & {
@@ -83,6 +88,11 @@ export type RetryAttempt = RetryMetadata & {
   timer_ref?: ReturnType<typeof setTimeout> | null;
   retry_token?: symbol;
   due_at_ms?: number;
+};
+
+export type ReviewQueueEntry = {
+  issue: Issue;
+  enqueued_at: Date;
 };
 
 export type State = {
@@ -97,6 +107,8 @@ export type State = {
   claimed: Set<string>;
   blocked: Record<string, BlockedEntry>;
   retry_attempts: Record<string, RetryAttempt>;
+  review_queue: Record<string, ReviewQueueEntry>;
+  review_observed_states: Record<string, string>;
   codex_totals: CodexTotals | null;
   codex_rate_limits: unknown;
 };
@@ -108,6 +120,8 @@ export function newState(overrides: Partial<State> = {}): State {
     claimed: new Set(),
     blocked: {},
     retry_attempts: {},
+    review_queue: {},
+    review_observed_states: {},
     codex_totals: EMPTY_CODEX_TOTALS,
     codex_rate_limits: null,
     ...overrides,
@@ -145,6 +159,10 @@ export function reconcileIssueStatesForTest(issues: Issue[], state: State): Stat
 
 export function reconcileBlockedIssueStatesForTest(issues: Issue[], state: State): State {
   return reconcileBlockedIssueStates(issues, state, activeStateSet(), terminalStateSet());
+}
+
+export function reconcileReviewQueueForTest(issues: Issue[], state: State): State {
+  return reconcileReviewQueue(issues, state);
 }
 
 export function handleRetryIssueLookupForTest(
@@ -199,6 +217,9 @@ function reconcileIssueState(
   activeStates: Set<string>,
   terminalStates: Set<string>,
 ): State {
+  if (runningReviewIssue(issue, state)) {
+    return reconcileReviewIssueState(issue, state, terminalStates);
+  }
   if (terminalIssueState(issue.state, terminalStates)) {
     logger.info(
       `Issue moved to terminal state: ${issueContext(issue)} state=${issue.state}; stopping active agent`,
@@ -222,6 +243,28 @@ function reconcileIssueState(
   }
   logger.info(
     `Issue moved to non-active state: ${issueContext(issue)} state=${issue.state}; stopping active agent`,
+  );
+  return terminateRunningIssue(state, issue.id, false);
+}
+
+function reconcileReviewIssueState(issue: Issue, state: State, terminalStates: Set<string>): State {
+  if (terminalIssueState(issue.state, terminalStates)) {
+    logger.info(
+      `Review issue moved to terminal state: ${issueContext(issue)} state=${issue.state}; stopping review agent`,
+    );
+    return terminateRunningIssue(state, issue.id, true);
+  }
+  if (!issueRoutable(issue)) {
+    logger.info(
+      `Review issue no longer routed to this worker: ${issueContext(issue)}; stopping review agent`,
+    );
+    return terminateRunningIssue(state, issue.id, false);
+  }
+  if (humanReviewIssueState(issue.state)) {
+    return refreshRunningIssueState(state, issue);
+  }
+  logger.info(
+    `Review issue left Human Review: ${issueContext(issue)} state=${issue.state}; stopping review agent`,
   );
   return terminateRunningIssue(state, issue.id, false);
 }
@@ -310,6 +353,7 @@ function terminateRunningIssue(
     claimed: setWithout(next.claimed, issueId),
     blocked: omitKey(next.blocked, issueId),
     retry_attempts: omitKey(next.retry_attempts, issueId),
+    review_queue: omitKey(next.review_queue, issueId),
   };
   return next;
 }
@@ -323,6 +367,7 @@ function releaseIssueClaim(state: State, issueId: string | null): State {
     claimed: setWithout(state.claimed, issueId),
     blocked: omitKey(state.blocked, issueId),
     retry_attempts: omitKey(state.retry_attempts, issueId),
+    review_queue: omitKey(state.review_queue, issueId),
   };
 }
 
@@ -354,6 +399,88 @@ function blockedIssueWorkerHost(state: State, issueId: string | null): string | 
     return null;
   }
   return state.blocked[issueId]?.worker_host ?? null;
+}
+
+// ---- review queue ----------------------------------------------------------
+
+function reconcileReviewQueue(issues: Issue[], state: State): State {
+  const observed = reviewObservedStateMap(issues);
+  let queue = refreshReviewQueueEntries(state.review_queue, issues);
+
+  for (const issue of issues) {
+    if (typeof issue.id !== "string") {
+      continue;
+    }
+    const previousState = state.review_observed_states[issue.id] ?? null;
+    if (
+      reviewTransitionEligible(previousState, issue) &&
+      !(issue.id in queue) &&
+      !(issue.id in state.running) &&
+      !(issue.id in state.blocked)
+    ) {
+      logger.info(
+        `Queueing review agent from status edge: ${issueContext(issue)} previous_state=${previousState} state=${issue.state}`,
+      );
+      queue = { ...queue, [issue.id]: { issue, enqueued_at: new Date() } };
+    }
+  }
+
+  return {
+    ...state,
+    review_queue: queue,
+    review_observed_states: observed,
+  };
+}
+
+function refreshReviewQueueEntries(
+  queue: Record<string, ReviewQueueEntry>,
+  issues: Issue[],
+): Record<string, ReviewQueueEntry> {
+  const byId = new Map(
+    issues
+      .filter((issue) => typeof issue.id === "string")
+      .map((issue) => [issue.id as string, issue]),
+  );
+  const next: Record<string, ReviewQueueEntry> = {};
+  for (const [issueId, entry] of Object.entries(queue)) {
+    const current = byId.get(issueId);
+    if (current === undefined) {
+      next[issueId] = entry;
+      continue;
+    }
+    if (reviewQueueCandidate(current)) {
+      next[issueId] = { ...entry, issue: current };
+    }
+  }
+  return next;
+}
+
+function reviewObservedStateMap(issues: Issue[]): Record<string, string> {
+  const observed: Record<string, string> = {};
+  for (const issue of issues) {
+    if (typeof issue.id === "string" && typeof issue.state === "string") {
+      observed[issue.id] = normalizeIssueState(issue.state);
+    }
+  }
+  return observed;
+}
+
+function reviewTransitionEligible(previousState: string | null, issue: Issue): boolean {
+  return previousState !== null && reviewSourceState(previousState) && reviewQueueCandidate(issue);
+}
+
+function reviewQueueCandidate(issue: Issue): boolean {
+  return (
+    typeof issue.id === "string" &&
+    typeof issue.identifier === "string" &&
+    typeof issue.title === "string" &&
+    humanReviewIssueState(issue.state) &&
+    issueRoutable(issue)
+  );
+}
+
+function reviewSourceState(stateName: string): boolean {
+  return REVIEW_SOURCE_STATES.some((source) => normalizeIssueState(source) === stateName);
 }
 
 // ---- retry lookup ----------------------------------------------------------
@@ -432,6 +559,26 @@ async function revalidateIssueForDispatch(
     : { kind: "skip", issue: refreshed };
 }
 
+async function revalidateIssueForReviewDispatch(
+  issue: Issue,
+  fetcher: IssueStateFetcher,
+): Promise<RevalidateOutcome> {
+  if (issue.id === null) {
+    return { kind: "skip", issue };
+  }
+  const result = await fetcher([issue.id]);
+  if (!result.ok) {
+    return { kind: "error", reason: result.error };
+  }
+  const refreshed = result.value[0];
+  if (refreshed === undefined) {
+    return { kind: "skip", issue: "missing" };
+  }
+  return reviewQueueCandidate(refreshed)
+    ? { kind: "ok", issue: refreshed }
+    : { kind: "skip", issue: refreshed };
+}
+
 // ---- dispatch decision -----------------------------------------------------
 
 function sortIssuesForDispatch(issues: Issue[]): Issue[] {
@@ -473,6 +620,19 @@ function shouldDispatchIssue(
   return (
     candidateIssue(issue, activeStates, terminalStates) &&
     !todoIssueBlockedByNonTerminal(issue, terminalStates) &&
+    issue.id !== null &&
+    !state.claimed.has(issue.id) &&
+    !(issue.id in state.running) &&
+    !(issue.id in state.blocked) &&
+    availableSlots(state) > 0 &&
+    stateSlotsAvailable(issue, state.running) &&
+    workerSlotsAvailable(state, null)
+  );
+}
+
+function shouldDispatchReviewIssue(issue: Issue, state: State): boolean {
+  return (
+    reviewQueueCandidate(issue) &&
     issue.id !== null &&
     !state.claimed.has(issue.id) &&
     !(issue.id in state.running) &&
@@ -631,6 +791,14 @@ function terminalIssueState(stateName: unknown, terminalStates: Set<string>): bo
 
 function activeIssueState(stateName: unknown, activeStates: Set<string>): boolean {
   return typeof stateName === "string" && activeStates.has(normalizeIssueState(stateName));
+}
+
+function humanReviewIssueState(stateName: unknown): boolean {
+  return typeof stateName === "string" && normalizeIssueState(stateName) === "human review";
+}
+
+function runningReviewIssue(issue: Issue, state: State): boolean {
+  return typeof issue.id === "string" && state.running[issue.id]?.run_kind === "review";
 }
 
 function normalizeIssueState(stateName: string): string {
@@ -827,15 +995,6 @@ function inspectReason(reason: unknown): string {
   } catch {
     return String(reason);
   }
-}
-
-function isReviewFailureReason(value: unknown): value is { tag: string; message: string } {
-  return (
-    isObj(value) &&
-    typeof value.tag === "string" &&
-    value.tag.startsWith("review_") &&
-    typeof value.message === "string"
-  );
 }
 
 // ---- missing-issue reconciliation ------------------------------------------
@@ -1621,25 +1780,15 @@ export class Orchestrator {
     entry: RunningEntry,
     sessionId: string,
   ): State {
-    if (isReviewFailureReason(reason)) {
-      void markReviewFailure(entry.issue, reason).catch((error) => {
-        logger.error(`Review manual-handling write-back failed: ${inspectReason(error)}`);
-      });
-      logger.warning(
-        `Review run blocked for issue_id=${issueId} issue_identifier=${entry.identifier}: ${inspectReason(reason)}`,
-      );
-      return blockIssueFromEntry(
-        state,
-        issueId,
-        entry,
-        isObj(reason) && typeof reason.message === "string"
-          ? reason.message
-          : `review run failed: ${inspectReason(reason)}`,
-      );
-    }
     if (reason === "normal") {
       if (inputRequiredBlocker(entry)) {
         return this.blockInputRequiredAgentDown(state, issueId, entry, sessionId, reason);
+      }
+      if (entry.run_kind === "review") {
+        logger.info(
+          `Review agent completed for issue_id=${issueId} session_id=${sessionId}; returning control to state polling`,
+        );
+        return releaseIssueClaim(completeIssue(state, issueId), issueId);
       }
       logger.info(
         `Agent task completed for issue_id=${issueId} session_id=${sessionId}; scheduling active-state continuation check`,
@@ -1648,6 +1797,7 @@ export class Orchestrator {
         identifier: entry.identifier ?? null,
         issue_url: isIssue(entry.issue) ? entry.issue.url : null,
         delay_type: "continuation",
+        run_kind: entry.run_kind ?? "normal",
         worker_host: entry.worker_host ?? null,
         workspace_path: entry.workspace_path ?? null,
       });
@@ -1686,6 +1836,7 @@ export class Orchestrator {
       identifier: entry.identifier ?? null,
       issue_url: isIssue(entry.issue) ? entry.issue.url : null,
       error: `agent exited: ${inspectReason(reason)}`,
+      run_kind: entry.run_kind ?? "normal",
       worker_host: entry.worker_host ?? null,
       workspace_path: entry.workspace_path ?? null,
     });
@@ -1828,7 +1979,16 @@ export class Orchestrator {
       logDispatchError(validated.error);
       return next;
     }
-    const candidates = await Tracker.fetchCandidateIssues();
+    const [reviewIssues, candidates] = await Promise.all([
+      Tracker.fetchIssuesByStates([...REVIEW_OBSERVED_STATES]),
+      Tracker.fetchCandidateIssues(),
+    ]);
+    if (reviewIssues.ok) {
+      next = reconcileReviewQueue(reviewIssues.value, next);
+    } else {
+      logger.error(`Failed to fetch review issue states: ${inspectReason(reviewIssues.error)}`);
+    }
+    next = await this.dispatchReviewQueue(next);
     if (!candidates.ok) {
       logger.error(`Failed to fetch from tracker: ${inspectReason(candidates.error)}`);
       return next;
@@ -1912,6 +2072,7 @@ export class Orchestrator {
       identifier,
       issue_url: isIssue(entry.issue) ? entry.issue.url : null,
       error: `stalled for ${elapsedMs}ms without codex activity`,
+      run_kind: entry.run_kind ?? "normal",
     });
   }
 
@@ -1948,7 +2109,50 @@ export class Orchestrator {
     return next;
   }
 
+  private async dispatchReviewQueue(state: State): Promise<State> {
+    let next = state;
+    const entries = sortIssuesForDispatch(
+      Object.values(next.review_queue).map((entry) => entry.issue),
+    );
+    for (const issue of entries) {
+      if (shouldDispatchReviewIssue(issue, next)) {
+        next = await this.dispatchReviewIssue(next, issue, null, null);
+      }
+    }
+    return next;
+  }
+
   // ---- dispatch ------------------------------------------------------------
+
+  private async dispatchReviewIssue(
+    state: State,
+    issue: Issue,
+    attempt: number | null,
+    preferredWorkerHost: string | null,
+  ): Promise<State> {
+    if (typeof issue.id !== "string") {
+      return state;
+    }
+    const outcome = await revalidateIssueForReviewDispatch(issue, (ids) =>
+      Tracker.fetchIssueStatesByIds(ids),
+    );
+    if (outcome.kind === "ok") {
+      return this.doDispatchIssue(state, outcome.issue, attempt, preferredWorkerHost, "review");
+    }
+    if (outcome.kind === "skip") {
+      logger.info(
+        `Skipping review dispatch; issue no longer in Human Review: ${issueContext(issue)}`,
+      );
+      return releaseIssueClaim(
+        { ...state, review_queue: omitKey(state.review_queue, issue.id) },
+        issue.id,
+      );
+    }
+    logger.warning(
+      `Skipping review dispatch; issue refresh failed for ${issueContext(issue)}: ${inspectReason(outcome.reason)}`,
+    );
+    return state;
+  }
 
   private async dispatchIssue(
     state: State,
@@ -1962,7 +2166,7 @@ export class Orchestrator {
       terminalStateSet(),
     );
     if (outcome.kind === "ok") {
-      return this.doDispatchIssue(state, outcome.issue, attempt, preferredWorkerHost);
+      return this.doDispatchIssue(state, outcome.issue, attempt, preferredWorkerHost, "normal");
     }
     if (outcome.kind === "skip") {
       logger.info(`Skipping dispatch; issue no longer active or visible: ${issueContext(issue)}`);
@@ -1979,13 +2183,14 @@ export class Orchestrator {
     issue: Issue,
     attempt: number | null,
     preferredWorkerHost: string | null,
+    runKind: RunKind,
   ): State {
     const workerHost = selectWorkerHost(state, preferredWorkerHost);
     if (workerHost === "no_worker_capacity") {
       logger.debug(`No SSH worker slots available for ${issueContext(issue)}`);
       return state;
     }
-    return this.spawnIssueOnWorkerHost(state, issue, attempt, workerHost);
+    return this.spawnIssueOnWorkerHost(state, issue, attempt, workerHost, runKind);
   }
 
   private spawnIssueOnWorkerHost(
@@ -1993,6 +2198,7 @@ export class Orchestrator {
     issue: Issue,
     attempt: number | null,
     workerHost: string | null,
+    runKind: RunKind,
   ): State {
     const issueId = issue.id;
     if (issueId === null) {
@@ -2015,7 +2221,8 @@ export class Orchestrator {
     AgentRunner.run(issue, (update) => this.onWorkerUpdate(update), {
       workerHost,
       attempt,
-      rework: attempt === null && isReworkState(issue.state),
+      rework: runKind === "normal" && attempt === null && isReworkState(issue.state),
+      review: runKind === "review",
       signal: abortController.signal,
     })
       .then(() => {
@@ -2028,13 +2235,13 @@ export class Orchestrator {
           this.cast({
             tag: "down",
             ref,
-            reason: isReviewFailureReason(error) ? error : inspectReason(error),
+            reason: inspectReason(error),
           });
         }
       });
 
     logger.info(
-      `Dispatching issue to agent: ${issueContext(issue)} attempt=${attempt} worker_host=${workerHost ?? "local"}`,
+      `Dispatching issue to agent: ${issueContext(issue)} attempt=${attempt} worker_host=${workerHost ?? "local"} run_kind=${runKind}`,
     );
 
     const entry: RunningEntry = {
@@ -2042,6 +2249,7 @@ export class Orchestrator {
       ref,
       identifier: issue.identifier,
       issue,
+      run_kind: runKind,
       backend: settingsBang().agent.backend,
       worker_host: workerHost,
       workspace_path: null,
@@ -2066,6 +2274,7 @@ export class Orchestrator {
       running: { ...state.running, [issueId]: entry },
       claimed: new Set(state.claimed).add(issueId),
       retry_attempts: omitKey(state.retry_attempts, issueId),
+      review_queue: omitKey(state.review_queue, issueId),
     };
   }
 
@@ -2096,6 +2305,9 @@ export class Orchestrator {
     attempt: number,
     metadata: RetryMetadata,
   ): Promise<State> {
+    if (metadata.run_kind === "review") {
+      return this.handleReviewRetryIssue(state, issueId, attempt, metadata);
+    }
     const candidates = await Tracker.fetchCandidateIssues();
     if (!candidates.ok) {
       logger.warning(
@@ -2108,6 +2320,41 @@ export class Orchestrator {
     }
     const issue = findIssueById(candidates.value, issueId);
     return this.handleRetryIssueLookupLive(issue, state, issueId, attempt, metadata);
+  }
+
+  private async handleReviewRetryIssue(
+    state: State,
+    issueId: string,
+    attempt: number,
+    metadata: RetryMetadata,
+  ): Promise<State> {
+    const fetched = await Tracker.fetchIssueStatesByIds([issueId]);
+    if (!fetched.ok) {
+      logger.warning(
+        `Review retry refresh failed for issue_id=${issueId} issue_identifier=${metadata.identifier ?? issueId}: ${inspectReason(fetched.error)}`,
+      );
+      return this.scheduleIssueRetry(state, issueId, attempt + 1, {
+        ...metadata,
+        error: `review retry refresh failed: ${inspectReason(fetched.error)}`,
+        run_kind: "review",
+      });
+    }
+    const issue = fetched.value[0] ?? null;
+    if (issue !== null && reviewQueueCandidate(issue)) {
+      return this.dispatchReviewIssue(
+        {
+          ...state,
+          review_queue: { ...state.review_queue, [issueId]: { issue, enqueued_at: new Date() } },
+        },
+        issue,
+        attempt,
+        metadata.worker_host ?? null,
+      );
+    }
+    logger.debug(
+      `Review retry issue left Human Review, removing claim issue_id=${issueId} issue_identifier=${metadata.identifier ?? issueId}`,
+    );
+    return releaseIssueClaim(state, issueId);
   }
 
   private async handleRetryIssueLookupLive(
@@ -2179,6 +2426,7 @@ export class Orchestrator {
     const error = metadata.error ?? previous.error ?? null;
     const workerHost = metadata.worker_host ?? previous.worker_host ?? null;
     const workspacePath = metadata.workspace_path ?? previous.workspace_path ?? null;
+    const runKind = metadata.run_kind ?? previous.run_kind;
 
     if (oldTimer) {
       clearTimeout(oldTimer);
@@ -2209,6 +2457,7 @@ export class Orchestrator {
           error,
           worker_host: workerHost,
           workspace_path: workspacePath,
+          ...(runKind === undefined ? {} : { run_kind: runKind }),
         },
       },
     };
@@ -2272,6 +2521,7 @@ function popRetryAttemptState(
       error: entry.error ?? null,
       worker_host: entry.worker_host ?? null,
       workspace_path: entry.workspace_path ?? null,
+      ...(entry.run_kind === undefined ? {} : { run_kind: entry.run_kind }),
     };
     return {
       ok: true,

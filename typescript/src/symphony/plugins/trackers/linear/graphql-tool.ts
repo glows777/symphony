@@ -52,18 +52,6 @@ export async function executeLinearGraphql(
   if (!normalized.ok) {
     return { success: false, payload: toolErrorPayload(normalized.error) };
   }
-  if (opts.reviewStateGate === true && isMutationDocument(normalized.value.query)) {
-    return {
-      success: false,
-      payload: {
-        error: {
-          message:
-            "Review runs cannot execute Linear mutations directly. Complete the per-finding handoff; Symphony applies the completion gate.",
-          tag: "review_state_gate",
-        },
-      },
-    };
-  }
   const response = await linearClient(normalized.value.query, normalized.value.variables, []);
   if (isOkResult(response)) {
     return graphqlOutcome(response.value);
@@ -72,58 +60,6 @@ export async function executeLinearGraphql(
     return { success: false, payload: toolErrorPayload(response.error) };
   }
   return { success: false, payload: toolErrorPayload(response) };
-}
-
-function isMutationDocument(query: string): boolean {
-  let index = 0;
-  while (index < query.length) {
-    const char = query[index];
-    if (char === "#") {
-      while (index < query.length && query[index] !== "\n" && query[index] !== "\r") {
-        index += 1;
-      }
-      continue;
-    }
-    if (char === '"') {
-      const block = query.slice(index, index + 3) === '"""';
-      index += block ? 3 : 1;
-      let closed = false;
-      while (index < query.length) {
-        if (block && query.slice(index, index + 3) === '"""' && query[index - 1] !== "\\") {
-          index += 3;
-          closed = true;
-          break;
-        }
-        if (!block && query[index] === '"' && query[index - 1] !== "\\") {
-          index += 1;
-          closed = true;
-          break;
-        }
-        if (!block && query[index] === "\\") {
-          index += 2;
-        } else {
-          index += 1;
-        }
-      }
-      if (!closed) {
-        return true;
-      }
-      continue;
-    }
-    if (char !== undefined && /[A-Za-z_]/.test(char)) {
-      const start = index;
-      index += 1;
-      while (index < query.length && /[A-Za-z0-9_]/.test(query[index] ?? "")) {
-        index += 1;
-      }
-      if (query.slice(start, index) === "mutation") {
-        return true;
-      }
-      continue;
-    }
-    index += 1;
-  }
-  return false;
 }
 
 type NormalizedArgs = { query: string; variables: Record<string, unknown> };

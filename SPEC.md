@@ -328,7 +328,6 @@ Returned workflow object:
 Top-level keys:
 
 - `tracker`
-- `review`
 - `polling`
 - `workspace`
 - `hooks`
@@ -366,61 +365,29 @@ Fields:
   - A blank configured label matches no issue.
 - `active_states` (list of strings)
   - Default: `Todo`, `In Progress`
+  - `Human Review` is not a normal active candidate. It is observed separately for review status
+    edges.
 - `terminal_states` (list of strings)
   - Default: `Closed`, `Cancelled`, `Canceled`, `Duplicate`, `Done`
 
-#### 5.3.2 `review` (object)
+#### 5.3.2 Review Agent
 
-Review runs are explicit and opt-in. An issue must enter the `Rework` state
-before Symphony contacts GitHub.
+Review is a status-edge workflow, not a separate GitHub PR review provider. Symphony observes
+issues in `In Progress`, `Rework`, and `Human Review`. Only the edges `In Progress -> Human Review`
+and `Rework -> Human Review` enqueue a Review Agent job in memory. Existing `Human Review` issues
+on process start do not enqueue review jobs; restart recovery and persistent review jobs are out of
+scope.
 
-Fields:
+Review Agent jobs run through the ordinary agent runner, workspace creation, hooks, backend session,
+tracker tool provider, concurrency accounting, and event handling. The only review-specific input is
+prompt guidance telling the agent to inspect the tracker issue, comments, local diff, relevant code,
+linked PRs or discussion, and necessary tests or browser behavior. Symphony does not inject GitHub
+review context, query GitHub review APIs, read or write review handoff files, or apply a system-owned
+review completion gate.
 
-- `repository` (string or null)
-  - GitHub `owner/name`; required when the issue is in `Rework`.
-- `head_branch` (string)
-  - Default: `symphony/{{ issue.identifier }}`.
-- `github_api_url` (string)
-  - Default: `https://api.github.com`.
-- `github_token` (string or `$VAR_NAME`)
-  - Defaults to `$GITHUB_TOKEN`; missing credentials fail closed.
-- `manual_state` (string)
-  - Default: `In Progress`; API failures and incomplete handoffs stay here.
-- `handoff_path` (relative path)
-  - Default: `.symphony/review-handoff.json`.
-- `verification_command` (string or null)
-  - Default: `null`.
-  - Trusted operator-owned command run in the selected workspace after the review turn.
-  - A fixed finding can pass only when this command exits successfully on a clean worktree whose
-    `HEAD` matches the latest pushed PR head.
-
-The provider locates exactly one open PR, reads paginated top-level comments,
-review submissions, and unresolved GraphQL review threads (including outdated
-threads and their complete comment history). The latest `CHANGES_REQUESTED`
-submission from each reviewer is also a finding unless a later submission by
-that reviewer supersedes it. The provider pins the baseline PR head and a
-content revision for every finding. Review text is serialized inside one
-untrusted JSON data boundary.
-
-A review run gets one agent turn and writes a version-2 claim-only handoff with
-the baseline head, snapshot id, finding id, finding revision, and one `fixed`,
-`deferred`, or `blocked` result per finding. Commit, test, approval, and reply
-receipt fields are provider-owned and MUST NOT be accepted from the handoff.
-Only `fixed` findings count as complete; `deferred` and `blocked` findings remain
-in manual handling. Fixed claims require a pushed PR head and a successful
-configured verification command bound to that exact clean commit. For a `Rework`
-run, the old PR is closed and replaced from `origin/main`; the replacement must
-use the configured branch, have no new findings, and is allowed to start a new
-commit ancestry rather than descending from the closed PR.
-
-Symphony reads and verifies the handoff on the selected local or remote worker,
-posts idempotent provider-marked replies (as top-level comments on a replacement
-PR when the original inline thread was closed), re-fetches GitHub again immediately
-before the transition, refreshes tracker routing state, and moves the issue to
-`In Review` only when every current finding is fixed. Missing or incomplete
-handoffs and provider, snapshot, verification, or routing failures are
-structured review failures; the orchestrator blocks automatic retries and one
-fail-closed owner keeps the issue in `manual_state`.
+The Review Agent uses the regular tracker tool. When it finds issues that require more work, it
+comments its findings on the tracker issue and moves the issue to `Rework`; `Rework` is the only
+automatic return state for problems. The existing normal `Rework` dispatch path then takes over.
 
 #### 5.3.3 `polling` (object)
 

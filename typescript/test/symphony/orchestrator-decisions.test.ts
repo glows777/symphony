@@ -8,6 +8,7 @@ import {
   newState,
   reconcileBlockedIssueStatesForTest,
   reconcileIssueStatesForTest,
+  reconcileReviewQueueForTest,
   revalidateIssueForDispatchForTest,
   selectWorkerHostForTest,
   shouldDispatchIssueForTest,
@@ -304,6 +305,62 @@ describe("Orchestrator decisions/reconcile seams", () => {
     expect(issueId in updated.running).toBe(false);
     expect(updated.claimed.has(issueId)).toBe(false);
     expect(task.stopped).toBe(true);
+  });
+
+  test("symphony-review label alone does not enqueue review", () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_required_labels: ["symphony"] });
+    const issue = newIssue({
+      id: "issue-review-label-only",
+      identifier: "MT-REVIEW-LABEL",
+      title: "Review label only",
+      state: "Human Review",
+      labels: ["symphony", "symphony-review"],
+    });
+
+    const updated = reconcileReviewQueueForTest([issue], newState());
+    expect(Object.keys(updated.review_queue)).toEqual([]);
+    expect(updated.review_observed_states["issue-review-label-only"]).toBe("human review");
+  });
+
+  test("In Progress to Human Review enqueues one review agent job", () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_required_labels: ["symphony"] });
+    const issue = newIssue({
+      id: "issue-review-ip",
+      identifier: "MT-REVIEW-IP",
+      title: "Review edge",
+      state: "Human Review",
+      labels: ["symphony"],
+    });
+    const state = newState({
+      review_observed_states: { "issue-review-ip": "in progress" },
+    });
+
+    const first = reconcileReviewQueueForTest([issue], state);
+    expect(Object.keys(first.review_queue)).toEqual(["issue-review-ip"]);
+    expect(first.review_queue["issue-review-ip"]?.issue.identifier).toBe("MT-REVIEW-IP");
+
+    const second = reconcileReviewQueueForTest([issue], first);
+    expect(Object.keys(second.review_queue)).toEqual(["issue-review-ip"]);
+    expect(second.review_queue["issue-review-ip"]?.enqueued_at).toBe(
+      first.review_queue["issue-review-ip"]?.enqueued_at,
+    );
+  });
+
+  test("Rework to Human Review enqueues one review agent job", () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_required_labels: ["symphony"] });
+    const issue = newIssue({
+      id: "issue-review-rework",
+      identifier: "MT-REVIEW-REWORK",
+      title: "Rework review edge",
+      state: "Human Review",
+      labels: ["symphony"],
+    });
+    const state = newState({
+      review_observed_states: { "issue-review-rework": "rework" },
+    });
+
+    const updated = reconcileReviewQueueForTest([issue], state);
+    expect(Object.keys(updated.review_queue)).toEqual(["issue-review-rework"]);
   });
 
   test("reconcile stops a running issue reassigned away from this worker", () => {
