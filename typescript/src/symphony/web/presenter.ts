@@ -400,6 +400,7 @@ function logsPayload(issueIdentifier: string, outputStore: AgentOutputStore): Js
 function outputPayloadBody(result: AgentOutputReadResult): Json {
   const body: Json = {
     events: result.events,
+    messages: result.messages,
     next_cursor: result.nextCursor,
     has_more: result.hasMore,
     run: result.run,

@@ -161,6 +161,71 @@ describe("AgentOutputStore", () => {
     expect(rawEvent?.raw).toBe('{"message":"Inspecting the workspace"}');
   });
 
+  test("projects exact assistant deltas into one streaming transcript message", async () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "summary" });
+    const run = store.startRun({
+      issueId: "issue-transcript",
+      issueIdentifier: "TRANSCRIPT-1",
+      backend: "codex",
+      workerHost: null,
+      runId: "transcript-run",
+    });
+    run.record(
+      message({
+        payload: {
+          method: "item/started",
+          params: { item: { id: "msg-1", type: "agentMessage" } },
+        },
+      }),
+      1,
+      "item started: agent message (msg-1)",
+    );
+    run.record(
+      message({
+        payload: {
+          method: "item/agentMessage/delta",
+          params: { itemId: "msg-1", delta: "Hello\n" },
+        },
+      }),
+      1,
+      "agent message streaming: Hello",
+    );
+    run.record(
+      message({
+        payload: {
+          method: "item/agentMessage/delta",
+          params: { itemId: "msg-1", delta: " world  " },
+        },
+      }),
+      1,
+      "agent message streaming: world",
+    );
+
+    const streaming = store.readIssueOutput("TRANSCRIPT-1");
+    expect(streaming.messages).toHaveLength(1);
+    expect(streaming.messages[0]).toMatchObject({
+      message_id: "msg-1",
+      content: "Hello\n world  ",
+      status: "streaming",
+    });
+    const deltaEvent = streaming.events.find((event) => event.chat_delta === "Hello\n");
+    expect(deltaEvent?.payload).toBeUndefined();
+
+    run.record(
+      message({
+        payload: {
+          method: "item/completed",
+          params: { item: { id: "msg-1", type: "agentMessage" } },
+        },
+      }),
+      1,
+      "item completed: agent message (msg-1)",
+    );
+    await run.finish("completed");
+
+    expect(store.readIssueOutput("TRANSCRIPT-1").messages[0]?.status).toBe("completed");
+  });
+
   test("keeps one store live across output configuration changes", async () => {
     const firstRoot = tempRoot();
     const secondRoot = tempRoot();

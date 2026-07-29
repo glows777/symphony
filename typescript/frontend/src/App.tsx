@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { RunHeader } from "./components/RunHeader";
 import { RunSidebar } from "./components/RunSidebar";
-import { RunTimeline } from "./components/RunTimeline";
+import { type AgentOutputMessage, RunTimeline } from "./components/RunTimeline";
 import {
   type AgentOutputEvent,
   type IssueDetail,
@@ -16,11 +16,17 @@ import {
 
 const REFRESH_INTERVAL_MS = 5_000;
 
+type TranscriptOutput = OutputPayload & {
+  messages: AgentOutputMessage[];
+};
+
+type ChatPhase = "start" | "delta" | "complete";
+
 export function App() {
   const [state, setState] = useState<StatePayload | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<IssueDetail | null>(null);
-  const [output, setOutput] = useState<OutputPayload | null>(null);
+  const [output, setOutput] = useState<TranscriptOutput | null>(null);
   const [events, setEvents] = useState<AgentOutputEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [timelineLoading, setTimelineLoading] = useState(false);
@@ -77,17 +83,20 @@ export function App() {
     let active = true;
     setTimelineLoading(true);
     setStreamState("waiting");
+    setDetail(null);
+    setOutput(null);
     setEvents([]);
 
     const loadRun = async (): Promise<void> => {
       try {
-        const [nextDetail, nextOutput] = await Promise.all([
+        const [nextDetail, rawOutput] = await Promise.all([
           getIssue(selected, controller.signal).catch(() => null),
           getOutput(selected, controller.signal),
         ]);
         if (!active) {
           return;
         }
+        const nextOutput = withTranscript(rawOutput);
         setDetail(nextDetail);
         setOutput((current) => mergeOutput(current, nextOutput));
         setEvents((current) => mergeEvents(current, nextOutput.events));
@@ -128,7 +137,7 @@ export function App() {
   return (
     <div className="observability-app">
       <a className="skip-link" href="#main-content">
-        Skip to timeline
+        Skip to conversation
       </a>
       <RunSidebar
         running={state?.running ?? []}
@@ -147,6 +156,7 @@ export function App() {
         />
         <RunTimeline
           events={events}
+          messages={output?.messages ?? []}
           loading={timelineLoading}
           error={output?.error?.message ?? (selected ? null : error)}
         />
@@ -193,7 +203,15 @@ function mergeEvents(current: AgentOutputEvent[], next: AgentOutputEvent[]): Age
   return sortEvents(next.reduce(upsertEvent, current));
 }
 
-function mergeOutput(current: OutputPayload | null, next: OutputPayload): OutputPayload {
+function withTranscript(output: OutputPayload): TranscriptOutput {
+  const messages = (output as OutputPayload & { messages?: unknown }).messages;
+  return {
+    ...output,
+    messages: Array.isArray(messages) ? (messages as AgentOutputMessage[]) : [],
+  };
+}
+
+function mergeOutput(current: TranscriptOutput | null, next: TranscriptOutput): TranscriptOutput {
   if (current === null) {
     return next;
   }
@@ -213,22 +231,27 @@ function mergeOutput(current: OutputPayload | null, next: OutputPayload): Output
   return {
     ...next,
     events,
+    messages: mergeMessageSnapshots(current.messages, next.messages),
     run,
   };
 }
 
-function mergeLiveOutput(current: OutputPayload | null, event: AgentOutputEvent): OutputPayload {
+function mergeLiveOutput(
+  current: TranscriptOutput | null,
+  event: AgentOutputEvent,
+): TranscriptOutput {
   const base =
     current ??
     ({
       events: [],
+      messages: [],
       next_cursor: null,
       has_more: false,
       run: null,
       backend: event.backend,
       run_id: event.run_id,
       session_id: event.session_id ?? null,
-    } satisfies OutputPayload);
+    } satisfies TranscriptOutput);
   const run =
     base.run?.run_id === event.run_id
       ? { ...base.run, last_seq: Math.max(base.run.last_seq, event.seq) }
@@ -236,9 +259,153 @@ function mergeLiveOutput(current: OutputPayload | null, event: AgentOutputEvent)
   return {
     ...base,
     events: sortEvents(upsertEvent(base.events, event)),
+    messages: mergeLiveChatMessages(base.messages, event),
     next_cursor: Math.max(base.next_cursor ?? 0, event.seq),
     run,
   };
+}
+
+function mergeMessageSnapshots(
+  current: AgentOutputMessage[],
+  next: AgentOutputMessage[],
+): AgentOutputMessage[] {
+  const merged = new Map(current.map((message) => [messageKey(message), message]));
+  for (const message of next) {
+    const key = messageKey(message);
+    const previous = merged.get(key);
+    if (
+      previous === undefined ||
+      message.seq_end > previous.seq_end ||
+      (message.seq_end === previous.seq_end && message.status === "completed")
+    ) {
+      merged.set(key, message);
+    }
+  }
+  return [...merged.values()].sort((left, right) => left.seq_start - right.seq_start);
+}
+
+function mergeLiveChatMessages(
+  messages: AgentOutputMessage[],
+  event: AgentOutputEvent,
+): AgentOutputMessage[] {
+  const phase = chatPhaseFor(event);
+  if (phase === null) {
+    if (event.event !== "turn_completed" && event.event !== "run_completed") {
+      return messages;
+    }
+    return messages.map((message) => {
+      if (
+        message.run_id !== event.run_id ||
+        (event.turn !== undefined && message.turn !== undefined && message.turn !== event.turn)
+      ) {
+        return message;
+      }
+      return {
+        ...message,
+        status: "completed",
+        seq_end: Math.max(message.seq_end, event.seq),
+        updated_at: event.at,
+      };
+    });
+  }
+
+  const chatId = typeof event.chat_id === "string" ? event.chat_id : null;
+  if (chatId === null) {
+    return messages;
+  }
+  const index = messages.findIndex(
+    (message) =>
+      message.run_id === event.run_id &&
+      message.message_id === chatId &&
+      message.turn === event.turn,
+  );
+  const previous = index === -1 ? undefined : messages[index];
+
+  if (phase === "start") {
+    if (previous !== undefined && event.seq <= previous.seq_end) {
+      return messages;
+    }
+    if (previous !== undefined) {
+      const next = [...messages];
+      next[index] = { ...previous, seq_end: event.seq, updated_at: event.at };
+      return next;
+    }
+    return [...messages, liveMessageFromEvent(event, chatId, "")];
+  }
+
+  if (previous === undefined) {
+    return [
+      ...messages,
+      liveMessageFromEvent(
+        event,
+        chatId,
+        typeof event.chat_delta === "string" ? event.chat_delta : "",
+        phase === "complete" ? "completed" : "streaming",
+      ),
+    ];
+  }
+
+  if (phase === "delta") {
+    if (event.seq <= previous.seq_end) {
+      return messages;
+    }
+    const next = [...messages];
+    next[index] = {
+      ...previous,
+      content: previous.content + (typeof event.chat_delta === "string" ? event.chat_delta : ""),
+      status: "streaming",
+      seq_end: event.seq,
+      updated_at: event.at,
+    };
+    return next;
+  }
+
+  if (previous.status === "completed" && event.seq <= previous.seq_end) {
+    return messages;
+  }
+  const next = [...messages];
+  next[index] = {
+    ...previous,
+    status: "completed",
+    seq_end: Math.max(previous.seq_end, event.seq),
+    updated_at: event.at,
+  };
+  return next;
+}
+
+function liveMessageFromEvent(
+  event: AgentOutputEvent,
+  messageId: string,
+  content: string,
+  status: AgentOutputMessage["status"] = "streaming",
+): AgentOutputMessage {
+  return {
+    message_id: messageId,
+    issue_identifier: event.issue_identifier,
+    backend: event.backend,
+    run_id: event.run_id,
+    ...(event.session_id !== undefined ? { session_id: event.session_id } : {}),
+    ...(event.turn !== undefined ? { turn: event.turn } : {}),
+    role: "assistant",
+    content,
+    status,
+    seq_start: event.seq,
+    seq_end: event.seq,
+    at: event.at,
+    updated_at: event.at,
+  };
+}
+
+function chatPhaseFor(event: AgentOutputEvent): ChatPhase | null {
+  return event.chat_phase === "start" ||
+    event.chat_phase === "delta" ||
+    event.chat_phase === "complete"
+    ? event.chat_phase
+    : null;
+}
+
+function messageKey(message: AgentOutputMessage): string {
+  return `${message.run_id}:${message.turn ?? "unknown"}:${message.message_id}`;
 }
 
 function sortEvents(events: AgentOutputEvent[]): AgentOutputEvent[] {

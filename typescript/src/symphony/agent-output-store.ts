@@ -30,9 +30,29 @@ export type AgentOutputEvent = {
   event: string;
   event_detail?: string;
   message?: string;
+  chat_id?: string;
+  chat_phase?: "start" | "delta" | "complete";
+  chat_delta?: string;
+  chat_delta_truncated?: boolean;
   payload?: unknown;
   raw?: string;
   [key: string]: unknown;
+};
+
+export type AgentOutputMessage = {
+  message_id: string;
+  issue_identifier: string;
+  backend: string;
+  run_id: string;
+  session_id?: string;
+  turn?: number;
+  role: "assistant";
+  content: string;
+  status: "streaming" | "completed";
+  seq_start: number;
+  seq_end: number;
+  at: string;
+  updated_at: string;
 };
 
 export type AgentOutputRunMetadata = {
@@ -55,6 +75,7 @@ export type AgentOutputRunMetadata = {
 
 export type AgentOutputReadResult = {
   events: AgentOutputEvent[];
+  messages: AgentOutputMessage[];
   nextCursor: number | null;
   hasMore: boolean;
   run: AgentOutputRunMetadata | null;
@@ -92,6 +113,9 @@ type PersistedRun = {
   maxFileBytes: number;
   writeChain: Promise<void>;
   pendingWrites: number;
+  activeChatId: string | null;
+  activeChatTurn: number | null;
+  chatSequence: number;
 };
 
 export class AgentOutputRun {
@@ -180,6 +204,9 @@ export class AgentOutputStore {
       maxFileBytes: this.maxFileBytes,
       writeChain: Promise.resolve(),
       pendingWrites: 0,
+      activeChatId: null,
+      activeChatTurn: null,
+      chatSequence: 0,
     };
     if (state.mode !== "off") {
       this.ensureUniqueRunPath(state);
@@ -247,16 +274,23 @@ export class AgentOutputStore {
   ): AgentOutputReadResult {
     const run = this.latestRun(issueIdentifier);
     if (run === null) {
-      return { events: [], nextCursor: null, hasMore: false, run: null };
+      return { events: [], messages: [], nextCursor: null, hasMore: false, run: null };
     }
     const loaded = this.loadRun(run.path, false);
     if (loaded === null) {
       const active = this.runs.get(run.path);
       if (active !== undefined && active.fileBytes === 0) {
-        return { events: [], nextCursor: null, hasMore: false, run: { ...active.metadata } };
+        return {
+          events: [],
+          messages: [],
+          nextCursor: null,
+          hasMore: false,
+          run: { ...active.metadata },
+        };
       }
       return {
         events: [],
+        messages: [],
         nextCursor: null,
         hasMore: false,
         run,
@@ -272,6 +306,7 @@ export class AgentOutputStore {
     const nextCursor = events.at(-1)?.seq ?? after;
     const result: AgentOutputReadResult = {
       events,
+      messages: buildAgentOutputMessages(ordered, loaded.metadata.status),
       nextCursor: nextCursor ?? null,
       hasMore,
       run: loaded.metadata,
@@ -335,6 +370,7 @@ export class AgentOutputStore {
       event_detail: message.event,
       message: summary ?? genericSummary(message),
     };
+    Object.assign(value, chatFieldsForMessage(state, message, turn));
     for (const key of ["reason", "decision", "answer"] as const) {
       const detail = message[key];
       if (detail !== undefined) {
@@ -749,6 +785,9 @@ export class AgentOutputStore {
       maxFileBytes: this.maxFileBytes,
       writeChain: Promise.resolve(),
       pendingWrites: 0,
+      activeChatId: null,
+      activeChatTurn: null,
+      chatSequence: 0,
     };
     this.runs.set(filePath, state);
     this.pruneCachedRuns();
@@ -976,6 +1015,334 @@ function genericSummary(message: AgentMessage): string {
     return message.event.replaceAll("_", " ");
   }
   return "Agent event";
+}
+
+type ChatPhase = "start" | "delta" | "complete";
+
+type ChatProjection = {
+  phase: ChatPhase;
+  chatId: string | null;
+  delta?: string;
+};
+
+type StoredChatEvent = ChatProjection & {
+  source: "stored" | "legacy";
+};
+
+function chatFieldsForMessage(
+  state: PersistedRun,
+  message: AgentMessage,
+  turn: number,
+): Record<string, unknown> {
+  const projection = extractChatProjection(message.payload);
+  if (projection === null) {
+    return {};
+  }
+
+  let chatId = projection.chatId;
+  if (projection.phase === "start") {
+    chatId = chatId ?? allocateChatId(state, turn);
+    state.activeChatId = chatId;
+    state.activeChatTurn = turn;
+  } else if (projection.phase === "delta") {
+    if (chatId === null && state.activeChatTurn === turn) {
+      chatId = state.activeChatId;
+    }
+    chatId = chatId ?? allocateChatId(state, turn);
+    state.activeChatId = chatId;
+    state.activeChatTurn = turn;
+  } else {
+    if (chatId === null && state.activeChatTurn === turn) {
+      chatId = state.activeChatId;
+    }
+    if (chatId === null) {
+      return {};
+    }
+    if (state.activeChatId === chatId && state.activeChatTurn === turn) {
+      state.activeChatId = null;
+      state.activeChatTurn = null;
+    }
+  }
+
+  const fields: Record<string, unknown> = {
+    chat_id: chatId,
+    chat_phase: projection.phase,
+  };
+  if (projection.delta !== undefined) {
+    const bounded = boundText(projection.delta, Math.min(state.maxEventBytes, 16 * 1024));
+    fields.chat_delta = bounded.value;
+    if (bounded.truncated) {
+      fields.chat_delta_truncated = true;
+    }
+  }
+  return fields;
+}
+
+function allocateChatId(state: PersistedRun, turn: number): string {
+  state.chatSequence += 1;
+  return `${state.metadata.run_id}:turn-${turn}:assistant-${state.chatSequence}`;
+}
+
+function extractChatProjection(payload: unknown): ChatProjection | null {
+  const method = firstStringAtPaths(payload, [["method"]]);
+  if (method === null) {
+    return null;
+  }
+
+  if (
+    method === "item/agentMessage/delta" ||
+    method.endsWith("agent_message_delta") ||
+    method.endsWith("agent_message_content_delta")
+  ) {
+    const delta = firstStringAtPaths(payload, deltaPaths());
+    return {
+      phase: "delta",
+      chatId: firstStringAtPaths(payload, chatIdPaths()),
+      ...(delta !== null ? { delta } : {}),
+    };
+  }
+
+  const isStart = method === "item/started" || method.endsWith("item_started");
+  const isComplete = method === "item/completed" || method.endsWith("item_completed");
+  if (!isStart && !isComplete) {
+    return null;
+  }
+
+  const itemType = firstStringAtPaths(payload, itemTypePaths());
+  if (!isAgentMessageType(itemType)) {
+    return null;
+  }
+  return {
+    phase: isStart ? "start" : "complete",
+    chatId: firstStringAtPaths(payload, chatIdPaths()),
+  };
+}
+
+function buildAgentOutputMessages(
+  events: AgentOutputEvent[],
+  runStatus: AgentOutputRunMetadata["status"],
+): AgentOutputMessage[] {
+  const messages: AgentOutputMessage[] = [];
+  const active = new Map<string, AgentOutputMessage>();
+
+  for (const event of events) {
+    if (event.event === "turn_completed" || event.event === "run_completed") {
+      closeActiveMessages(active, event.run_id, event.turn, event);
+      continue;
+    }
+
+    const chat = storedChatEvent(event);
+    if (chat === null) {
+      continue;
+    }
+
+    const scope = chatScope(event);
+    let current = active.get(scope);
+    if (chat.phase === "start") {
+      if (current !== undefined && current.status === "streaming") {
+        current.status = "completed";
+        current.seq_end = Math.max(current.seq_end, event.seq - 1);
+      }
+      const id = messageIdForStoredEvent(event, chat);
+      current = createOutputMessage(event, id);
+      messages.push(current);
+      active.set(scope, current);
+    } else if (current === undefined || !sameChatId(current, chat)) {
+      if (current !== undefined && current.status === "streaming") {
+        current.status = "completed";
+        current.seq_end = Math.max(current.seq_end, event.seq - 1);
+      }
+      const id = messageIdForStoredEvent(event, chat);
+      current = createOutputMessage(event, id);
+      messages.push(current);
+      active.set(scope, current);
+    }
+
+    if (chat.delta !== undefined) {
+      current.content += chat.delta;
+    }
+    current.seq_end = event.seq;
+    current.updated_at = event.at;
+
+    if (chat.phase === "complete") {
+      current.status = "completed";
+      active.delete(scope);
+    }
+  }
+
+  if (runStatus !== "running") {
+    for (const [scope, message] of active) {
+      message.status = "completed";
+      const last = events.at(-1);
+      if (last !== undefined && last.run_id === message.run_id) {
+        message.seq_end = Math.max(message.seq_end, last.seq);
+        message.updated_at = last.at;
+      }
+      active.delete(scope);
+    }
+  }
+
+  return messages;
+}
+
+function storedChatEvent(event: AgentOutputEvent): StoredChatEvent | null {
+  if (event.chat_phase !== undefined) {
+    return {
+      phase: event.chat_phase,
+      chatId: typeof event.chat_id === "string" ? event.chat_id : null,
+      ...(typeof event.chat_delta === "string" ? { delta: event.chat_delta } : {}),
+      source: "stored",
+    };
+  }
+
+  const message = typeof event.message === "string" ? event.message : "";
+  const deltaPrefix = /^(agent message(?: content)? streaming)/;
+  const deltaMatch = message.match(deltaPrefix);
+  if (deltaMatch !== null) {
+    return {
+      phase: "delta",
+      chatId: null,
+      delta: message.slice(deltaMatch[0].length).replace(/^:\s?/, ""),
+      source: "legacy",
+    };
+  }
+  const lifecycle = message.match(
+    /^item (started|completed)(?::\s+|\s+\()agent message(?: \(([^)]+)\))?\)?/,
+  );
+  if (lifecycle !== null) {
+    return {
+      phase: lifecycle[1] === "started" ? "start" : "complete",
+      chatId: lifecycle[2]?.split(",", 1)[0]?.trim() || null,
+      source: "legacy",
+    };
+  }
+  return null;
+}
+
+function chatScope(event: AgentOutputEvent): string {
+  return `${event.run_id}:${event.turn ?? "unknown"}`;
+}
+
+function messageIdForStoredEvent(event: AgentOutputEvent, chat: StoredChatEvent): string {
+  if (chat.source === "stored" && chat.chatId !== null) {
+    return chat.chatId;
+  }
+  return `legacy:${chat.chatId ?? "assistant"}:${event.seq}`;
+}
+
+function sameChatId(message: AgentOutputMessage, chat: StoredChatEvent): boolean {
+  return chat.chatId === null || message.message_id === chat.chatId || chat.source === "legacy";
+}
+
+function createOutputMessage(event: AgentOutputEvent, messageId: string): AgentOutputMessage {
+  const message: AgentOutputMessage = {
+    message_id: messageId,
+    issue_identifier: event.issue_identifier,
+    backend: event.backend,
+    run_id: event.run_id,
+    role: "assistant",
+    content: "",
+    status: "streaming",
+    seq_start: event.seq,
+    seq_end: event.seq,
+    at: event.at,
+    updated_at: event.at,
+  };
+  if (event.session_id !== undefined) {
+    message.session_id = event.session_id;
+  }
+  if (event.turn !== undefined) {
+    message.turn = event.turn;
+  }
+  return message;
+}
+
+function closeActiveMessages(
+  active: Map<string, AgentOutputMessage>,
+  runId: string,
+  turn: number | undefined,
+  event: AgentOutputEvent,
+): void {
+  for (const [scope, message] of active) {
+    if (
+      message.run_id !== runId ||
+      (turn !== undefined && message.turn !== undefined && message.turn !== turn)
+    ) {
+      continue;
+    }
+    message.status = "completed";
+    message.seq_end = Math.max(message.seq_end, event.seq);
+    message.updated_at = event.at;
+    active.delete(scope);
+  }
+}
+
+function firstStringAtPaths(value: unknown, paths: string[][]): string | null {
+  for (const path of paths) {
+    const candidate = valueAtPath(value, path);
+    if (typeof candidate === "string") {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function valueAtPath(value: unknown, path: string[]): unknown {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!isRecord(current) || !(key in current)) {
+      return null;
+    }
+    current = current[key];
+  }
+  return current;
+}
+
+function chatIdPaths(): string[][] {
+  return [
+    ["params", "itemId"],
+    ["params", "item", "id"],
+    ["params", "id"],
+    ["params", "msg", "itemId"],
+    ["params", "msg", "item", "id"],
+    ["params", "msg", "payload", "itemId"],
+    ["params", "msg", "payload", "item", "id"],
+    ["params", "msg", "payload", "id"],
+    ["params", "msg", "id"],
+  ];
+}
+
+function deltaPaths(): string[][] {
+  return [
+    ["params", "delta"],
+    ["params", "textDelta"],
+    ["params", "outputDelta"],
+    ["params", "text"],
+    ["params", "summaryText"],
+    ["params", "msg", "delta"],
+    ["params", "msg", "textDelta"],
+    ["params", "msg", "outputDelta"],
+    ["params", "msg", "text"],
+    ["params", "msg", "summaryText"],
+    ["params", "msg", "payload", "delta"],
+    ["params", "msg", "payload", "textDelta"],
+    ["params", "msg", "payload", "outputDelta"],
+    ["params", "msg", "payload", "text"],
+    ["params", "msg", "payload", "summaryText"],
+  ];
+}
+
+function itemTypePaths(): string[][] {
+  return [
+    ["params", "item", "type"],
+    ["params", "itemType"],
+    ["params", "msg", "type"],
+    ["params", "msg", "payload", "type"],
+  ];
+}
+
+function isAgentMessageType(value: string | null): boolean {
+  return value?.replace(/[^a-z]/gi, "").toLowerCase() === "agentmessage";
 }
 
 function dateFromMessage(value: Date): string {
