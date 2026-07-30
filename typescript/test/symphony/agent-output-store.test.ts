@@ -243,6 +243,46 @@ describe("AgentOutputStore", () => {
     expect(store.readIssueOutput("TRANSCRIPT-1").messages[0]?.status).toBe("completed");
   });
 
+  test("aggregates legacy assistant summaries with streaming deltas", async () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "summary" });
+    const run = store.startRun({
+      issueId: "issue-legacy-transcript",
+      issueIdentifier: "TRANSCRIPT-LEGACY",
+      backend: "codex",
+      workerHost: null,
+      runId: "legacy-transcript-run",
+    });
+    const legacyMessage = (): AgentMessage => message({ payload: {}, raw: "{}" });
+
+    run.record(legacyMessage(), 1, "item started: agent message (msg-1)");
+    run.record(legacyMessage(), 1, "agent message streaming: Hello");
+    run.record(legacyMessage(), 1, "agent message streaming: world");
+
+    const streaming = store.readIssueOutput("TRANSCRIPT-LEGACY");
+    expect(streaming.messages).toHaveLength(1);
+    expect(streaming.messages[0]).toMatchObject({
+      message_id: "msg-1",
+      activity_id: "msg-1",
+      activity_type: "assistant_message",
+      activity_status: "streaming",
+      content: "Helloworld",
+      status: "streaming",
+    });
+
+    run.record(legacyMessage(), 1, "item completed: agent message (msg-1)");
+    await run.finish("completed");
+
+    const completed = store.readIssueOutput("TRANSCRIPT-LEGACY");
+    expect(completed.messages).toHaveLength(1);
+    expect(completed.messages[0]).toMatchObject({
+      message_id: "msg-1",
+      activity_id: "msg-1",
+      content: "Helloworld",
+      status: "completed",
+      activity_status: "completed",
+    });
+  });
+
   test("closes streaming assistant messages when the turn ends without item completion", async () => {
     const store = new AgentOutputStore({ root: tempRoot(), mode: "raw" });
     const run = store.startRun({
