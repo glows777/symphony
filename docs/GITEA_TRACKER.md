@@ -18,7 +18,6 @@ tracker:
   repo: platform
   active_states: [Todo, In Progress, Rework]
   terminal_states: [Done]
-  required_labels: [symphony]
   state_labels:
     Todo: symphony/state-todo
     In Progress: symphony/state-in-progress
@@ -42,14 +41,13 @@ Required fields are `endpoint`, `token`, `owner`, `repo`, `assignee`, and
 - `assignee` is the Gitea login or numeric user ID used to route issues. It is
   compared case-insensitively; the plugin does not auto-detect the account
   represented by the configured token.
-- `required_labels` is matched case-insensitively and requires every listed
-  label. The plugin also keeps the core's normal routing check in place.
 - `state_labels` maps Symphony workflow state names to dedicated Gitea labels.
   Use a reserved, lower-case namespace such as `symphony/state-*`. These
-  labels are provider state, not routing labels. Every state in
+  labels are the provider's routing state. Every state in
   `active_states` and `terminal_states` must be mapped; additional parked
-  states such as `Human Review` may also be mapped. Validation rejects overlap
-  with `required_labels` and duplicate label targets.
+  states such as `Human Review` may also be mapped. The configured assignee and
+  these state labels are the only routing signals used by the documented Gitea
+  workflow.
 
 `typescript/examples/gitea.workflow.md` is a parseable starting point. Export
 the token before using it:
@@ -115,7 +113,6 @@ tracker:
   kind: gitea
   active_states: [Todo, In Progress, Rework]
   terminal_states: [Done]
-  required_labels: [symphony]
   state_labels:
     Todo: symphony/state-todo
     In Progress: symphony/state-in-progress
@@ -139,8 +136,8 @@ With `state_labels` configured:
 - An issue should carry at most one configured state label. If a human adds
   more than one, the first matching entry in the `state_labels` mapping wins.
   Unknown labels are ignored.
-- `stateUpdates` keeps ordinary labels and `required_labels` separate. It
-  resolves configured state label names through repository labels, writes only
+- `stateUpdates` preserves ordinary labels while resolving configured state
+  label names through repository labels, writes only
   numeric label IDs to Gitea, then uses `POST .../labels` and
   `DELETE .../labels/{id}` to add the target state label and remove stale state
   labels. It does not use full label replacement for state writes, so a human

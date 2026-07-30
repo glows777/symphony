@@ -11,8 +11,6 @@ tracker:
   repo: symphony
   active_states: [Todo, In Progress, Rework]
   terminal_states: [Done]
-  required_labels: [symphony]
-  # Keep these labels separate from required_labels/routing labels.
   state_labels:
     Todo: symphony/state-todo
     In Progress: symphony/state-in-progress
