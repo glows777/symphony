@@ -182,7 +182,6 @@ async function fetchIssuesForNativeStates(
   for (const nativeState of nativeStates) {
     const query = new URLSearchParams({
       state: nativeState,
-      type: "issues",
       page: "1",
       limit: String(ISSUE_PAGE_SIZE),
     });
@@ -197,6 +196,9 @@ async function fetchIssuesForNativeStates(
     for (const rawIssue of page.value) {
       if (!isObject(rawIssue)) {
         return err(invalidPayloadError("issue list", rawIssue));
+      }
+      if (isPullRequestPayload(rawIssue)) {
+        continue;
       }
       const issue = decodeIssue(rawIssue, settings, gitea);
       if (!issue.ok) {
@@ -988,6 +990,10 @@ function normalizeIssue(
       gitea_state: nativeState,
     },
   });
+}
+
+function isPullRequestPayload(issue: JsonObject): boolean {
+  return isObject(issue.pull_request);
 }
 
 function issueNumberFromPayload(issue: JsonObject): number | null {

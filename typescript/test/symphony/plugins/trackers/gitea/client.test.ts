@@ -141,7 +141,7 @@ describe("Gitea.Client", () => {
         ],
         headers: {
           "x-total-count": "4",
-          link: '<https://gitea.test/api/v1/repos/acme/symphony/issues?state=open&type=issues&page=2&limit=50>; rel="next"',
+          link: '<https://gitea.test/api/v1/repos/acme/symphony/issues?state=open&page=2&limit=50>; rel="next"',
         },
       },
       {
@@ -161,10 +161,40 @@ describe("Gitea.Client", () => {
       ]);
     }
     expect(calls.map((call) => call.url)).toEqual([
-      "https://gitea.test/api/v1/repos/acme/symphony/issues?state=open&type=issues&page=1&limit=50",
-      "https://gitea.test/api/v1/repos/acme/symphony/issues?state=open&type=issues&page=2&limit=50",
+      "https://gitea.test/api/v1/repos/acme/symphony/issues?state=open&page=1&limit=50",
+      "https://gitea.test/api/v1/repos/acme/symphony/issues?state=open&page=2&limit=50",
     ]);
     expect(calls[0]?.headers.Authorization).toBe("token test-token");
+  });
+
+  test("filters pull requests when the Gitea instance rejects type=issues", async () => {
+    writeGiteaWorkflowFile(workflowFilePath(), {
+      required_labels: ["symphony", "backend"],
+      assignee: "runner",
+    });
+    const calls: Call[] = [];
+    const result = await fetchCandidateIssues({
+      requestFun: fakeTransport(calls, [
+        {
+          status: 200,
+          body: [
+            rawIssue(5, { labels: [{ name: "Symphony" }, { name: "Backend" }] }),
+            rawIssue(6, {
+              labels: [{ name: "Symphony" }, { name: "Backend" }],
+              pull_request: { url: "https://gitea.test/acme/symphony/pulls/6" },
+            }),
+          ],
+        },
+      ]),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: [expect.objectContaining({ identifier: "acme/symphony#5" })],
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://gitea.test/api/v1/repos/acme/symphony/issues?state=open&page=1&limit=50",
+    ]);
   });
 
   test("accepts an empty issue page without making extra requests", async () => {

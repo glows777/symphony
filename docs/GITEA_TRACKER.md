@@ -63,7 +63,7 @@ as `Authorization: token <token>` and restricts agent `gitea_api` calls to the
 configured host and the configured repository's supported issue and
 pull-request routes. The main routes are:
 
-- `GET /api/v1/repos/{owner}/{repo}/issues?state={open|closed}&type=issues&page={page}&limit={limit}`
+- `GET /api/v1/repos/{owner}/{repo}/issues?state={open|closed}&page={page}&limit={limit}`
 - `GET /api/v1/repos/{owner}/{repo}/issues/{index}`
 - `GET|POST /api/v1/repos/{owner}/{repo}/issues/{index}/comments`
 - `GET /api/v1/repos/{owner}/{repo}/labels`
@@ -76,7 +76,10 @@ pull-request routes. The main routes are:
 - `GET /api/v1/repos/{owner}/{repo}/pulls/{index}/reviews`
 - `PATCH /api/v1/repos/{owner}/{repo}/pulls/{index}` with `{ state: "open" | "closed" }`
 
-Issue and repository-label reads send `page` and `limit`. The client follows a
+Issue and repository-label reads send `page` and `limit`. Issue reads do not
+send the optional `type=issues` filter because some compatible Gitea 1.23
+installations return 404 for that parameter; the client excludes responses
+with a `pull_request` payload locally. The client follows a
 `Link` header with `rel="next"`, and uses `x-total-count` as the fallback for
 constructing the next page. Empty arrays are valid results. Pagination links
 are accepted only when they stay on the configured host and API path. A
