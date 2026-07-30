@@ -139,6 +139,7 @@ async function runOnWorkerHost(
     issueId: issue.id,
     issueIdentifier: issue.identifier ?? "unknown-issue",
     title: issue.title,
+    displayName: issue.title ?? issue.description,
     backend: backend.id,
     workerHost,
   });

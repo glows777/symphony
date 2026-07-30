@@ -222,6 +222,11 @@ summary:focus-visible {
   background: var(--ink-faint);
 }
 
+.status-dot-retrying,
+.state-pill-retrying .state-pill-dot {
+  background: var(--amber);
+}
+
 .sidebar-rule {
   width: 100%;
   height: 1px;
@@ -271,42 +276,125 @@ summary:focus-visible {
   font-size: var(--font-size-code);
 }
 
-.run-groups {
+.issue-projects {
   display: grid;
-  gap: 19px;
+  gap: 7px;
   margin-top: 18px;
+  overflow: auto;
+  padding-bottom: 10px;
 }
 
-.run-group-label {
+.issue-project {
+  min-width: 0;
+}
+
+.issue-project-button {
+  display: grid;
+  grid-template-columns: 12px 7px minmax(0, 1fr) auto;
+  align-items: start;
   gap: 8px;
-  padding: 0 6px 8px;
+  width: 100%;
+  min-height: 54px;
+  padding: 9px 9px;
   color: var(--ink-soft);
-  font-size: var(--font-size-ui-sm);
-  font-weight: 600;
-  letter-spacing: 0.03em;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition-property: background-color, color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
 }
 
-.run-group-count {
-  margin-left: auto;
+.issue-project-button:active,
+.session-button:active {
+  transform: scale(0.98);
+}
+
+.issue-project-button-active {
+  color: var(--ink);
+  background: var(--surface-quiet);
+}
+
+@media (hover: hover) {
+  .issue-project-button:hover {
+    color: var(--ink);
+    background: rgba(255, 255, 255, 0.42);
+  }
+}
+
+.project-chevron {
+  display: inline-grid;
+  width: 12px;
+  height: 17px;
+  place-items: center;
   color: var(--ink-faint);
   font-family: var(--font-code);
-  font-size: var(--font-size-code);
-  font-weight: 400;
+  font-size: 20px;
+  line-height: 0.75;
+  transform: translateY(-1px);
+  transition: transform 150ms ease-out, color 150ms ease-out;
 }
 
-.run-list {
+.project-chevron-open {
+  color: var(--accent-strong);
+  transform: rotate(90deg) translateX(1px);
+}
+
+.issue-project-button > .status-dot {
+  margin-top: 5px;
+}
+
+.issue-project-copy {
   display: grid;
+  min-width: 0;
   gap: 3px;
 }
 
-.run-button {
-  position: relative;
+.issue-project-id {
+  color: currentColor;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: 1.15;
+}
+
+.issue-project-title {
+  overflow: hidden;
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui-sm);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issue-project-count {
+  min-width: 20px;
+  padding: 2px 5px;
+  color: var(--ink-faint);
+  background: var(--surface-active);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: 1.25;
+  text-align: center;
+}
+
+.session-list {
+  display: grid;
+  gap: 2px;
+  margin-left: 20px;
+  padding: 3px 0 5px 8px;
+}
+
+.session-button {
   display: grid;
   grid-template-columns: 7px minmax(0, 1fr);
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  min-height: 63px;
-  padding: 11px 9px;
+  min-height: 53px;
+  padding: 8px 9px;
   color: var(--ink-soft);
   text-align: left;
   background: transparent;
@@ -318,65 +406,50 @@ summary:focus-visible {
   transition-timing-function: ease-out;
 }
 
-.run-button::before {
-  position: absolute;
-  top: 12px;
-  bottom: 12px;
-  left: -18px;
-  width: 2px;
-  background: transparent;
-  content: "";
-}
-
-.run-button:active {
-  transform: scale(0.98);
-}
-
-.run-button-active {
+.session-button-active {
   color: var(--ink);
   background: var(--surface);
   box-shadow: var(--shadow-surface);
 }
 
-.run-button-active::before {
-  background: var(--accent);
-}
-
 @media (hover: hover) {
-  .run-button:hover {
+  .session-button:hover {
     color: var(--ink);
     background: rgba(255, 255, 255, 0.42);
   }
 }
 
-.run-button > .status-dot {
+.session-button > .status-dot {
   margin-top: 5px;
 }
 
-.run-button-copy {
+.session-button-copy {
   display: grid;
   min-width: 0;
-  gap: 4px;
+  gap: 3px;
 }
 
-.run-button-id {
-  color: currentColor;
-  font-family: var(--font-code);
-  font-size: var(--font-size-code);
-  line-height: 1.1;
-}
-
-.run-button-title {
+.session-button-label {
   overflow: hidden;
-  color: var(--ink-faint);
+  color: currentColor;
   font-family: var(--font-ui);
   font-size: var(--font-size-ui-sm);
-  line-height: 1.4;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.run-button-meta {
+.session-button-id {
+  overflow: hidden;
+  color: var(--ink-faint);
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-button-meta {
   display: flex;
   grid-column: 2;
   align-items: center;
@@ -385,6 +458,30 @@ summary:focus-visible {
   color: var(--ink-faint);
   font-family: var(--font-code);
   font-size: var(--font-size-code);
+}
+
+.session-working-indicator {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  margin-left: auto;
+  border: 1.5px solid rgba(81, 118, 96, 0.24);
+  border-top-color: var(--green);
+  border-radius: 50%;
+  animation: session-spinner 900ms linear infinite;
+}
+
+@keyframes session-spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-working-indicator {
+    animation: none;
+  }
 }
 
 .backend-chip,
@@ -1283,8 +1380,8 @@ summary:focus-visible {
     padding-right: 14px;
   }
 
-  .run-button::before {
-    left: -14px;
+  .session-list {
+    margin-left: 16px;
   }
 
   .run-facts {

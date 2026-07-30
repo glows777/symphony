@@ -16,6 +16,7 @@ const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
 const MAX_WRITE_BATCH_BYTES = 256 * 1024;
 const WRITE_BATCH_DELAY_MS = 10;
 const RUN_METADATA_SUFFIX = ".meta.json";
+const MAX_DISPLAY_NAME_LENGTH = 32;
 
 export type AgentOutputEvent = {
   seq: number;
@@ -89,6 +90,7 @@ export type AgentOutputRunMetadata = {
   issue_id: string | null;
   issue_identifier: string;
   title: string | null;
+  display_name: string | null;
   backend: string;
   worker_host: string;
   run_id: string;
@@ -125,6 +127,7 @@ export type StartAgentOutputRun = {
   issueId: string | null;
   issueIdentifier: string;
   title?: string | null;
+  displayName?: string | null;
   backend: string;
   workerHost: string | null;
   runId?: string;
@@ -225,6 +228,7 @@ export class AgentOutputStore {
       issue_id: context.issueId,
       issue_identifier: issueIdentifier,
       title: context.title ?? null,
+      display_name: sessionDisplayName(context.displayName ?? context.title),
       backend: context.backend,
       worker_host: context.workerHost ?? "local",
       run_id: runId,
@@ -881,6 +885,7 @@ export class AgentOutputStore {
         ? derivedMetadata
         : {
             ...indexedMetadata,
+            display_name: indexedMetadata.display_name ?? derivedMetadata.display_name,
             size,
             event_count: Math.max(indexedMetadata.event_count, derivedMetadata.event_count),
             last_seq: Math.max(indexedMetadata.last_seq, derivedMetadata.last_seq),
@@ -949,7 +954,14 @@ export class AgentOutputStore {
       if (!isRecord(value) || !isRunMetadata(value)) {
         return null;
       }
-      return { ...value, path: filePath, size } as AgentOutputRunMetadata;
+      return {
+        ...value,
+        display_name:
+          sessionDisplayName(stringOrNull(value.display_name)) ??
+          sessionDisplayName(stringOrNull(value.title)),
+        path: filePath,
+        size,
+      } as AgentOutputRunMetadata;
     } catch {
       return null;
     }
@@ -1164,6 +1176,7 @@ function metadataFromEvents(
     issue_id: stringOrNull(first?.issue_id),
     issue_identifier: stringOr(first?.issue_identifier, path.basename(path.dirname(filePath))),
     title: stringOrNull(first?.title),
+    display_name: sessionDisplayName(stringOrNull(first?.title)),
     backend: stringOr(first?.backend, "unknown"),
     worker_host: stringOr(first?.worker_host, "local"),
     run_id: stringOr(first?.run_id, path.basename(filePath, ".jsonl")),
@@ -2498,6 +2511,21 @@ function safeJson(value: unknown): string {
 function safeSegment(value: string): string {
   const normalized = value.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+$/, "_");
   return normalized.slice(0, 180) || "unknown";
+}
+
+export function sessionDisplayName(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const firstLine = value.split(/\r?\n/u).find((line) => line.trim() !== "") ?? "";
+  const normalized = firstLine.replace(/\s+/gu, " ").trim();
+  if (normalized === "") {
+    return null;
+  }
+  const characters = Array.from(normalized);
+  return characters.length > MAX_DISPLAY_NAME_LENGTH
+    ? `${characters.slice(0, MAX_DISPLAY_NAME_LENGTH - 1).join("")}…`
+    : normalized;
 }
 
 function metadataPath(filePath: string): string {

@@ -4,6 +4,7 @@ export type RunItem = {
   issue_id?: string | null;
   issue_identifier: string;
   title?: string | null;
+  display_name?: string | null;
   state?: string | null;
   status?: string | null;
   backend?: Backend | null;
@@ -29,6 +30,7 @@ export type RunItem = {
   manual_recovery?: ManualRecovery | null;
   retry_attempt?: number | null;
   path?: string | null;
+  history?: RunMetadata[];
 };
 
 export type ManualRecovery = {
@@ -108,6 +110,7 @@ export type RunMetadata = {
   issue_id: string | null;
   issue_identifier: string;
   title: string | null;
+  display_name?: string | null;
   backend: Backend;
   worker_host: string;
   run_id: string;

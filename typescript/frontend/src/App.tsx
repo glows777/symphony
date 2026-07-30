@@ -230,8 +230,9 @@ export function App() {
         blocked={state?.blocked ?? []}
         completed={state?.completed ?? []}
         selected={selected}
-        onSelect={(identifier) => {
-          setSelectedRunId(null);
+        selectedRunId={selectedRunId ?? output?.run_id ?? null}
+        onSelect={(identifier, runId = null) => {
+          setSelectedRunId(runId);
           setSelected(identifier);
         }}
       />
@@ -240,9 +241,6 @@ export function App() {
           identifier={selected}
           detail={detail}
           run={output?.run ?? selectedRun}
-          runHistory={detail?.logs?.agent_runs ?? (output?.run ? [output.run] : [])}
-          selectedRunId={selectedRunId ?? output?.run_id ?? null}
-          onSelectRun={setSelectedRunId}
           onRerunBlocked={(identifier) => void handleRerunBlocked(identifier)}
           rerunning={rerunning}
           loading={loading || timelineLoading}

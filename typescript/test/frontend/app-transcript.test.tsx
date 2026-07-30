@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mergeLiveOutput, mergeOutput, withTranscript } from "../../frontend/src/App.tsx";
+import { groupRunsByIssue } from "../../frontend/src/components/RunSidebar.tsx";
 import {
   hasThinkingSummary,
   isVisibleActivity,
@@ -9,6 +10,8 @@ import type {
   AgentOutputEvent,
   AgentOutputMessage,
   OutputPayload,
+  RunItem,
+  RunMetadata,
 } from "../../frontend/src/lib/api.ts";
 
 function output(overrides: Partial<OutputPayload> = {}): ReturnType<typeof withTranscript> {
@@ -64,7 +67,77 @@ function message(overrides: Partial<AgentOutputMessage>): AgentOutputMessage {
   };
 }
 
+function runMetadata(overrides: Partial<RunMetadata> = {}): RunMetadata {
+  return {
+    issue_id: "issue-1",
+    issue_identifier: "SYM-5",
+    title: "Inspect the worker",
+    backend: "codex",
+    worker_host: "local",
+    run_id: "run-1",
+    session_id: "session-1",
+    path: "/tmp/run-1.jsonl",
+    size: 20,
+    started_at: "2026-07-29T00:00:00.000Z",
+    ended_at: "2026-07-29T00:01:00.000Z",
+    status: "completed",
+    event_count: 2,
+    last_seq: 2,
+    truncated: false,
+    ...overrides,
+  };
+}
+
 describe("frontend transcript merge", () => {
+  test("groups an issue into its visible session history", () => {
+    const items: RunItem[] = [
+      {
+        issue_identifier: "SYM-5",
+        title: "Inspect the worker",
+        status: "completed",
+        run_id: "run-2",
+        session_id: "session-2",
+        history: [
+          runMetadata({ run_id: "run-2", session_id: "session-2" }),
+          runMetadata({ run_id: "run-1", session_id: "session-1" }),
+        ],
+      },
+      {
+        issue_identifier: "SYM-6",
+        title: "Review the queue",
+        status: "blocked",
+        session_id: "blocked-session",
+      },
+    ];
+
+    const groups = groupRunsByIssue(items);
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.identifier).toBe("SYM-5");
+    expect(groups[0]?.sessions.map((session) => session.runId)).toEqual(["run-2", "run-1"]);
+    expect(groups[1]?.sessions[0]?.sessionId).toBe("blocked-session");
+  });
+
+  test("keeps persisted session display names for the sidebar", () => {
+    const groups = groupRunsByIssue([
+      {
+        issue_identifier: "SYM-7",
+        title: "Review the worker",
+        status: "completed",
+        history: [
+          runMetadata({
+            issue_identifier: "SYM-7",
+            display_name: "Review API and admin sync",
+            run_id: "run-7",
+            session_id: "session-7",
+          }),
+        ],
+      },
+    ]);
+
+    expect(groups[0]?.sessions[0]?.displayName).toBe("Review API and admin sync");
+  });
+
   test("does not append a replayed live delta already covered by the snapshot", () => {
     const delta = event({
       seq: 2,

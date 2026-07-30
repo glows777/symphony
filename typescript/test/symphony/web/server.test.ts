@@ -378,6 +378,7 @@ describe("web server / observability API", () => {
         issueId: "issue-history-runs",
         issueIdentifier: "MT-HISTORY-RUNS",
         title: "Run history",
+        displayName: "Review the run history",
         backend: "codex",
         workerHost: null,
         runId: `history-run-${index}`,
@@ -406,6 +407,20 @@ describe("web server / observability API", () => {
       expect(detailBody.logs.agent_runs).toHaveLength(runCount);
       expect(detailBody.logs.codex_session_logs).toHaveLength(runCount);
       expect(detailBody.logs.latest_run.run_id).toBe(`history-run-${runCount - 1}`);
+
+      const state = await route(new Request("http://127.0.0.1/api/v1/state"));
+      expect(state.status).toBe(200);
+      const stateBody = (await state.json()) as {
+        completed: Array<{
+          issue_identifier: string;
+          history: Array<{ run_id: string; display_name: string | null }>;
+        }>;
+      };
+      const historyIssue = stateBody.completed.find(
+        (entry) => entry.issue_identifier === "MT-HISTORY-RUNS",
+      );
+      expect(historyIssue?.history.map((run) => run.run_id)).toHaveLength(runCount);
+      expect(historyIssue?.history[0]?.display_name).toBe("Review the run history");
 
       const historical = await route(
         new Request("http://127.0.0.1/api/v1/MT-HISTORY-RUNS/output?run_id=history-run-0&limit=20"),

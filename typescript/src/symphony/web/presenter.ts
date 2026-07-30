@@ -80,7 +80,7 @@ export async function statePayload(
   const completed = outputStore
     .listRecentIssues()
     .filter((run) => !activeIdentifiers.has(run.issue_identifier))
-    .map(completedEntryPayload);
+    .map((run) => withRunHistory(completedEntryPayload(run), run.issue_identifier, outputStore));
   return {
     generated_at: generatedAt,
     counts: {
@@ -88,9 +88,15 @@ export async function statePayload(
       retrying: snapshot.retrying.length,
       blocked: blocked.length,
     },
-    running: snapshot.running.map(runningEntryPayload),
-    retrying: snapshot.retrying.map(retryEntryPayload),
-    blocked: blocked.map(blockedEntryPayload),
+    running: snapshot.running.map((entry) =>
+      withRunHistory(runningEntryPayload(entry), entry.identifier, outputStore),
+    ),
+    retrying: snapshot.retrying.map((entry) =>
+      withRunHistory(retryEntryPayload(entry), str(entry, "identifier"), outputStore),
+    ),
+    blocked: blocked.map((entry) =>
+      withRunHistory(blockedEntryPayload(entry), str(entry, "identifier"), outputStore),
+    ),
     completed,
     codex_totals: snapshot.codex_totals,
     rate_limits: snapshot.rate_limits,
@@ -288,7 +294,9 @@ function runningEntryPayload(entry: SnapshotRunning): Json {
     issue_id: entry.issue_id,
     issue_identifier: entry.identifier,
     title: entry.title ?? null,
+    display_name: entry.title ?? null,
     backend: entry.backend ?? settingsBang().agent.backend,
+    status: "running",
     issue_url: entry.issue_url ?? null,
     state: entry.state,
     worker_host: entry.worker_host ?? null,
@@ -311,6 +319,7 @@ function retryEntryPayload(entry: LooseEntry): Json {
   return {
     issue_id: entry.issue_id,
     issue_identifier: entry.identifier,
+    status: "retrying",
     issue_url: entry.issue_url ?? null,
     attempt: entry.attempt,
     due_at: dueAtIso8601(entry.due_in_ms),
@@ -325,7 +334,9 @@ function blockedEntryPayload(entry: LooseEntry): Json {
     issue_id: entry.issue_id,
     issue_identifier: entry.identifier,
     title: entry.title ?? null,
+    display_name: entry.title ?? null,
     backend: entry.backend ?? settingsBang().agent.backend,
+    status: "blocked",
     issue_url: entry.issue_url ?? null,
     state: entry.state,
     error: entry.error,
@@ -465,6 +476,7 @@ function completedEntryPayload(run: AgentOutputRunMetadata): Json {
     issue_id: run.issue_id,
     issue_identifier: run.issue_identifier,
     title: run.title,
+    display_name: run.display_name ?? run.title,
     backend: run.backend,
     worker_host: run.worker_host,
     run_id: run.run_id,
@@ -472,6 +484,20 @@ function completedEntryPayload(run: AgentOutputRunMetadata): Json {
     status: run.status,
     updated_at: run.ended_at ?? run.started_at,
     path: run.path,
+  };
+}
+
+function withRunHistory(
+  payload: Json,
+  issueIdentifier: string | null | undefined,
+  outputStore: AgentOutputStore,
+): Json {
+  return {
+    ...payload,
+    history:
+      typeof issueIdentifier === "string" && issueIdentifier.trim() !== ""
+        ? outputStore.listRunsForIssue(issueIdentifier)
+        : [],
   };
 }
 

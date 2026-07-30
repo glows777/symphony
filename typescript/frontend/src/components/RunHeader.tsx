@@ -4,9 +4,6 @@ type RunHeaderProps = {
   identifier: string | null;
   detail: IssueDetail | null;
   run: RunItem | RunMetadata | null;
-  runHistory: RunMetadata[];
-  selectedRunId: string | null;
-  onSelectRun: (runId: string) => void;
   onRerunBlocked: (identifier: string) => void;
   rerunning: boolean;
   loading: boolean;
@@ -16,9 +13,6 @@ export function RunHeader({
   identifier,
   detail,
   run,
-  runHistory,
-  selectedRunId,
-  onSelectRun,
   onRerunBlocked,
   rerunning,
   loading,
@@ -107,24 +101,6 @@ export function RunHeader({
           {operatorPrompt ? <span className="blocked-callout-prompt">{operatorPrompt}</span> : null}
         </div>
       ) : null}
-      {runHistory.length > 0 ? (
-        <div className="run-history-row">
-          <label className="run-history-control">
-            <span className="run-history-label">Run history · {runHistory.length}</span>
-            <select
-              value={selectedRunId ?? runId}
-              onChange={(event) => onSelectRun(event.target.value)}
-              aria-label="Select run history"
-            >
-              {runHistory.map((historyRun) => (
-                <option key={historyRun.run_id} value={historyRun.run_id}>
-                  {runOptionLabel(historyRun)}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      ) : null}
       <div className="run-facts" aria-label="Run summary">
         <Fact label="Workspace" value={workspace} mono />
         <Fact label="Run" value={compactId(runId)} mono />
@@ -199,11 +175,6 @@ function statusLabel(status: string): string {
 
 function compactId(value: string): string {
   return value.length > 30 ? `${value.slice(0, 12)}…${value.slice(-10)}` : value;
-}
-
-function runOptionLabel(run: RunMetadata): string {
-  const session = run.session_id === null ? "No session" : compactId(run.session_id);
-  return `${statusLabel(run.status)} · ${compactId(run.run_id)} · ${session}`;
 }
 
 function formatInt(value: number): string {

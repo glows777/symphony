@@ -32,6 +32,26 @@ function message(overrides: Partial<AgentMessage> = {}): AgentMessage {
 }
 
 describe("AgentOutputStore", () => {
+  test("normalizes and persists session display names", async () => {
+    const root = tempRoot();
+    const store = new AgentOutputStore({ root, mode: "raw" });
+    const run = store.startRun({
+      issueId: "issue-name",
+      issueIdentifier: "SYM-NAME",
+      title: "Issue title",
+      displayName: "  检查 API\n 和   admin 同步状态  ",
+      backend: "codex",
+      workerHost: null,
+      runId: "name-run",
+    });
+
+    await run.finish("completed");
+
+    expect(store.latestRun("SYM-NAME")?.display_name).toBe("检查 API");
+    const restarted = new AgentOutputStore({ root, mode: "raw" });
+    expect(restarted.latestRun("SYM-NAME")?.display_name).toBe("检查 API");
+  });
+
   test("writes independently parseable raw JSONL with cursor reads and stream metadata", async () => {
     const store = new AgentOutputStore({ root: tempRoot(), mode: "raw" });
     const run = store.startRun({
