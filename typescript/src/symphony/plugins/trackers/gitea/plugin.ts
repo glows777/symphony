@@ -46,6 +46,7 @@ export const GiteaPlugin: TrackerPlugin = {
           owner,
           repo,
           assignee: castPluginString(raw, "assignee", section, null, errors),
+          state_labels: castStateLabels(raw, section, errors),
         },
         errors,
       };
@@ -103,6 +104,31 @@ export const GiteaPlugin: TrackerPlugin = {
             "missing_gitea_repository",
             "missing_config",
             "Gitea repository name missing in WORKFLOW.md",
+          ),
+        );
+      }
+      const duplicate = duplicateStateLabel(gitea.stateLabels);
+      if (duplicate !== null) {
+        return err(
+          trackerError(
+            "gitea_duplicate_state_label",
+            "missing_config",
+            "Gitea state_labels must map each workflow state to a unique label",
+            duplicate,
+          ),
+        );
+      }
+      const requiredOverlap = stateLabelRequiredLabelOverlap(
+        gitea.stateLabels,
+        settings.tracker.requiredLabels,
+      );
+      if (requiredOverlap !== null) {
+        return err(
+          trackerError(
+            "gitea_state_label_required_label_overlap",
+            "missing_config",
+            "Gitea state_labels must not also be listed in tracker.required_labels",
+            requiredOverlap,
           ),
         );
       }
@@ -197,6 +223,75 @@ function castAliasString(
   return null;
 }
 
+function castStateLabels(
+  raw: JsonMap,
+  section: string,
+  errors: PluginFieldError[],
+): Record<string, string> {
+  if (!("state_labels" in raw)) {
+    return {};
+  }
+  const value = raw.state_labels;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    errors.push({ path: `${section}.state_labels`, message: "is invalid" });
+    return {};
+  }
+  const result: Record<string, string> = {};
+  const seenStates = new Set<string>();
+  for (const [stateName, labelName] of Object.entries(value)) {
+    if (typeof labelName !== "string") {
+      errors.push({ path: `${section}.state_labels`, message: "values must be strings" });
+      return {};
+    }
+    const state = stateName.trim();
+    const label = labelName.trim();
+    if (state === "" || label === "") {
+      errors.push({
+        path: `${section}.state_labels`,
+        message: "must map non-blank state names to non-blank label names",
+      });
+      return {};
+    }
+    const normalizedState = normalizeStateName(state);
+    if (seenStates.has(normalizedState)) {
+      errors.push({
+        path: `${section}.state_labels`,
+        message: "must not contain duplicate state names",
+      });
+      return {};
+    }
+    seenStates.add(normalizedState);
+    result[state] = label;
+  }
+  return result;
+}
+
+function duplicateStateLabel(labels: Record<string, string>): JsonMap | null {
+  const seen = new Map<string, string>();
+  for (const [stateName, labelName] of Object.entries(labels)) {
+    const normalized = normalizeLabelName(labelName);
+    const existing = seen.get(normalized);
+    if (existing !== undefined) {
+      return { label: labelName, states: [existing, stateName] };
+    }
+    seen.set(normalized, stateName);
+  }
+  return null;
+}
+
+function stateLabelRequiredLabelOverlap(
+  labels: Record<string, string>,
+  requiredLabels: string[],
+): JsonMap | null {
+  const required = new Set(requiredLabels.map(normalizeLabelName));
+  for (const [stateName, labelName] of Object.entries(labels)) {
+    if (required.has(normalizeLabelName(labelName))) {
+      return { state: stateName, label: labelName };
+    }
+  }
+  return null;
+}
+
 async function normalizeReadResult(response: unknown): Promise<Result<Issue[], TrackerError>> {
   try {
     const resolved = await response;
@@ -242,4 +337,12 @@ function isErrResult(value: unknown): value is { ok: false; error: unknown } {
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function normalizeStateName(stateName: string): string {
+  return stateName.trim().toLowerCase();
+}
+
+function normalizeLabelName(label: string): string {
+  return label.trim().toLowerCase();
 }

@@ -12,6 +12,14 @@ tracker:
   active_states: [open]
   terminal_states: [closed]
   required_labels: [symphony]
+  # Optional: preserve multi-stage workflow states through dedicated labels.
+  # Keep these labels separate from required_labels/routing labels.
+  # state_labels:
+  #   Todo: symphony/state-todo
+  #   In Progress: symphony/state-in-progress
+  #   Human Review: symphony/state-review
+  #   Rework: symphony/state-rework
+  #   Done: symphony/state-done
   # Optional: only issues assigned to this Gitea login are candidates.
   # assignee: automation
 

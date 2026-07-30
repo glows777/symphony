@@ -11,6 +11,7 @@ export type GiteaSettings = {
   owner: string | null;
   repo: string | null;
   assignee: string | null;
+  stateLabels: Record<string, string>;
 };
 
 export function giteaSettings(settings: Settings): GiteaSettings {
@@ -21,6 +22,7 @@ export function giteaSettings(settings: Settings): GiteaSettings {
     owner: trimmedOrNull(plugin.owner),
     repo: trimmedOrNull(plugin.repo),
     assignee: trimmedOrNull(plugin.assignee),
+    stateLabels: stateLabels(plugin.state_labels),
   };
 }
 
@@ -68,4 +70,22 @@ function trimmedOrNull(value: unknown): string | null {
   }
   const trimmed = string.trim();
   return trimmed === "" ? null : trimmed;
+}
+
+function stateLabels(value: unknown): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const labels: Record<string, string> = {};
+  for (const [stateName, labelName] of Object.entries(value)) {
+    if (typeof labelName !== "string") {
+      continue;
+    }
+    const state = stateName.trim();
+    const label = labelName.trim();
+    if (state !== "" && label !== "") {
+      labels[state] = label;
+    }
+  }
+  return labels;
 }
