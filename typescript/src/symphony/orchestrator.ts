@@ -15,7 +15,7 @@ import * as Workspace from "./workspace.ts";
 const CONTINUATION_RETRY_DELAY_MS = 1_000;
 const FAILURE_RETRY_BASE_MS = 10_000;
 const HUMAN_REVIEW_STATE = "Human Review";
-const REVIEW_SOURCE_STATES = ["In Progress", "Rework"] as const;
+const REVIEW_SOURCE_STATES = ["Todo", "In Progress", "Rework"] as const;
 const REVIEW_OBSERVED_STATES = [...REVIEW_SOURCE_STATES, HUMAN_REVIEW_STATE] as const;
 
 export type CodexTotals = {

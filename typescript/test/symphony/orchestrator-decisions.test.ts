@@ -392,6 +392,24 @@ describe("Orchestrator decisions/reconcile seams", () => {
     );
   });
 
+  test("Todo to Human Review enqueues one review agent job", () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_required_labels: ["symphony"] });
+    const issue = newIssue({
+      id: "issue-review-todo",
+      identifier: "MT-REVIEW-TODO",
+      title: "Todo review edge",
+      state: "Human Review",
+      labels: ["symphony"],
+    });
+    const state = newState({
+      review_observed_states: { "issue-review-todo": "todo" },
+    });
+
+    const updated = reconcileReviewQueueForTest([issue], state);
+    expect(Object.keys(updated.review_queue)).toEqual(["issue-review-todo"]);
+    expect(updated.review_queue["issue-review-todo"]?.issue.state).toBe("Human Review");
+  });
+
   test("In Progress to Human Review enqueues while the normal agent is still running", () => {
     writeWorkflowFile(workflowFilePath(), { tracker_required_labels: ["symphony"] });
     const issueId = "issue-review-running";

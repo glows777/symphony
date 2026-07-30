@@ -373,10 +373,10 @@ Fields:
 #### 5.3.2 Review Agent
 
 Review is a status-edge workflow, not a separate GitHub PR review provider. Symphony observes
-issues in `In Progress`, `Rework`, and `Human Review`. Only the edges `In Progress -> Human Review`
-and `Rework -> Human Review` enqueue a Review Agent job in memory. Existing `Human Review` issues
-on process start do not enqueue review jobs; restart recovery and persistent review jobs are out of
-scope.
+issues in `Todo`, `In Progress`, `Rework`, and `Human Review`. Only the edges `Todo -> Human Review`,
+`In Progress -> Human Review`, and `Rework -> Human Review` enqueue a Review Agent job in memory.
+Existing `Human Review` issues on process start do not enqueue review jobs; restart recovery and
+persistent review jobs are out of scope.
 
 Review Agent jobs run through the ordinary agent runner, workspace creation, hooks, backend session,
 tracker tool provider, concurrency accounting, and event handling. The only review-specific input is
