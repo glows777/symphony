@@ -119,6 +119,28 @@ describe("frontend transcript merge", () => {
     expect(groups[1]?.sessions[0]?.sessionId).toBe("blocked-session");
   });
 
+  test("does not add a snapshot placeholder before the running session id arrives", () => {
+    const groups = groupRunsByIssue([
+      {
+        issue_identifier: "SYM-8",
+        title: "Start the worker",
+        status: "running",
+        history: [
+          runMetadata({
+            issue_identifier: "SYM-8",
+            run_id: "run-8",
+            session_id: null,
+            status: "running",
+            ended_at: null,
+          }),
+        ],
+      },
+    ]);
+
+    expect(groups[0]?.sessions).toHaveLength(1);
+    expect(groups[0]?.sessions[0]?.runId).toBe("run-8");
+  });
+
   test("keeps persisted session display names for the sidebar", () => {
     const groups = groupRunsByIssue([
       {

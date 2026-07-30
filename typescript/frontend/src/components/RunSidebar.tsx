@@ -288,12 +288,25 @@ function addSession(group: IssueProject, session: SessionEntry): void {
 }
 
 function hasSessionForItem(sessions: SessionEntry[], item: RunItem): boolean {
-  return sessions.some(
+  const matchesIdentity = sessions.some(
     (session) =>
       (item.run_id !== null && item.run_id !== undefined && session.runId === item.run_id) ||
       (item.session_id !== null &&
         item.session_id !== undefined &&
         session.sessionId === item.session_id),
+  );
+  if (matchesIdentity) {
+    return true;
+  }
+
+  // The running projection can briefly have neither ID while its history
+  // already contains the same in-progress run. Do not add a placeholder row
+  // for that startup window.
+  return (
+    item.status === "running" &&
+    (item.run_id === null || item.run_id === undefined) &&
+    (item.session_id === null || item.session_id === undefined) &&
+    sessions.some((session) => session.current)
   );
 }
 
