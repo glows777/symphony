@@ -209,8 +209,15 @@ describe("examples/gitea.workflow.md (Gitea tracker + codex)", () => {
     expect(validate()).toEqual({ ok: true, value: undefined });
     if (parsed.ok) {
       expect(parsed.value.tracker.plugin.token).toBe("gitea_api_example");
-      expect(parsed.value.tracker.activeStates).toEqual(["open"]);
-      expect(parsed.value.tracker.terminalStates).toEqual(["closed"]);
+      expect(parsed.value.tracker.activeStates).toEqual(["Todo", "In Progress", "Rework"]);
+      expect(parsed.value.tracker.terminalStates).toEqual(["Done"]);
+      expect(parsed.value.tracker.plugin.state_labels).toEqual({
+        Todo: "symphony/state-todo",
+        "In Progress": "symphony/state-in-progress",
+        "Human Review": "symphony/state-review",
+        Rework: "symphony/state-rework",
+        Done: "symphony/state-done",
+      });
     }
   });
 });

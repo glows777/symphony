@@ -181,10 +181,19 @@ describe("Gitea.Client", () => {
     writeGiteaWorkflowFile(workflowFilePath(), {
       active_states: ["Todo", "In Progress"],
       terminal_states: ["Done"],
+      state_labels: STATE_LABELS,
     });
     const calls: Call[] = [];
     const requestFun = fakeTransport(calls, [
-      { status: 200, body: [rawIssue(9, { state: "closed" })] },
+      {
+        status: 200,
+        body: [
+          rawIssue(9, {
+            state: "closed",
+            labels: [{ name: "Symphony" }, { name: "symphony/state-done" }],
+          }),
+        ],
+      },
     ]);
 
     const result = await fetchIssuesByStates(["Done"], { requestFun });
@@ -597,7 +606,33 @@ describe("Gitea.Client", () => {
     const calls: Call[] = [];
     const requestFun = fakeTransport(calls, [
       { status: 201, body: { id: 90 } },
+      { status: 200, body: rawIssue(7) },
+      {
+        status: 200,
+        body: [
+          { id: 1, name: "symphony/state-open" },
+          { id: 2, name: "symphony/state-closed" },
+        ],
+      },
       { status: 201, body: rawIssue(7, { state: "closed" }) },
+      { status: 200, body: [{ id: 7, name: "Symphony" }] },
+      {
+        status: 200,
+        body: [
+          { id: 7, name: "Symphony" },
+          { id: 2, name: "symphony/state-closed" },
+        ],
+      },
+      {
+        status: 200,
+        body: rawIssue(7, {
+          state: "closed",
+          labels: [
+            { id: 7, name: "Symphony" },
+            { id: 2, name: "symphony/state-closed" },
+          ],
+        }),
+      },
     ]);
 
     expect(await createComment("acme/symphony#7", "Agent update", { requestFun })).toEqual({
@@ -613,7 +648,7 @@ describe("Gitea.Client", () => {
       url: "https://gitea.test/api/v1/repos/acme/symphony/issues/7/comments",
       body: { body: "Agent update" },
     });
-    expect(calls[1]).toMatchObject({
+    expect(calls[3]).toMatchObject({
       method: "PATCH",
       url: "https://gitea.test/api/v1/repos/acme/symphony/issues/7",
       body: { state: "closed" },

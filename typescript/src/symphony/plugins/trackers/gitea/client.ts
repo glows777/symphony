@@ -20,17 +20,6 @@ const MAX_ERROR_BODY_LOG_BYTES = 1_000;
 const MAX_STATE_LABEL_RECONCILE_ATTEMPTS = 3;
 const PATH_VALIDATION_ORIGIN = "https://symphony.invalid";
 
-const OPEN_STATE_ALIASES = new Set(["open", "active", "todo", "in progress"]);
-const CLOSED_STATE_ALIASES = new Set([
-  "closed",
-  "terminal",
-  "resolved",
-  "done",
-  "cancelled",
-  "canceled",
-  "duplicate",
-]);
-
 export type JsonObject = Record<string, unknown>;
 
 export type ResponseHeaders =
@@ -80,7 +69,7 @@ type StateLabelMapping = {
 };
 type StateLabelPlan = {
   mappings: StateLabelMapping[];
-  target: StateLabelMapping | null;
+  target: StateLabelMapping;
   labelIds: Map<string, number>;
 };
 
@@ -99,11 +88,7 @@ export async function fetchCandidateIssues(
     return ok([]);
   }
 
-  const nativeStates = nativeStatesForWorkflowStates(
-    settings.tracker.activeStates,
-    settings,
-    "open",
-  );
+  const nativeStates = nativeStatesForWorkflowStates(settings.tracker.activeStates, settings);
   if (nativeStates.length === 0) {
     return ok([]);
   }
@@ -112,11 +97,10 @@ export async function fetchCandidateIssues(
   if (!result.ok) {
     return err(result.error);
   }
-  const filterByState = shouldFilterByRequestedStates(settings.tracker.activeStates, settings);
   return ok(
     result.value.filter(
       (issue) =>
-        (!filterByState || stateNamesInclude(settings.tracker.activeStates, issue.state)) &&
+        stateNamesInclude(settings.tracker.activeStates, issue.state) &&
         issue.assignedToWorker &&
         hasRequiredLabels(issue.labels, settings.tracker.requiredLabels),
     ),
@@ -138,16 +122,13 @@ export async function fetchIssuesByStates(
     return err(repository.error);
   }
 
-  const nativeStates = nativeStatesForWorkflowStates(normalized, settings, null);
+  const nativeStates = nativeStatesForWorkflowStates(normalized, settings);
   if (nativeStates.length === 0) {
     return ok([]);
   }
   const result = await fetchIssuesForNativeStates(repository.value, nativeStates, settings, opts);
   if (!result.ok) {
     return err(result.error);
-  }
-  if (!shouldFilterByRequestedStates(normalized, settings)) {
-    return result;
   }
   return ok(result.value.filter((issue) => stateNamesInclude(normalized, issue.state)));
 }
@@ -250,17 +231,6 @@ export async function updateIssueState(
   if (issueNumber === null) {
     return err(invalidIssueIdError(issueId));
   }
-  const mappings = stateLabelMappings(settings);
-  if (mappings.length === 0) {
-    return updateNativeIssueState(
-      repository.value,
-      issueNumber,
-      nativeState,
-      settings,
-      gitea,
-      opts,
-    );
-  }
   const issuePath = repositoryIssuePath(repository.value, issueNumber);
   const currentResponse = await requestRaw("GET", issuePath, null, opts);
   if (!currentResponse.ok) {
@@ -353,30 +323,6 @@ export async function createComment(
   return ok(undefined);
 }
 
-async function updateNativeIssueState(
-  repository: RepositoryContext,
-  issueNumber: number,
-  nativeState: "open" | "closed",
-  settings: ReturnType<typeof settingsBang>,
-  gitea: GiteaSettings,
-  opts: RequestOpts,
-): Promise<Result<undefined, TrackerError>> {
-  const response = await requestRaw(
-    "PATCH",
-    repositoryIssuePath(repository, issueNumber),
-    { state: nativeState },
-    opts,
-  );
-  if (!response.ok) {
-    return err(response.error);
-  }
-  const issue = decodeIssue(response.value.body, settings, gitea);
-  if (!issue.ok) {
-    return err(issue.error);
-  }
-  return ok(undefined);
-}
-
 async function rollbackNativeIssueState(
   repository: RepositoryContext,
   issueNumber: number,
@@ -406,12 +352,15 @@ async function stateLabelPlan(
   }
   const labelIds = labelIdIndex(repositoryLabels.value);
   const target = stateLabelMappingForWorkflowState(stateName, settings);
-  if (target !== null && !labelIds.has(target.normalizedLabelName)) {
+  if (target === null) {
+    return err(unknownStateError(stateName));
+  }
+  if (!labelIds.has(target.normalizedLabelName)) {
     return err(missingStateLabelError(target.labelName, target.stateName));
   }
 
   const configuredLabels = stateLabelNameSet(mappings);
-  const targetLabel = target?.normalizedLabelName ?? null;
+  const targetLabel = target.normalizedLabelName;
   for (const label of issueLabelRefs(rawIssue)) {
     if (
       configuredLabels.has(label.normalizedName) &&
@@ -479,7 +428,7 @@ async function syncIssueStateLabels(
 ): Promise<Result<undefined, TrackerError>> {
   const issuePath = repositoryIssuePath(repository, issueNumber);
   const currentLabelNames = new Set(currentLabels.map((label) => label.normalizedName));
-  if (plan.target !== null && !currentLabelNames.has(plan.target.normalizedLabelName)) {
+  if (!currentLabelNames.has(plan.target.normalizedLabelName)) {
     const targetId = plan.labelIds.get(plan.target.normalizedLabelName);
     if (targetId === undefined) {
       return err(missingStateLabelError(plan.target.labelName, plan.target.stateName));
@@ -495,7 +444,7 @@ async function syncIssueStateLabels(
   }
 
   const configuredLabels = stateLabelNameSet(plan.mappings);
-  const targetLabel = plan.target?.normalizedLabelName ?? null;
+  const targetLabel = plan.target.normalizedLabelName;
   const deleted = new Set<number>();
   for (const label of currentLabels) {
     if (!configuredLabels.has(label.normalizedName) || label.normalizedName === targetLabel) {
@@ -542,7 +491,7 @@ async function verifyIssueStateLabels(
   }
   const actualNativeState = nativeStateFromPayload(response.value.body.state);
   const actualState = issue.value.state;
-  const expectedState = expectedStateNameForUpdate(stateName, nativeState, settings, plan);
+  const expectedState = expectedStateNameForUpdate(plan);
   return ok(
     actualNativeState === nativeState &&
       actualState !== null &&
@@ -1190,14 +1139,10 @@ function stringOrNull(value: unknown): string | null {
 function nativeStatesForWorkflowStates(
   stateNames: string[],
   settings: ReturnType<typeof settingsBang>,
-  fallback: "open" | "closed" | null,
 ): ("open" | "closed")[] {
   const native = stateNames
     .map((state) => nativeStateForWorkflowState(state, settings))
     .filter((state): state is "open" | "closed" => state !== null);
-  if (native.length === 0 && fallback !== null && stateNames.length > 0) {
-    return [fallback];
-  }
   return [...new Set(native)];
 }
 
@@ -1205,32 +1150,8 @@ function nativeStateForWorkflowState(
   stateName: string,
   settings: ReturnType<typeof settingsBang>,
 ): "open" | "closed" | null {
-  const nativeState = nativeStateForCoreWorkflowState(stateName, settings);
-  if (nativeState !== null) {
-    return nativeState;
-  }
   const mapping = stateLabelMappingForWorkflowState(stateName, settings);
   return mapping === null ? null : nativeStateForMappedState(mapping.stateName, settings);
-}
-
-function nativeStateForCoreWorkflowState(
-  stateName: string,
-  settings: ReturnType<typeof settingsBang>,
-): "open" | "closed" | null {
-  const normalized = stateName.trim().toLowerCase();
-  if (OPEN_STATE_ALIASES.has(normalized)) {
-    return "open";
-  }
-  if (CLOSED_STATE_ALIASES.has(normalized)) {
-    return "closed";
-  }
-  if (settings.tracker.activeStates.some((state) => state.trim().toLowerCase() === normalized)) {
-    return "open";
-  }
-  if (settings.tracker.terminalStates.some((state) => state.trim().toLowerCase() === normalized)) {
-    return "closed";
-  }
-  return null;
 }
 
 function projectedState(
@@ -1274,7 +1195,9 @@ function nativeStateForMappedState(
   stateName: string,
   settings: ReturnType<typeof settingsBang>,
 ): "open" | "closed" {
-  return nativeStateForCoreWorkflowState(stateName, settings) === "closed" ? "closed" : "open";
+  return settings.tracker.terminalStates.some((state) => stateNamesEqual(state, stateName))
+    ? "closed"
+    : "open";
 }
 
 function projectedStateFromLabels(
@@ -1297,14 +1220,8 @@ function projectedStateFromLabels(
   return null;
 }
 
-function shouldFilterByRequestedStates(
-  stateNames: string[],
-  settings: ReturnType<typeof settingsBang>,
-): boolean {
-  if (stateNames.length === 0) {
-    return false;
-  }
-  return stateNames.some((stateName) => stateLabelMappingForWorkflowState(stateName, settings));
+function expectedStateNameForUpdate(plan: StateLabelPlan): string {
+  return plan.target.stateName;
 }
 
 function stateNamesInclude(stateNames: string[], stateName: string | null): boolean {
@@ -1314,21 +1231,6 @@ function stateNamesInclude(stateNames: string[], stateName: string | null): bool
   return stateNames.some((candidate) => stateNamesEqual(candidate, stateName));
 }
 
-function expectedStateNameForUpdate(
-  requestedState: string,
-  nativeState: "open" | "closed",
-  settings: ReturnType<typeof settingsBang>,
-  plan: StateLabelPlan,
-): string {
-  if (plan.target !== null) {
-    return plan.target.stateName;
-  }
-  const configured = [...settings.tracker.activeStates, ...settings.tracker.terminalStates].find(
-    (state) => stateNamesEqual(state, requestedState),
-  );
-  return configured ?? projectedState(nativeState, settings, []);
-}
-
 function stateNamesEqual(left: string, right: string): boolean {
   return normalizeStateName(left) === normalizeStateName(right);
 }
@@ -1336,9 +1238,6 @@ function stateNamesEqual(left: string, right: string): boolean {
 function stateLabelsConverged(labels: LabelRef[], plan: StateLabelPlan): boolean {
   const configuredLabels = stateLabelNameSet(plan.mappings);
   const present = labels.filter((label) => configuredLabels.has(label.normalizedName));
-  if (plan.target === null) {
-    return present.length === 0;
-  }
   return present.length === 1 && present[0]?.normalizedName === plan.target.normalizedLabelName;
 }
 

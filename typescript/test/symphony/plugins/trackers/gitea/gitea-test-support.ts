@@ -13,6 +13,10 @@ function defaults(): GiteaOverrides {
     required_labels: [],
     active_states: ["open"],
     terminal_states: ["closed"],
+    state_labels: {
+      open: "symphony/state-open",
+      closed: "symphony/state-closed",
+    },
   };
 }
 

@@ -16,20 +16,19 @@ tracker:
   token: $GITEA_API_TOKEN
   owner: acme
   repo: platform
-  active_states: [open]
-  terminal_states: [closed]
+  active_states: [Todo, In Progress, Rework]
+  terminal_states: [Done]
   required_labels: [symphony]
-  # Optional: preserve Symphony workflow state in one dedicated label.
-  # state_labels:
-  #   Todo: symphony/state-todo
-  #   In Progress: symphony/state-in-progress
-  #   Human Review: symphony/state-review
-  #   Rework: symphony/state-rework
-  #   Done: symphony/state-done
+  state_labels:
+    Todo: symphony/state-todo
+    In Progress: symphony/state-in-progress
+    Human Review: symphony/state-review
+    Rework: symphony/state-rework
+    Done: symphony/state-done
   # assignee: automation
 ```
 
-Required fields are `endpoint`, `token`, `owner`, and `repo`.
+Required fields are `endpoint`, `token`, `owner`, `repo`, and `state_labels`.
 
 - `endpoint` is the Gitea instance URL. It may end in `/api/v1`; that suffix is
   normalized, and no `gitea.com` host is assumed.
@@ -43,11 +42,12 @@ Required fields are `endpoint`, `token`, `owner`, and `repo`.
   Without it, the plugin accepts both assigned and unassigned issues.
 - `required_labels` is matched case-insensitively and requires every listed
   label. The plugin also keeps the core's normal routing check in place.
-- `state_labels`, when present, maps Symphony workflow state names to dedicated
-  Gitea labels. Use a reserved, lower-case namespace such as
-  `symphony/state-*`. These labels are provider state, not routing labels, and
-  validation rejects overlap with `required_labels`. Each workflow state must
-  map to a unique label.
+- `state_labels` maps Symphony workflow state names to dedicated Gitea labels.
+  Use a reserved, lower-case namespace such as `symphony/state-*`. These
+  labels are provider state, not routing labels. Every state in
+  `active_states` and `terminal_states` must be mapped; additional parked
+  states such as `Human Review` may also be mapped. Validation rejects overlap
+  with `required_labels` and duplicate label targets.
 
 `typescript/examples/gitea.workflow.md` is a parseable starting point. Export
 the token before using it:
@@ -90,29 +90,15 @@ authority if an installation exposes a version-specific difference.
 
 ## State and label mapping
 
-Gitea has two issue states: `open` and `closed`. They are projected into the
-workflow's active and terminal vocabularies so the orchestrator can use its
-existing scheduling/reconciliation loop:
+Gitea's native issue lifecycle still has only `open` and `closed`, but the
+workflow state is always carried by a dedicated `state_labels` label. Active
+workflow states use native `open`, terminal workflow states use native
+`closed`, and parked states such as `Human Review` use native `open` without
+being candidates. There is no configuration mode that projects state from
+native `open`/`closed` alone.
 
-- `open` is the active semantic state.
-- `closed` is the terminal semantic state.
-- When workflow names are explicit (`active_states: [open]`,
-  `terminal_states: [closed]`), WorkItems retain those names. The default core
-  state names (`Todo`/`In Progress` and `Closed`/`Done` variants) are also
-  recognized: an open Gitea issue is projected to the first matching active
-  workflow name, and a closed issue to the first matching terminal name.
-- `fetchCandidateIssues()` reads open issues, then applies the configured
-  assignee and required-label rules. `fetchIssuesByStates(states)` maps the
-  requested workflow names back to `open` or `closed`.
-- `fetchIssueStatesByIds(ids)` refreshes each repository issue by its stable
-  `owner/repo#number` identifier. If an issue is closed, the next refresh
-  returns a terminal WorkItem and the orchestrator stops/reconciles it instead
-  of dispatching it again.
-- WorkItem labels are lower-cased and trimmed. `PUT .../labels` replaces an
-  issue's labels; the agent can use that route through `gitea_api` when needed.
-
-For workflows that need Linear-like intermediate states, configure
-`tracker.state_labels`:
+Configure `tracker.state_labels` for every active and terminal state, plus any
+parked states:
 
 ```yaml
 tracker:
@@ -158,9 +144,9 @@ With `state_labels` configured:
 - Closing an issue to a mapped terminal state removes stale active state labels
   and writes the terminal label. Reopening to a mapped active or parking state
   removes stale terminal labels and restores the requested active label.
-- If `state_labels` is omitted, the plugin keeps the historical two-state
-  behavior: open issues project to the first matching active state, and closed
-  issues project to the first matching terminal state.
+- Omitting `state_labels`, or omitting a mapping for an active or terminal
+  state, is a configuration error. Existing two-state-only configurations must
+  be migrated by adding dedicated state labels.
 
 The plugin implements `comments` and `stateUpdates`. It also advertises a
 controlled `gitea_api` agent tool. The tool accepts only `GET`, `POST`, `PUT`,

@@ -69,6 +69,8 @@ describe("Gitea.Plugin", () => {
 
   test("parses provider-specific state label mappings", () => {
     writeGiteaWorkflowFile(workflowFilePath(), {
+      active_states: ["Todo", "In Progress"],
+      terminal_states: ["Done"],
       state_labels: {
         Todo: "symphony/state-todo",
         "In Progress": "symphony/state-in-progress",
@@ -84,6 +86,30 @@ describe("Gitea.Plugin", () => {
       Done: "symphony/state-done",
     });
     expect(validate()).toEqual({ ok: true, value: undefined });
+  });
+
+  test("requires state labels for every active and terminal workflow state", () => {
+    writeGiteaWorkflowFile(workflowFilePath(), { state_labels: undefined });
+
+    expect(validate()).toMatchObject({
+      ok: false,
+      error: {
+        tag: "gitea_missing_state_label_mapping",
+        code: "missing_config",
+        detail: { states: ["open", "closed"] },
+      },
+    });
+
+    writeGiteaWorkflowFile(workflowFilePath(), {
+      state_labels: { open: "symphony/state-open" },
+    });
+    expect(validate()).toMatchObject({
+      ok: false,
+      error: {
+        tag: "gitea_missing_state_label_mapping",
+        detail: { states: ["closed"] },
+      },
+    });
   });
 
   test("rejects invalid, duplicate, and mixed state label mappings", () => {

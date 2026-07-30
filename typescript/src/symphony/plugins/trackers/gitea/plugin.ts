@@ -132,6 +132,21 @@ export const GiteaPlugin: TrackerPlugin = {
           ),
         );
       }
+      const missingMappings = missingStateLabelMappings(
+        gitea.stateLabels,
+        settings.tracker.activeStates,
+        settings.tracker.terminalStates,
+      );
+      if (missingMappings.length > 0) {
+        return err(
+          trackerError(
+            "gitea_missing_state_label_mapping",
+            "missing_config",
+            "Gitea state_labels must map every active and terminal workflow state",
+            { states: missingMappings },
+          ),
+        );
+      }
       return ok(undefined);
     },
   },
@@ -290,6 +305,17 @@ function stateLabelRequiredLabelOverlap(
     }
   }
   return null;
+}
+
+function missingStateLabelMappings(
+  labels: Record<string, string>,
+  activeStates: string[],
+  terminalStates: string[],
+): string[] {
+  const mappedStates = new Set(Object.keys(labels).map(normalizeStateName));
+  return [...new Set([...activeStates, ...terminalStates])].filter(
+    (stateName) => !mappedStates.has(normalizeStateName(stateName)),
+  );
 }
 
 async function normalizeReadResult(response: unknown): Promise<Result<Issue[], TrackerError>> {
