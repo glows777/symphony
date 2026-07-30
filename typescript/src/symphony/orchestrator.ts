@@ -33,7 +33,7 @@ export const EMPTY_CODEX_TOTALS: CodexTotals = {
 };
 
 // The agent process handle (Elixir `pid`); abortable in the TS port.
-export type RunningTask = { stop(): void };
+export type RunningTask = { stop(reason?: AgentRunner.AgentRunCancellation): void };
 export type RunKind = "normal" | "review";
 
 export type RunningEntry = {
@@ -224,27 +224,37 @@ function reconcileIssueState(
     logger.info(
       `Issue moved to terminal state: ${issueContext(issue)} state=${issue.state}; stopping active agent`,
     );
-    return terminateRunningIssue(state, issue.id, true);
+    return terminateRunningIssue(
+      state,
+      issue.id,
+      true,
+      cancellationReason("issue_terminal_state", { state: issue.state }),
+    );
   }
   if (!issueRoutable(issue)) {
     logger.info(
       `Issue no longer routed to this worker: ${issueContext(issue)}; stopping active agent`,
     );
-    return terminateRunningIssue(state, issue.id, false);
+    return terminateRunningIssue(state, issue.id, false, cancellationReason("issue_not_routable"));
   }
   if (activeIssueState(issue.state, activeStates)) {
     if (enteredReworkState(issue, state)) {
       logger.info(
         `Issue entered Rework: ${issueContext(issue)}; stopping the previous agent before a clean dispatch`,
       );
-      return terminateRunningIssue(state, issue.id, false);
+      return terminateRunningIssue(state, issue.id, false, cancellationReason("issue_rework"));
     }
     return refreshRunningIssueState(state, issue);
   }
   logger.info(
     `Issue moved to non-active state: ${issueContext(issue)} state=${issue.state}; stopping active agent`,
   );
-  return terminateRunningIssue(state, issue.id, false);
+  return terminateRunningIssue(
+    state,
+    issue.id,
+    false,
+    cancellationReason("issue_non_active_state", { state: issue.state }),
+  );
 }
 
 function reconcileReviewIssueState(issue: Issue, state: State, terminalStates: Set<string>): State {
@@ -252,13 +262,23 @@ function reconcileReviewIssueState(issue: Issue, state: State, terminalStates: S
     logger.info(
       `Review issue moved to terminal state: ${issueContext(issue)} state=${issue.state}; stopping review agent`,
     );
-    return terminateRunningIssue(state, issue.id, true);
+    return terminateRunningIssue(
+      state,
+      issue.id,
+      true,
+      cancellationReason("review_issue_terminal_state", { state: issue.state }),
+    );
   }
   if (!issueRoutable(issue)) {
     logger.info(
       `Review issue no longer routed to this worker: ${issueContext(issue)}; stopping review agent`,
     );
-    return terminateRunningIssue(state, issue.id, false);
+    return terminateRunningIssue(
+      state,
+      issue.id,
+      false,
+      cancellationReason("review_issue_not_routable"),
+    );
   }
   if (humanReviewIssueState(issue.state)) {
     return refreshRunningIssueState(state, issue);
@@ -266,7 +286,12 @@ function reconcileReviewIssueState(issue: Issue, state: State, terminalStates: S
   logger.info(
     `Review issue left Human Review: ${issueContext(issue)} state=${issue.state}; stopping review agent`,
   );
-  return terminateRunningIssue(state, issue.id, false);
+  return terminateRunningIssue(
+    state,
+    issue.id,
+    false,
+    cancellationReason("review_issue_left_human_review", { state: issue.state }),
+  );
 }
 
 export function reconcileBlockedIssueStates(
@@ -333,6 +358,7 @@ function terminateRunningIssue(
   state: State,
   issueId: string | null,
   cleanupWorkspace: boolean,
+  reason: AgentRunner.AgentRunCancellation = cancellationReason("explicit_stop"),
 ): State {
   if (issueId === null) {
     return state;
@@ -346,7 +372,7 @@ function terminateRunningIssue(
   if (cleanupWorkspace) {
     cleanupIssueWorkspace(entry.identifier ?? null, workerHost);
   }
-  stopRunningTask(entry.task ?? null, entry.ref);
+  stopRunningTask(entry.task ?? null, entry.ref, reason);
   next = {
     ...next,
     running: omitKey(next.running, issueId),
@@ -382,10 +408,21 @@ function recordSessionCompletionTotals(state: State, entry: RunningEntry): State
   return { ...state, codex_totals: codexTotals };
 }
 
-function stopRunningTask(task: RunningTask | null, _ref: unknown): void {
+function stopRunningTask(
+  task: RunningTask | null,
+  _ref: unknown,
+  reason: AgentRunner.AgentRunCancellation = cancellationReason("explicit_stop"),
+): void {
   if (task && typeof task.stop === "function") {
-    task.stop();
+    task.stop(reason);
   }
+}
+
+function cancellationReason(
+  reason: string,
+  details: Record<string, unknown> = {},
+): AgentRunner.AgentRunCancellation {
+  return AgentRunner.agentRunCancellation(reason, details);
 }
 
 function cleanupIssueWorkspace(identifier: string | null, workerHost: string | null): void {
@@ -1020,7 +1057,12 @@ function reconcileMissingRunningIssueIds(
       return acc;
     }
     logMissingRunningIssue(acc, issueId);
-    return terminateRunningIssue(acc, issueId, false);
+    return terminateRunningIssue(
+      acc,
+      issueId,
+      false,
+      cancellationReason("issue_no_longer_visible"),
+    );
   }, state);
 }
 
@@ -1166,7 +1208,11 @@ function stopAndBlockIssue(
   entry: RunningEntry,
   error: string,
 ): State {
-  stopRunningTask(entry.task ?? null, entry.ref);
+  stopRunningTask(
+    entry.task ?? null,
+    entry.ref,
+    cancellationReason("issue_blocked_input_required", { error }),
+  );
   return blockIssueFromEntry(state, issueId, entry, error);
 }
 
@@ -2067,7 +2113,12 @@ export class Orchestrator {
     logger.warning(
       `Issue stalled: issue_id=${issueId} issue_identifier=${identifier} session_id=${sessionId} elapsed_ms=${elapsedMs}; restarting with backoff`,
     );
-    const terminated = terminateRunningIssue(state, issueId, false);
+    const terminated = terminateRunningIssue(
+      state,
+      issueId,
+      false,
+      cancellationReason("issue_stalled", { elapsed_ms: elapsedMs, session_id: sessionId }),
+    );
     return this.scheduleIssueRetry(terminated, issueId, nextRetryAttemptFromRunning(entry), {
       identifier,
       issue_url: isIssue(entry.issue) ? entry.issue.url : null,
@@ -2213,9 +2264,9 @@ export class Orchestrator {
     // same workspace concurrently.
     const abortController = new AbortController();
     const task: RunningTask = {
-      stop() {
+      stop(reason = cancellationReason("explicit_stop")) {
         aborted = true;
-        abortController.abort();
+        abortController.abort(reason);
       },
     };
     AgentRunner.run(issue, (update) => this.onWorkerUpdate(update), {
