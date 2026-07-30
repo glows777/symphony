@@ -39,6 +39,7 @@ No description provided.
 
 export type CodexRuntimeSettings = {
   approvalPolicy: string | JsonMap;
+  permissionProfile: string | null;
   threadSandbox: string;
   turnSandboxPolicy: JsonMap;
 };
@@ -126,6 +127,7 @@ export function codexRuntimeSettings(
   }
   return ok({
     approvalPolicy: result.value.codex.approvalPolicy,
+    permissionProfile: result.value.codex.permissionProfile,
     threadSandbox: result.value.codex.threadSandbox,
     turnSandboxPolicy: policy.value,
   });

@@ -56,6 +56,7 @@ export type AgentSettings = {
 export type CodexSettings = {
   command: string;
   approvalPolicy: string | JsonMap;
+  permissionProfile: string | null;
   threadSandbox: string;
   turnSandboxPolicy: JsonMap | null;
   turnTimeoutMs: number;
@@ -518,6 +519,14 @@ function castCodex(raw: unknown, section: string, errors: FieldError[]): CodexSe
       section,
       castStringOrMap,
       DEFAULT_APPROVAL_POLICY,
+      errors,
+    ).value,
+    permissionProfile: field<string | null>(
+      r,
+      "permission_profile",
+      section,
+      castString,
+      null,
       errors,
     ).value,
     threadSandbox: field<string>(

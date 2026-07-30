@@ -40,6 +40,7 @@ export type RunOpts = {
 
 type SessionPolicies = {
   approvalPolicy: string | JsonObject;
+  permissionProfile: string | null;
   threadSandbox: string;
   turnSandboxPolicy: JsonObject;
 };
@@ -50,6 +51,7 @@ export type Session = {
   metadata: JsonObject;
   approvalPolicy: string | JsonObject;
   autoApproveRequests: boolean;
+  permissionProfile: string | null;
   threadSandbox: string;
   turnSandboxPolicy: JsonObject;
   threadId: string;
@@ -150,6 +152,7 @@ export async function startSession(
     metadata,
     approvalPolicy: policies.value.approvalPolicy,
     autoApproveRequests: policies.value.approvalPolicy === "never",
+    permissionProfile: policies.value.permissionProfile,
     threadSandbox: policies.value.threadSandbox,
     turnSandboxPolicy: policies.value.turnSandboxPolicy,
     threadId: threadId.value,
@@ -191,6 +194,7 @@ export async function runTurn(
     issue,
     session.workspace,
     session.approvalPolicy,
+    session.permissionProfile,
     session.turnSandboxPolicy,
   );
   if (!turn.ok) {
@@ -247,7 +251,12 @@ export async function replayTranscript(serverMessages: unknown[]): Promise<unkno
   const policies = await sessionPolicies("/workspace", null).catch(() => null);
   const resolved: SessionPolicies = policies?.ok
     ? policies.value
-    : { approvalPolicy: "never", threadSandbox: "workspace-write", turnSandboxPolicy: {} };
+    : {
+        approvalPolicy: "never",
+        permissionProfile: null,
+        threadSandbox: "workspace-write",
+        turnSandboxPolicy: {},
+      };
 
   const thread = await doStartSession(transport, "/workspace", resolved);
   if (thread.ok) {
@@ -258,6 +267,7 @@ export async function replayTranscript(serverMessages: unknown[]): Promise<unkno
       { identifier: "", title: "" },
       "/workspace",
       resolved.approvalPolicy,
+      resolved.permissionProfile,
       resolved.turnSandboxPolicy,
     );
     if (turn.ok) {
@@ -378,6 +388,7 @@ async function sessionPolicies(
   }
   return ok({
     approvalPolicy: runtime.value.approvalPolicy,
+    permissionProfile: runtime.value.permissionProfile,
     threadSandbox: runtime.value.threadSandbox,
     turnSandboxPolicy: runtime.value.turnSandboxPolicy,
   });
@@ -421,15 +432,18 @@ async function startThread(
   workspace: string,
   policies: SessionPolicies,
 ): Promise<Result<string, unknown>> {
+  const params: JsonObject = {
+    approvalPolicy: policies.approvalPolicy,
+    cwd: workspace,
+    dynamicTools: DynamicTool.toolSpecs(),
+  };
+  if (!hasPermissionProfile(policies.permissionProfile)) {
+    params.sandbox = policies.threadSandbox;
+  }
   transport.send({
     method: "thread/start",
     id: THREAD_START_ID,
-    params: {
-      approvalPolicy: policies.approvalPolicy,
-      sandbox: policies.threadSandbox,
-      cwd: workspace,
-      dynamicTools: DynamicTool.toolSpecs(),
-    },
+    params,
   });
   const response = await awaitResponse(transport, THREAD_START_ID);
   if (!response.ok) {
@@ -449,19 +463,23 @@ async function startTurn(
   issue: IssueLike,
   workspace: string,
   approvalPolicy: string | JsonObject,
+  permissionProfile: string | null,
   turnSandboxPolicy: JsonObject,
 ): Promise<Result<string, unknown>> {
+  const params: JsonObject = {
+    threadId,
+    input: [{ type: "text", text: prompt }],
+    cwd: workspace,
+    title: `${issue.identifier}: ${issue.title}`,
+    approvalPolicy,
+  };
+  if (!hasPermissionProfile(permissionProfile)) {
+    params.sandboxPolicy = turnSandboxPolicy;
+  }
   transport.send({
     method: "turn/start",
     id: TURN_START_ID,
-    params: {
-      threadId,
-      input: [{ type: "text", text: prompt }],
-      cwd: workspace,
-      title: `${issue.identifier}: ${issue.title}`,
-      approvalPolicy,
-      sandboxPolicy: turnSandboxPolicy,
-    },
+    params,
   });
   const response = await awaitResponse(transport, TURN_START_ID);
   if (!response.ok) {
@@ -472,6 +490,10 @@ async function startTurn(
     return ok(turn.id);
   }
   return err(response.value);
+}
+
+function hasPermissionProfile(permissionProfile: string | null): boolean {
+  return typeof permissionProfile === "string" && permissionProfile.trim() !== "";
 }
 
 function awaitTurnCompletion(

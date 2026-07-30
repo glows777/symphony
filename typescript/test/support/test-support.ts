@@ -37,6 +37,7 @@ function defaults(): Overrides {
     max_concurrent_agents_by_state: {},
     codex_command: "codex app-server",
     codex_approval_policy: "on-request",
+    codex_permission_profile: null,
     codex_thread_sandbox: "workspace-write",
     codex_turn_sandbox_policy: null,
     codex_turn_timeout_ms: 3_600_000,
@@ -100,6 +101,7 @@ function workflowContent(overrides: Overrides): string {
     "codex:",
     `  command: ${yamlValue(g("codex_command"))}`,
     `  approval_policy: ${yamlValue(g("codex_approval_policy"))}`,
+    codexPermissionProfileLine(g("codex_permission_profile")),
     `  thread_sandbox: ${yamlValue(g("codex_thread_sandbox"))}`,
     `  turn_sandbox_policy: ${yamlValue(g("codex_turn_sandbox_policy"))}`,
     `  turn_timeout_ms: ${yamlValue(g("codex_turn_timeout_ms"))}`,
@@ -127,6 +129,13 @@ function workflowContent(overrides: Overrides): string {
   ];
 
   return `${sections.filter((s) => s !== null && s !== "").join("\n")}\n`;
+}
+
+function codexPermissionProfileLine(value: unknown): string | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  return `  permission_profile: ${yamlValue(value)}`;
 }
 
 function yamlValue(value: unknown): string {

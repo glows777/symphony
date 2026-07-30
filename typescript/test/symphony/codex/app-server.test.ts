@@ -145,6 +145,43 @@ describe("Codex.AppServer", () => {
     }
   });
 
+  test("omits legacy sandbox request fields when a permission profile is selected", async () => {
+    const workspace = workspaceFor("MT-1002");
+    const cases = `  1)
+    printf '%s\\n' '{"id":1,"result":{}}'
+    ;;
+  2)
+    printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1002"}}}'
+    ;;
+  3)
+    printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1002"}}}'
+    ;;
+  4)
+    printf '%s\\n' '{"method":"turn/completed"}'
+    exit 0
+    ;;`;
+    installCodex(codexScript(traceFile, cases), {
+      codex_permission_profile: "symphony_git",
+      codex_turn_sandbox_policy: {
+        type: "workspaceWrite",
+        writableRoots: ["/should-not-be-sent"],
+      },
+    });
+
+    const result = await run(workspace, "Use the configured permission profile", issue("MT-1002"));
+    expect(result.ok).toBe(true);
+
+    const messages = fs
+      .readFileSync(traceFile, "utf8")
+      .split("\n")
+      .filter((line) => line.startsWith("JSON:"))
+      .map((line) => JSON.parse(line.slice("JSON:".length)));
+    const threadStart = messages.find((message) => message.method === "thread/start");
+    const turnStart = messages.find((message) => message.method === "turn/start");
+    expect(threadStart?.params?.sandbox).toBeUndefined();
+    expect(turnStart?.params?.sandboxPolicy).toBeUndefined();
+  });
+
   test("marks request-for-input events as a hard failure", async () => {
     const workspace = workspaceFor("MT-88");
     const cases = `  1)

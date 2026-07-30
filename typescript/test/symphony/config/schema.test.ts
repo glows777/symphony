@@ -162,7 +162,13 @@ describe("Config.Schema.parse", () => {
   test("empty codex strings are kept (empty_values: [])", () => {
     const settings = parseOk({ codex: { approval_policy: "", thread_sandbox: "" } });
     expect(settings.codex.approvalPolicy).toBe("");
+    expect(settings.codex.permissionProfile).toBeNull();
     expect(settings.codex.threadSandbox).toBe("");
+  });
+
+  test("casts a named permission profile", () => {
+    const settings = parseOk({ codex: { permission_profile: "symphony_git" } });
+    expect(settings.codex.permissionProfile).toBe("symphony_git");
   });
 
   test("future/opaque policy values pass through", () => {

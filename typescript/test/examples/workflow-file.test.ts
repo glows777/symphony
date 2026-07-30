@@ -88,31 +88,15 @@ describe("WORKFLOW.md (Linear + codex)", () => {
     expect(validate()).toEqual({ ok: true, value: undefined });
   });
 
-  test("enables network access in the turn sandbox policy", () => {
+  test("selects the named Codex permission profile", () => {
     const parsed = settings();
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) {
       return;
     }
-    // The built-in default is networkAccess:false, which cannot push a branch;
-    // this file overrides it on purpose. Keys are Codex's camelCase.
-    expect(parsed.value.codex.turnSandboxPolicy).toMatchObject({
-      type: "workspaceWrite",
-      networkAccess: true,
-    });
-  });
-
-  test("the sandbox's writable root matches workspace.root verbatim", () => {
-    const parsed = settings();
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) {
-      return;
-    }
-    // These two are written independently — workspace.root expands "$VAR",
-    // the sandbox policy map does not — and a mismatch surfaces only as a
-    // permission error from inside Codex's sandbox. Pin them together.
-    const writableRoots = parsed.value.codex.turnSandboxPolicy?.writableRoots;
-    expect(writableRoots).toEqual([parsed.value.workspace.root]);
+    expect(parsed.value.codex.permissionProfile).toBe("symphony_git");
+    expect(parsed.value.codex.turnSandboxPolicy).toBeNull();
+    expect(parsed.value.codex.command).toContain('default_permissions="symphony_git"');
   });
 
   test("carries no baked-in credential", () => {

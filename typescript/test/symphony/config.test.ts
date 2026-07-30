@@ -66,6 +66,7 @@ describe("Config", () => {
     expect(config.agent.maxConcurrentAgents).toBe(10);
     expect(config.codex.command).toBe("codex app-server");
     expect(config.codex.approvalPolicy).toBe("on-request");
+    expect(config.codex.permissionProfile).toBeNull();
     expect(config.codex.threadSandbox).toBe("workspace-write");
     expect(config.observability.agentOutput).toBe("summary");
 
@@ -181,6 +182,16 @@ describe("Config", () => {
     expect(config.codex.threadSandbox).toBe("future-sandbox");
     expect(validate().ok).toBe(true);
     expect(codexTurnSandboxPolicy()).toEqual({ type: "futureSandbox", nested: { flag: true } });
+  });
+
+  test("keeps a named permission profile separate from legacy sandbox settings", () => {
+    writeWorkflowFile(workflowFilePath(), {
+      codex_permission_profile: "symphony_git",
+      codex_turn_sandbox_policy: null,
+    });
+    const config = settingsBang();
+    expect(config.codex.permissionProfile).toBe("symphony_git");
+    expect(config.codex.turnSandboxPolicy).toBeNull();
   });
 
   test("resolves $VAR references for env-backed secret and path values", () => {

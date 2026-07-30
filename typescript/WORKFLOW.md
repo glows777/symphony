@@ -63,22 +63,15 @@ agent:
 codex:
   # 启动 Codex app-server。需要更换模型时，在这里调整配置。
   command: >-
-    codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"'
+    codex --config 'default_permissions="symphony_git"'
+    --config 'permissions.symphony_git.extends=":workspace"'
+    --config 'permissions.symphony_git.filesystem={":workspace_roots"={"."="write", ".git"="write", ".git/config"="read", ".git/hooks"="read"}}'
+    --config 'permissions.symphony_git.network.enabled=true'
+    --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"'
     --config model_reasoning_effort=xhigh app-server
   # 无人值守运行时不请求人工审批。
   approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-    # 必须与 workspace.root 完全一致。
-    writableRoots:
-      - /Users/glows777/codes/xinze/symphony/runtime
-    readOnlyAccess:
-      type: fullAccess
-    # agent 需要访问 Linear、GitHub 和依赖仓库。
-    networkAccess: true
-    excludeTmpdirEnvVar: false
-    excludeSlashTmp: false
+  permission_profile: symphony_git
   turn_timeout_ms: 3600000
   read_timeout_ms: 5000
   stall_timeout_ms: 300000

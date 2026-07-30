@@ -1,2 +1,14 @@
 approval_policy = "never"
-sandbox_mode = "danger-full-access"
+default_permissions = "symphony_git"
+
+[permissions.symphony_git]
+extends = ":workspace"
+
+[permissions.symphony_git.filesystem.":workspace_roots"]
+"." = "write"
+".git" = "write"
+".git/config" = "read"
+".git/hooks" = "read"
+
+[permissions.symphony_git.network]
+enabled = true
