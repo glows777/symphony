@@ -9,7 +9,7 @@ function defaults(): GiteaOverrides {
     token: "test-token",
     owner: "acme",
     repo: "symphony",
-    assignee: null,
+    assignee: "runner",
     required_labels: [],
     active_states: ["open"],
     terminal_states: ["closed"],

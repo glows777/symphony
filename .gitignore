@@ -5,6 +5,7 @@
 
 # Local Symphony issue workspaces.
 runtime/
+runtime-gitea/
 typescript/frontend/dist/
 
 # Local per-project workflow configurations.

@@ -144,12 +144,13 @@ describe("Gitea.Plugin", () => {
     });
   });
 
-  test("reports missing endpoint, token, owner, and repository configuration", () => {
+  test("reports missing endpoint, token, owner, repository, and assignee configuration", () => {
     const cases: [Record<string, unknown>, string][] = [
       [{ endpoint: undefined }, "missing_gitea_endpoint"],
       [{ token: undefined }, "missing_gitea_api_token"],
       [{ owner: undefined }, "missing_gitea_owner"],
       [{ repo: undefined }, "missing_gitea_repository"],
+      [{ assignee: undefined }, "missing_gitea_assignee"],
     ];
 
     for (const [overrides, tag] of cases) {

@@ -19,8 +19,8 @@ tracker:
     Human Review: symphony/state-review
     Rework: symphony/state-rework
     Done: symphony/state-done
-  # Optional: only issues assigned to this Gitea login are candidates.
-  # assignee: automation
+  # Required: only issues assigned to this Gitea login or numeric user ID are candidates.
+  assignee: automation
 
 polling:
   interval_ms: 30000

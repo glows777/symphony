@@ -167,15 +167,11 @@ describe("Gitea.Client", () => {
     expect(calls[0]?.headers.Authorization).toBe("token test-token");
   });
 
-  test("resolves assignee me from the authenticated Gitea user", async () => {
-    writeGiteaWorkflowFile(workflowFilePath(), { assignee: "me" });
+  test("uses the configured assignee when scanning candidate issues", async () => {
+    writeGiteaWorkflowFile(workflowFilePath(), { assignee: "runner" });
     const calls: Call[] = [];
     const result = await fetchCandidateIssues({
       requestFun: fakeTransport(calls, [
-        {
-          status: 200,
-          body: { id: 7, login: "runner", username: "runner" },
-        },
         {
           status: 200,
           body: [
@@ -195,20 +191,15 @@ describe("Gitea.Client", () => {
       value: [expect.objectContaining({ identifier: "acme/symphony#9" })],
     });
     expect(calls.map((call) => call.url)).toEqual([
-      "https://gitea.test/api/v1/user",
       "https://gitea.test/api/v1/repos/acme/symphony/issues?state=open&page=1&limit=50",
     ]);
   });
 
-  test("uses the authenticated Gitea user when refreshing issue state", async () => {
-    writeGiteaWorkflowFile(workflowFilePath(), { assignee: "me" });
+  test("uses the configured assignee when refreshing issue state", async () => {
+    writeGiteaWorkflowFile(workflowFilePath(), { assignee: "runner" });
     const calls: Call[] = [];
     const result = await fetchIssueStatesByIds(["acme/symphony#9"], {
       requestFun: fakeTransport(calls, [
-        {
-          status: 200,
-          body: { id: 7, login: "runner", username: "runner" },
-        },
         {
           status: 200,
           body: rawIssue(9),
@@ -221,8 +212,43 @@ describe("Gitea.Client", () => {
       value: [expect.objectContaining({ identifier: "acme/symphony#9", assignedToWorker: true })],
     });
     expect(calls.map((call) => call.url)).toEqual([
-      "https://gitea.test/api/v1/user",
       "https://gitea.test/api/v1/repos/acme/symphony/issues/9",
+    ]);
+  });
+
+  test("uses the configured assignee when scanning review states", async () => {
+    writeGiteaWorkflowFile(workflowFilePath(), {
+      assignee: "runner",
+      state_labels: {
+        Todo: "symphony/state-todo",
+        "In Progress": "symphony/state-in-progress",
+        "Human Review": "symphony/state-review",
+        Rework: "symphony/state-rework",
+        Done: "symphony/state-done",
+      },
+    });
+    const calls: Call[] = [];
+    const result = await fetchIssuesByStates(["Human Review"], {
+      requestFun: fakeTransport(calls, [
+        {
+          status: 200,
+          body: [rawIssue(12, { labels: [{ id: 4, name: "symphony/state-review" }] })],
+        },
+      ]),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: [
+        expect.objectContaining({
+          identifier: "acme/symphony#12",
+          state: "Human Review",
+          assignedToWorker: true,
+        }),
+      ],
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://gitea.test/api/v1/repos/acme/symphony/issues?state=open&page=1&limit=50",
     ]);
   });
 

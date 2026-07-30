@@ -107,6 +107,15 @@ export const GiteaPlugin: TrackerPlugin = {
           ),
         );
       }
+      if (gitea.assignee === null) {
+        return err(
+          trackerError(
+            "missing_gitea_assignee",
+            "missing_config",
+            "Gitea assignee missing in WORKFLOW.md",
+          ),
+        );
+      }
       const duplicate = duplicateStateLabel(gitea.stateLabels);
       if (duplicate !== null) {
         return err(

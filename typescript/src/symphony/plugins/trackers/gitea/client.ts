@@ -93,17 +93,12 @@ export async function fetchCandidateIssues(
     return ok([]);
   }
 
-  const assignee = await resolveAssignee(gitea, opts);
-  if (!assignee.ok) {
-    return err(assignee.error);
-  }
-  const candidateGitea = { ...gitea, assignee: assignee.value };
   const result = await fetchIssuesForNativeStates(
     repository.value,
     nativeStates,
     settings,
     opts,
-    candidateGitea,
+    gitea,
   );
   if (!result.ok) {
     return err(result.error);
@@ -137,7 +132,13 @@ export async function fetchIssuesByStates(
   if (nativeStates.length === 0) {
     return ok([]);
   }
-  const result = await fetchIssuesForNativeStates(repository.value, nativeStates, settings, opts);
+  const result = await fetchIssuesForNativeStates(
+    repository.value,
+    nativeStates,
+    settings,
+    opts,
+    gitea,
+  );
   if (!result.ok) {
     return err(result.error);
   }
@@ -158,12 +159,6 @@ export async function fetchIssueStatesByIds(
   if (!repository.ok) {
     return err(repository.error);
   }
-  const assignee = await resolveAssignee(gitea, opts);
-  if (!assignee.ok) {
-    return err(assignee.error);
-  }
-  const resolvedGitea = { ...gitea, assignee: assignee.value };
-
   const issues: Issue[] = [];
   for (const issueId of ids) {
     const issueNumber = parseIssueNumber(issueId, repository.value);
@@ -178,7 +173,7 @@ export async function fetchIssueStatesByIds(
       }
       return err(response.error);
     }
-    const issue = decodeIssue(response.value.body, settings, resolvedGitea);
+    const issue = decodeIssue(response.value.body, settings, gitea);
     if (!issue.ok) {
       return err(issue.error);
     }
@@ -226,33 +221,6 @@ async function fetchIssuesForNativeStates(
     }
   }
   return ok([...issuesById.values()]);
-}
-
-async function resolveAssignee(
-  gitea: GiteaSettings,
-  opts: RequestOpts,
-): Promise<Result<string | null, TrackerError>> {
-  if (gitea.assignee === null || gitea.assignee.trim().toLowerCase() !== "me") {
-    return ok(gitea.assignee);
-  }
-
-  const response = await requestRaw("GET", `${API_PREFIX}/user`, null, opts);
-  if (!response.ok) {
-    return err(response.error);
-  }
-  const user = decodeObject(response.value.body, response.value.path);
-  if (!user.ok) {
-    return err(user.error);
-  }
-
-  const identity =
-    stringOrNull(user.value.login) ??
-    stringOrNull(user.value.username) ??
-    stringOrNull(user.value.login_name) ??
-    numberOrString(user.value.id);
-  return identity === null
-    ? err(invalidPayloadError(response.value.path, response.value.body))
-    : ok(identity);
 }
 
 // ---- write capabilities and provider resources -----------------------------
