@@ -168,6 +168,19 @@ describe("frontend transcript merge", () => {
     expect(merged.events).toHaveLength(1);
   });
 
+  test("keeps the pagination cursor contiguous when SSE replays a later event", () => {
+    const current = output({
+      events: [event({ seq: 160 })],
+      next_cursor: 160,
+      has_more: true,
+    });
+
+    const merged = mergeLiveOutput(current, event({ seq: 2193 }));
+
+    expect(merged.next_cursor).toBe(160);
+    expect(merged.events.map((item) => item.seq)).toEqual([160, 2193]);
+  });
+
   test("merges a later page in chronological order", () => {
     const current = output({
       events: [event({ seq: 1 }), event({ seq: 2 })],

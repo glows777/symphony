@@ -363,7 +363,6 @@ export function mergeLiveOutput(
     ...base,
     events: sortEvents(upsertEvent(base.events, event)),
     messages: mergeLiveActivities(base.messages, event),
-    next_cursor: Math.max(base.next_cursor ?? 0, event.seq),
     before_cursor: base.before_cursor,
     has_before: base.has_before,
     run,
