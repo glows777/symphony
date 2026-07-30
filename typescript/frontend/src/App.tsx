@@ -13,6 +13,7 @@ import {
   getIssue,
   getOutputForRun,
   getState,
+  rerunBlockedIssue,
   subscribeToOutput,
 } from "./lib/api";
 
@@ -36,6 +37,7 @@ export function App() {
   const [loadingLater, setLoadingLater] = useState(false);
   const [laterError, setLaterError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rerunning, setRerunning] = useState(false);
   const [streamState, setStreamState] = useState<"connected" | "waiting">("waiting");
   const laterControllerRef = useRef<AbortController | null>(null);
   const selectionKey = `${selected ?? ""}:${selectedRunId ?? ""}`;
@@ -80,6 +82,31 @@ export function App() {
       }
     }
   }, [hasLater, laterCursor, loadingLater, selected, selectedRunId, selectionKey]);
+
+  const handleRerunBlocked = useCallback(
+    async (identifier: string): Promise<void> => {
+      setRerunning(true);
+      setError(null);
+      try {
+        await rerunBlockedIssue(identifier);
+        const [nextState, nextDetail] = await Promise.all([
+          getState().catch(() => null),
+          selected === identifier ? getIssue(identifier).catch(() => null) : Promise.resolve(null),
+        ]);
+        if (nextState !== null) {
+          setState(nextState);
+        }
+        if (selected === identifier) {
+          setDetail(nextDetail);
+        }
+      } catch (rerunError) {
+        setError(rerunError instanceof Error ? rerunError.message : "Rerun unavailable");
+      } finally {
+        setRerunning(false);
+      }
+    },
+    [selected],
+  );
 
   useEffect(() => {
     selectionKeyRef.current = selectionKey;
@@ -216,6 +243,8 @@ export function App() {
           runHistory={detail?.logs?.agent_runs ?? (output?.run ? [output.run] : [])}
           selectedRunId={selectedRunId ?? output?.run_id ?? null}
           onSelectRun={setSelectedRunId}
+          onRerunBlocked={(identifier) => void handleRerunBlocked(identifier)}
+          rerunning={rerunning}
           loading={loading || timelineLoading}
         />
         <RunTimeline
@@ -233,7 +262,7 @@ export function App() {
             {streamState === "connected" ? "Live output" : "Waiting for output"}
           </span>
           <span className="runtime-separator" />
-          <span>Read only</span>
+          <span>Manual actions require explicit confirmation</span>
           <span className="runtime-grow" />
           <span className="runtime-updated">Polls every 5s · SSE when available</span>
         </footer>

@@ -53,6 +53,12 @@ function staticSnapshot(): Snapshot {
         issue_url: "https://example.org/issues/MT-BLOCKED",
         state: "In Progress",
         error: "codex turn requires operator input",
+        blocked_reason: "codex turn requires operator input",
+        operator_prompt: "Allow GitHub to run tool update_pull_request?",
+        manual_recovery: {
+          rerun_endpoint: "/api/v1/MT-BLOCKED/rerun",
+          automatic_retry: false,
+        },
         worker_host: "dm-dev2",
         workspace_path: "/workspaces/MT-BLOCKED",
         session_id: "thread-blocked",
@@ -115,6 +121,10 @@ describe("dashboard SSR + SSE", () => {
     expect(html).toContain('aria-label="Open MT-HTTP in the issue tracker"');
     expect(html).toContain("rendered");
     expect(html).toContain("turn blocked: waiting for user input");
+    expect(html).toContain("Allow GitHub to run tool update_pull_request?");
+    expect(html).toContain('action="/api/v1/MT-BLOCKED/rerun"');
+    expect(html).toContain("return confirm(&quot;Rerun blocked agent for MT-BLOCKED?");
+    expect(html).toContain("Rerun");
     expect(html).toContain("Runtime");
     expect(html).toContain("Live");
     expect(html).toContain("Offline");

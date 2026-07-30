@@ -52,6 +52,25 @@ function staticSnapshot(): Snapshot {
         issue_url: "https://example.org/issues/MT-BLOCKED",
         state: "In Progress",
         error: "codex turn requires operator input",
+        blocked_reason: "codex turn requires operator input",
+        operator_prompt: "Allow GitHub to run tool update_pull_request?",
+        raw_blocker_payload: {
+          method: "mcpServer/elicitation/request",
+          params: { message: "Allow GitHub to run tool update_pull_request?" },
+        },
+        manual_recovery: {
+          action: "provide_required_input_or_approval_then_rerun",
+          reason: "codex turn requires operator input",
+          prompt: "Allow GitHub to run tool update_pull_request?",
+          payload: {
+            method: "mcpServer/elicitation/request",
+            params: { message: "Allow GitHub to run tool update_pull_request?" },
+          },
+          session_id: "thread-blocked",
+          automatic_retry: false,
+          resume_supported: false,
+          rerun_supported: true,
+        },
         worker_host: "dm-dev2",
         workspace_path: "/workspaces/MT-BLOCKED",
         session_id: "thread-blocked",
@@ -166,12 +185,68 @@ describe("web server / observability API", () => {
       });
     });
 
+    test("POST /api/v1/:id/rerun returns explicit blocked rerun outcome", async () => {
+      const route = createRouter(
+        {
+          ...provider(staticSnapshot(), refreshReply),
+          rerunBlockedIssue: () =>
+            Promise.resolve({
+              queued: true as const,
+              issue_id: "issue-blocked",
+              issue_identifier: "MT-BLOCKED",
+              requested_at: new Date(),
+              operation: "rerun_blocked" as const,
+            }),
+        },
+        50,
+      );
+      const res = await route(
+        new Request("http://127.0.0.1/api/v1/MT-BLOCKED/rerun", {
+          method: "POST",
+        }),
+      );
+      expect(res.status).toBe(202);
+      expect(await res.json()).toMatchObject({
+        queued: true,
+        issue_id: "issue-blocked",
+        issue_identifier: "MT-BLOCKED",
+        operation: "rerun_blocked",
+      });
+    });
+
+    test("POST /api/v1/:id/rerun redirects dashboard form submissions", async () => {
+      const route = createRouter(
+        {
+          ...provider(staticSnapshot(), refreshReply),
+          rerunBlockedIssue: () =>
+            Promise.resolve({
+              queued: true as const,
+              issue_id: "issue-blocked",
+              issue_identifier: "MT-BLOCKED",
+              requested_at: new Date(),
+              operation: "rerun_blocked" as const,
+            }),
+        },
+        50,
+      );
+      const res = await route(
+        new Request("http://127.0.0.1/api/v1/MT-BLOCKED/rerun", {
+          method: "POST",
+          headers: { accept: "text/html" },
+        }),
+      );
+      expect(res.status).toBe(303);
+      expect(res.headers.get("location")).toBe("/");
+      expect(await res.text()).toBe("");
+    });
+
     test("preserves 405 method-not-allowed behavior", async () => {
       const cases: [string, string][] = [
         ["/api/v1/state", "POST"],
         ["/api/v1/refresh", "GET"],
         ["/", "POST"],
         ["/api/v1/MT-1", "POST"],
+        ["/api/v1/MT-1/rerun", "GET"],
       ];
       for (const [path, method] of cases) {
         const { status, body } = await json(path, { method });
