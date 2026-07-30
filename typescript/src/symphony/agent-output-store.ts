@@ -148,6 +148,7 @@ type PersistedRun = {
   pendingWriteBytes: number;
   bufferedWriteBytes: number;
   writeFlushTimer: ReturnType<typeof setTimeout> | null;
+  discardedForTest: boolean;
   activeChatId: string | null;
   activeChatTurn: number | null;
   chatSequence: number;
@@ -253,6 +254,7 @@ export class AgentOutputStore {
       pendingWriteBytes: 0,
       bufferedWriteBytes: 0,
       writeFlushTimer: null,
+      discardedForTest: false,
       activeChatId: null,
       activeChatTurn: null,
       chatSequence: 0,
@@ -614,7 +616,11 @@ export class AgentOutputStore {
   }
 
   private append(state: PersistedRun, input: Record<string, unknown>): AgentOutputEvent | null {
-    if (state.mode === "off" || (state.metadata.truncated && input.terminal !== true)) {
+    if (
+      state.mode === "off" ||
+      state.discardedForTest ||
+      (state.metadata.truncated && input.terminal !== true)
+    ) {
       return null;
     }
     const event = this.boundedEvent(state, input);
@@ -919,6 +925,7 @@ export class AgentOutputStore {
       pendingWriteBytes: 0,
       bufferedWriteBytes: 0,
       writeFlushTimer: null,
+      discardedForTest: false,
       activeChatId: null,
       activeChatTurn: null,
       chatSequence: 0,
@@ -954,6 +961,9 @@ export class AgentOutputStore {
     contents: string,
     terminal = false,
   ): boolean {
+    if (state.discardedForTest) {
+      return true;
+    }
     const writeBytes = Buffer.byteLength(contents, "utf8");
     if (state.bufferedWriteBytes + writeBytes > MAX_PENDING_WRITE_BYTES && !terminal) {
       state.metadata.truncated = true;
@@ -971,6 +981,9 @@ export class AgentOutputStore {
   }
 
   private scheduleWriteFlush(state: PersistedRun): void {
+    if (state.discardedForTest) {
+      return;
+    }
     if (state.writeFlushTimer !== null) {
       return;
     }
@@ -984,6 +997,12 @@ export class AgentOutputStore {
     if (state.writeFlushTimer !== null) {
       clearTimeout(state.writeFlushTimer);
       state.writeFlushTimer = null;
+    }
+    if (state.discardedForTest) {
+      state.pendingWrites = [];
+      state.pendingWriteBytes = 0;
+      state.bufferedWriteBytes = 0;
+      return;
     }
     if (state.pendingWrites.length === 0) {
       return;
@@ -1004,9 +1023,18 @@ export class AgentOutputStore {
 
     state.writeChain = state.writeChain
       .then(async () => {
+        if (state.discardedForTest) {
+          return;
+        }
         for (const [filePath, contents] of grouped) {
           try {
+            if (state.discardedForTest) {
+              return;
+            }
             await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+            if (state.discardedForTest) {
+              return;
+            }
             if (filePath.endsWith(RUN_METADATA_SUFFIX)) {
               await fs.promises.writeFile(filePath, contents, "utf8");
             } else {
@@ -1022,6 +1050,21 @@ export class AgentOutputStore {
       .finally(() => {
         state.bufferedWriteBytes = Math.max(0, state.bufferedWriteBytes - batchBytes);
       });
+  }
+
+  discardPendingWritesForTest(): void {
+    for (const state of this.runs.values()) {
+      state.discardedForTest = true;
+      if (state.writeFlushTimer !== null) {
+        clearTimeout(state.writeFlushTimer);
+        state.writeFlushTimer = null;
+      }
+      state.pendingWrites = [];
+      state.pendingWriteBytes = 0;
+      state.bufferedWriteBytes = 0;
+    }
+    this.runs.clear();
+    this.listeners.clear();
   }
 
   private persistMetadata(state: PersistedRun, terminal = false): void {
@@ -1074,6 +1117,7 @@ export function getAgentOutputStore(): AgentOutputStore {
 }
 
 export function resetAgentOutputStoreForTest(): void {
+  configuredStore?.discardPendingWritesForTest();
   configuredStore = null;
 }
 

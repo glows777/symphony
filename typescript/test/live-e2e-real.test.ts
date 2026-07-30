@@ -28,7 +28,11 @@ import { graphql as linearGraphql } from "../src/symphony/plugins/trackers/linea
 import * as SSH from "../src/symphony/ssh.ts";
 import { type Issue, newIssue } from "../src/symphony/work-item.ts";
 import { setWorkflowFilePath, workflowFilePath } from "../src/symphony/workflow.ts";
-import { writeWorkflowFile } from "./support/test-support.ts";
+import {
+  setupAgentOutputRoot,
+  teardownWorkflow,
+  writeWorkflowFile,
+} from "./support/test-support.ts";
 
 // Skip the whole suite unless explicitly enabled. Evaluated at import time so the
 // default test run never touches Linear/Docker/the network.
@@ -184,6 +188,7 @@ async function runLiveIssueFlow(backend: Backend): Promise<void> {
 
   try {
     setWorkflowFilePath(workflowFile);
+    setupAgentOutputRoot(workflowRoot);
 
     writeWorkflowFile(workflowFile, {
       tracker_api_token: "$LINEAR_API_KEY",
@@ -262,6 +267,7 @@ async function runLiveIssueFlow(backend: Backend): Promise<void> {
     ).toBe("ok");
   } finally {
     workerSetup.cleanup();
+    teardownWorkflow(workflowRoot);
     setWorkflowFilePath(originalWorkflowPath);
     fs.rmSync(testRoot, { recursive: true, force: true });
   }
