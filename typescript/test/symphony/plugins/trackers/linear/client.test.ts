@@ -12,14 +12,19 @@ import {
 import type { TrackerError } from "../../../../../src/symphony/plugins/trackers/types.ts";
 import { ok } from "../../../../../src/symphony/result.ts";
 import { newIssue } from "../../../../../src/symphony/work-item.ts";
-import { setupWorkflow, teardownWorkflow } from "../../../../support/test-support.ts";
+import {
+  setupWorkflow,
+  teardownWorkflow,
+  writeWorkflowFile,
+} from "../../../../support/test-support.ts";
 
 // Translated from the Linear client cases in workspace_and_config_test.exs.
 describe("Linear.Client", () => {
   let root: string;
+  let workflowFile: string;
 
   beforeEach(() => {
-    ({ root } = setupWorkflow());
+    ({ root, workflowFile } = setupWorkflow());
   });
 
   afterEach(() => {
@@ -157,6 +162,155 @@ describe("Linear.Client", () => {
       const logged = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(logged).toContain("Linear GraphQL request failed status=400");
       expect(logged).toContain("BAD_USER_INPUT");
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test("serializes transport failure diagnostics for graphql request errors", async () => {
+    const rawEndpoint = "https://linear-user:linear-pass@api.linear.app/graphql?api_key=secret";
+    writeWorkflowFile(workflowFile, {
+      tracker_endpoint: rawEndpoint,
+    });
+    const errorSpy = spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      const cause = Object.assign(
+        new Error("getaddrinfo ENOTFOUND api.linear.app Authorization=token api_key=secret"),
+        {
+          code: "ENOTFOUND",
+          syscall: "getaddrinfo",
+          hostname: "api.linear.app",
+        },
+      );
+      const error = new TypeError(`fetch failed for ${rawEndpoint} with Authorization=token`, {
+        cause,
+      });
+      const requestFun: RequestFun = () => ({ ok: false, error });
+
+      const result = await graphql("query Viewer { viewer { id } }", {}, { requestFun });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        const errorWithReason = result.error as TrackerError & { reason: unknown };
+        expect(() => JSON.stringify(errorWithReason.reason)).not.toThrow();
+        expect(result.error).toMatchObject({
+          tag: "linear_api_request",
+          code: "transport_failed",
+          message: "Linear GraphQL request failed before receiving a response",
+          reason: {
+            phase: "request",
+            request: {
+              endpoint: "https://api.linear.app/graphql",
+              operationName: "Viewer",
+            },
+            error: {
+              type: "TypeError",
+              message:
+                "fetch failed for https://api.linear.app/graphql with Authorization=<redacted>",
+              cause: {
+                type: "Error",
+                message:
+                  "getaddrinfo ENOTFOUND api.linear.app Authorization=<redacted> api_key=<redacted>",
+                code: "ENOTFOUND",
+                syscall: "getaddrinfo",
+                hostname: "api.linear.app",
+              },
+            },
+          },
+        } as TrackerError & { reason: unknown });
+      }
+
+      const logged = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain(
+        '"message":"fetch failed for https://api.linear.app/graphql with Authorization=<redacted>"',
+      );
+      expect(logged).toContain('"code":"ENOTFOUND"');
+      expect(logged).toContain('"endpoint":"https://api.linear.app/graphql"');
+      expect(logged).not.toContain("linear-user");
+      expect(logged).not.toContain("linear-pass");
+      expect(logged).not.toContain("api_key=secret");
+      expect(logged).not.toContain("Authorization=token");
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test("sanitizes non-error transport failures before logging", async () => {
+    const errorSpy = spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      const circular: Record<string, unknown> = {
+        api_key: "secret",
+        nested: ["Authorization=token", 1n],
+      };
+      circular.self = circular;
+      const requestFun: RequestFun = () => ({
+        ok: false,
+        error: ["Authorization=secret", 1n, circular],
+      });
+
+      const result = await graphql("query Viewer { viewer { id } }", {}, { requestFun });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        const errorWithReason = result.error as TrackerError & { reason: unknown };
+        expect(() => JSON.stringify(errorWithReason.reason)).not.toThrow();
+        expect(result.error).toMatchObject({
+          tag: "linear_api_request",
+          code: "transport_failed",
+          message: "Linear GraphQL request failed before receiving a response",
+          reason: {
+            phase: "request",
+            request: {
+              endpoint: "https://api.linear.app/graphql",
+              operationName: "Viewer",
+            },
+            error: {
+              type: "Array",
+              value: [
+                "Authorization=<redacted>",
+                "1",
+                {
+                  api_key: "<redacted>",
+                  nested: ["Authorization=<redacted>", "1"],
+                  self: { type: "Circular" },
+                },
+              ],
+            },
+          },
+        } as TrackerError & { reason: unknown });
+      }
+
+      const logged = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain('"type":"Array"');
+      expect(logged).toContain('"api_key":"<redacted>"');
+      expect(logged).not.toContain("Authorization=secret");
+      expect(logged).not.toContain("Authorization=token");
+      expect(logged).not.toContain('"api_key":"secret"');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test("returns transport failure instead of throwing for bigint rejections", async () => {
+    const errorSpy = spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      const requestFun: RequestFun = () => ({ ok: false, error: 1n });
+
+      const result = await graphql("query Viewer { viewer { id } }", {}, { requestFun });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        const errorWithReason = result.error as TrackerError & { reason: unknown };
+        expect(() => JSON.stringify(errorWithReason.reason)).not.toThrow();
+        expect(result.error).toMatchObject({
+          tag: "linear_api_request",
+          code: "transport_failed",
+          message: "Linear GraphQL request failed before receiving a response",
+          reason: {
+            error: {
+              type: "bigint",
+              value: "1",
+            },
+          },
+        } as TrackerError & { reason: unknown });
+      }
     } finally {
       errorSpy.mockRestore();
     }
