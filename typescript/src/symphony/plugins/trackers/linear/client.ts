@@ -144,12 +144,13 @@ export async function graphql(
       status: response.value.status,
     });
   }
-  logger.error(`Linear GraphQL request failed: ${inspect(response.error)}`);
+  const reason = transportFailureReason(payload, response.error);
+  logger.error(`Linear GraphQL request failed: ${inspect(reason)}`);
   return err({
     tag: "linear_api_request",
     code: "transport_failed",
     message: "Linear GraphQL request failed before receiving a response",
-    reason: response.error,
+    reason,
   });
 }
 
@@ -305,6 +306,135 @@ function linearErrorContext(payload: JsonObject, response: RequestResponse): str
   const name = payload.operationName;
   const operation = typeof name === "string" && name !== "" ? ` operation=${name}` : "";
   return `${operation} body=${summarizeErrorBody(response.body)}`;
+}
+
+function transportFailureReason(payload: JsonObject, error: unknown): JsonObject {
+  return {
+    phase: "request",
+    request: {
+      endpoint: safeLinearEndpoint(),
+      operationName: operationNameForContext(payload),
+    },
+    error: diagnosticError(error),
+  };
+}
+
+function operationNameForContext(payload: JsonObject): string | null {
+  const explicit = payload.operationName;
+  if (typeof explicit === "string" && explicit.trim() !== "") {
+    return explicit.trim();
+  }
+  const query = payload.query;
+  if (typeof query !== "string") {
+    return null;
+  }
+  const match = /\b(?:query|mutation)\s+([_A-Za-z][_0-9A-Za-z]*)/.exec(query);
+  return match?.[1] ?? null;
+}
+
+function safeLinearEndpoint(): string {
+  return safeEndpoint(linearSettings(settingsBang()).endpoint);
+}
+
+function safeEndpoint(endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return "<invalid endpoint>";
+  }
+}
+
+function diagnosticError(error: unknown, depth = 0): unknown {
+  if (depth > 3) {
+    return { type: "Truncated" };
+  }
+  if (error instanceof Error) {
+    const diagnostic: JsonObject = {
+      type: error.name || error.constructor.name || "Error",
+    };
+    if (error.message !== "") {
+      diagnostic.message = redactDiagnosticString(error.message);
+    }
+    addKnownErrorFields(diagnostic, error);
+    const cause = (error as { cause?: unknown }).cause;
+    if (cause !== undefined) {
+      diagnostic.cause = diagnosticError(cause, depth + 1);
+    }
+    return diagnostic;
+  }
+  if (isObject(error)) {
+    return sanitizeDiagnosticObject(error, depth);
+  }
+  return {
+    type: typeof error,
+    value: typeof error === "string" ? redactDiagnosticString(error) : error,
+  };
+}
+
+function addKnownErrorFields(diagnostic: JsonObject, error: Error): void {
+  const fields = error as unknown as Record<string, unknown>;
+  for (const key of ["code", "errno", "syscall", "hostname", "address", "port"]) {
+    const value = fields[key];
+    if (isDiagnosticScalar(value)) {
+      diagnostic[key] = diagnosticScalar(value);
+    }
+  }
+}
+
+function sanitizeDiagnosticObject(value: JsonObject, depth: number): JsonObject {
+  const sanitized: JsonObject = {};
+  for (const [key, field] of Object.entries(value)) {
+    sanitized[key] = sanitizeDiagnosticField(key, field, depth + 1);
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : { type: "Object" };
+}
+
+function sanitizeDiagnosticField(key: string, value: unknown, depth: number): unknown {
+  if (isSensitiveKey(key)) {
+    return "<redacted>";
+  }
+  if (isDiagnosticScalar(value) || value === null) {
+    return isDiagnosticScalar(value) ? diagnosticScalar(value) : value;
+  }
+  if (value instanceof Error) {
+    return diagnosticError(value, depth);
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 10).map((item) => sanitizeDiagnosticField(key, item, depth + 1));
+  }
+  if (isObject(value)) {
+    return depth > 3 ? { type: "Truncated" } : sanitizeDiagnosticObject(value, depth);
+  }
+  return String(value);
+}
+
+function isDiagnosticScalar(value: unknown): value is string | number | boolean {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+}
+
+function diagnosticScalar(value: string | number | boolean): string | number | boolean {
+  return typeof value === "string" ? redactDiagnosticString(value) : value;
+}
+
+function redactDiagnosticString(value: string): string {
+  const linear = linearSettings(settingsBang());
+  let redacted = value;
+  if (linear.apiKey !== null && linear.apiKey !== "") {
+    redacted = redacted.split(linear.apiKey).join("<redacted>");
+  }
+  const safe = safeEndpoint(linear.endpoint);
+  if (linear.endpoint !== safe) {
+    redacted = redacted.split(linear.endpoint).join(safe);
+  }
+  return redacted.replace(
+    /\b(authorization|api[_-]?key|token|secret|password|credential|cookie)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}]+)/gi,
+    "$1$2<redacted>",
+  );
+}
+
+function isSensitiveKey(key: string): boolean {
+  return /authorization|api[_-]?key|token|secret|password|credential|cookie/i.test(key);
 }
 
 function summarizeErrorBody(body: unknown): string {

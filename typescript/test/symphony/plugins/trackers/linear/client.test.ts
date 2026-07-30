@@ -12,14 +12,19 @@ import {
 import type { TrackerError } from "../../../../../src/symphony/plugins/trackers/types.ts";
 import { ok } from "../../../../../src/symphony/result.ts";
 import { newIssue } from "../../../../../src/symphony/work-item.ts";
-import { setupWorkflow, teardownWorkflow } from "../../../../support/test-support.ts";
+import {
+  setupWorkflow,
+  teardownWorkflow,
+  writeWorkflowFile,
+} from "../../../../support/test-support.ts";
 
 // Translated from the Linear client cases in workspace_and_config_test.exs.
 describe("Linear.Client", () => {
   let root: string;
+  let workflowFile: string;
 
   beforeEach(() => {
-    ({ root } = setupWorkflow());
+    ({ root, workflowFile } = setupWorkflow());
   });
 
   afterEach(() => {
@@ -157,6 +162,72 @@ describe("Linear.Client", () => {
       const logged = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");
       expect(logged).toContain("Linear GraphQL request failed status=400");
       expect(logged).toContain("BAD_USER_INPUT");
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test("serializes transport failure diagnostics for graphql request errors", async () => {
+    const rawEndpoint = "https://linear-user:linear-pass@api.linear.app/graphql?api_key=secret";
+    writeWorkflowFile(workflowFile, {
+      tracker_endpoint: rawEndpoint,
+    });
+    const errorSpy = spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      const cause = Object.assign(
+        new Error("getaddrinfo ENOTFOUND api.linear.app Authorization=token api_key=secret"),
+        {
+          code: "ENOTFOUND",
+          syscall: "getaddrinfo",
+          hostname: "api.linear.app",
+        },
+      );
+      const error = new TypeError(`fetch failed for ${rawEndpoint} with Authorization=token`, {
+        cause,
+      });
+      const requestFun: RequestFun = () => ({ ok: false, error });
+
+      const result = await graphql("query Viewer { viewer { id } }", {}, { requestFun });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toMatchObject({
+          tag: "linear_api_request",
+          code: "transport_failed",
+          message: "Linear GraphQL request failed before receiving a response",
+          reason: {
+            phase: "request",
+            request: {
+              endpoint: "https://api.linear.app/graphql",
+              operationName: "Viewer",
+            },
+            error: {
+              type: "TypeError",
+              message:
+                "fetch failed for https://api.linear.app/graphql with Authorization=<redacted>",
+              cause: {
+                type: "Error",
+                message:
+                  "getaddrinfo ENOTFOUND api.linear.app Authorization=<redacted> api_key=<redacted>",
+                code: "ENOTFOUND",
+                syscall: "getaddrinfo",
+                hostname: "api.linear.app",
+              },
+            },
+          },
+        } as TrackerError & { reason: unknown });
+      }
+
+      const logged = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain(
+        '"message":"fetch failed for https://api.linear.app/graphql with Authorization=<redacted>"',
+      );
+      expect(logged).toContain('"code":"ENOTFOUND"');
+      expect(logged).toContain('"endpoint":"https://api.linear.app/graphql"');
+      expect(logged).not.toContain("linear-user");
+      expect(logged).not.toContain("linear-pass");
+      expect(logged).not.toContain("api_key=secret");
+      expect(logged).not.toContain("Authorization=token");
+      expect(logged).not.toContain("token");
     } finally {
       errorSpy.mockRestore();
     }
