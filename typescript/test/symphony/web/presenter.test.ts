@@ -51,6 +51,26 @@ function staticSnapshot(): Snapshot {
         issue_url: "https://example.org/issues/MT-BLOCKED",
         state: "In Progress",
         error: "codex turn requires operator input",
+        blocked_reason: "codex turn requires operator input",
+        disposition: "blocked",
+        operator_prompt: "Allow GitHub to run tool update_pull_request?",
+        raw_blocker_payload: {
+          method: "mcpServer/elicitation/request",
+          params: { message: "Allow GitHub to run tool update_pull_request?" },
+        },
+        manual_recovery: {
+          action: "provide_required_input_or_approval_then_rerun",
+          reason: "codex turn requires operator input",
+          prompt: "Allow GitHub to run tool update_pull_request?",
+          payload: {
+            method: "mcpServer/elicitation/request",
+            params: { message: "Allow GitHub to run tool update_pull_request?" },
+          },
+          session_id: "thread-blocked",
+          automatic_retry: false,
+          resume_supported: false,
+          rerun_supported: true,
+        },
         worker_host: "dm-dev2",
         workspace_path: "/workspaces/MT-BLOCKED",
         session_id: "thread-blocked",
@@ -139,6 +159,15 @@ describe("Presenter", () => {
       issue_url: "https://example.org/issues/MT-BLOCKED",
       state: "In Progress",
       error: "codex turn requires operator input",
+      blocked_reason: "codex turn requires operator input",
+      disposition: "blocked",
+      operator_prompt: "Allow GitHub to run tool update_pull_request?",
+      manual_recovery: {
+        rerun_endpoint: "/api/v1/MT-BLOCKED/rerun",
+        automatic_retry: false,
+        resume_supported: false,
+        rerun_supported: true,
+      },
       worker_host: "dm-dev2",
       workspace_path: "/workspaces/MT-BLOCKED",
       session_id: "thread-blocked",
@@ -214,8 +243,43 @@ describe("Presenter", () => {
         session_id: "thread-blocked",
         state: "In Progress",
         error: "codex turn requires operator input",
+        manual_recovery: {
+          rerun_endpoint: "/api/v1/MT-BLOCKED/rerun",
+          automatic_retry: false,
+        },
       });
     }
+  });
+
+  test("rerun blocked payload projects queued and error results", async () => {
+    const queuedProvider = {
+      ...provider(staticSnapshot(), refreshReply),
+      rerunBlockedIssue: () =>
+        Promise.resolve({
+          queued: true as const,
+          issue_id: "issue-blocked",
+          issue_identifier: "MT-BLOCKED",
+          requested_at: new Date(),
+          operation: "rerun_blocked" as const,
+        }),
+    };
+    const queued = await Presenter.rerunBlockedPayload("MT-BLOCKED", queuedProvider);
+    expect(queued.ok).toBe(true);
+    if (queued.ok) {
+      expect(queued.status).toBe(202);
+      expect(queued.value).toMatchObject({
+        queued: true,
+        issue_identifier: "MT-BLOCKED",
+        operation: "rerun_blocked",
+      });
+      expect(typeof queued.value.requested_at).toBe("string");
+    }
+
+    const unavailable = await Presenter.rerunBlockedPayload(
+      "MT-BLOCKED",
+      provider(staticSnapshot(), refreshReply),
+    );
+    expect(unavailable).toEqual({ ok: false, status: 503, error: "unavailable" });
   });
 
   test("issue payload reports not found for unknown identifiers", async () => {

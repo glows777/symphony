@@ -126,6 +126,10 @@ the orchestrator/dashboard, plus a passthrough of the raw backend payload:
   turn with `turn_completed` (ok) or one of `turn_failed` / `turn_cancelled` /
   `turn_input_required` / `approval_required` (err; the err value carries the
   same-named `tag`).
+- `turn_input_required` / `approval_required` are blocking outcomes, not
+  retryable failures. A later generic `turn_ended_with_error` may be emitted for
+  display, but it MUST NOT change the semantic blocker tag carried in the err or
+  preceding event.
 - Approval / user-input requests MUST NOT hang indefinitely: a backend either
   resolves them by policy (emitting `approval_auto_approved` /
   `tool_input_auto_answered`) or emits `approval_required` /
@@ -207,13 +211,31 @@ outcome as MCP `content` blocks with `isError = !success`.
 
 Backend-originated errors are tagged plain objects (`{ tag, ... }`), consistent
 with the repository convention. The runner logs and fails the run on any err;
-it does not switch on backend-specific tags. Turn-terminating errors carry the
-tag matching their event (`turn_failed`, `turn_cancelled`,
-`turn_input_required`, `approval_required`). Registry resolution failures use
-the `AgentBackendError` shape (`{ tag, message, detail? }`) with the
-`missing_agent_backend` / `unsupported_agent_backend` tags. The runner adds
-`{ tag: "remote_workers_unsupported", backend, workerHost }` for the capability
-guard. SPEC §10.6's normalized categories (`codex_not_found`,
+the orchestrator, not the runner, decides recovery disposition.
+Turn-terminating errors carry the tag matching their event (`turn_failed`,
+`turn_cancelled`, `turn_input_required`, `approval_required`). Registry
+resolution failures use the `AgentBackendError` shape (`{ tag, message,
+detail? }`) with the `missing_agent_backend` / `unsupported_agent_backend` tags.
+The runner adds `{ tag: "remote_workers_unsupported", backend, workerHost }`
+for the capability guard.
+
+Recovery classification:
+
+- `blocked`: `turn_input_required`, `approval_required`, MCP elicitation,
+  cancellation, config/permission errors, unsupported tools, and validation
+  errors. The issue enters the blocked snapshot with original payload, prompt
+  text when available, session id, and manual rerun metadata.
+- `retryable`: explicit transient signals such as `turn_timeout`,
+  `response_timeout`, `port_exit`, network disconnects, and HTTP 429/5xx.
+  These use exponential backoff and are capped by `agent.max_retry_attempts`.
+- `terminal`: retryable failures after the max retry count. The final reason is
+  visible in the blocked snapshot and no retry timer remains.
+
+Manual rerun metadata is only an operator affordance. Dashboard clients must ask
+for explicit confirmation before posting the rerun action, and they must not
+interpret it as external-tool approval or true thread resume.
+
+SPEC §10.6's normalized categories (`codex_not_found`,
 `invalid_workspace_cwd`, `response_timeout`, `turn_timeout`, `port_exit`,
 `response_error`, ...) are RECOMMENDED tag names for the underlying failures.
 
