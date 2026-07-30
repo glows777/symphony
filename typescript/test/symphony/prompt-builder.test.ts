@@ -158,7 +158,11 @@ describe("PromptBuilder.build_prompt", () => {
     expect(prompt).toContain("Read the Linear issue description");
     expect(prompt).toContain("Inspect the local code diff");
     expect(prompt).toContain("Run focused tests or browser checks");
-    expect(prompt).toContain("move the issue to `Rework`");
+    expect(prompt).toContain("acceptance criteria");
+    expect(prompt).toContain("actionable defect");
+    expect(prompt).toContain("Linear issue");
+    expect(prompt).toContain("review is incomplete until the required Linear comment");
+    expect(prompt).toContain("update the issue state to `Rework`");
     expect(prompt).toContain("No GitHub review context is injected");
     expect(prompt).not.toContain("Symphony Review Handoff");
   });

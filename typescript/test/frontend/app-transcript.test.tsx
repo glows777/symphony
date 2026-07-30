@@ -98,8 +98,8 @@ describe("frontend transcript merge", () => {
         run_id: "run-2",
         session_id: "session-2",
         history: [
-          runMetadata({ run_id: "run-2", session_id: "session-2" }),
-          runMetadata({ run_id: "run-1", session_id: "session-1" }),
+          runMetadata({ run_id: "run-2", session_id: "session-2", run_kind: "review" }),
+          runMetadata({ run_id: "run-1", session_id: "session-1", run_kind: "normal" }),
         ],
       },
       {
@@ -115,6 +115,7 @@ describe("frontend transcript merge", () => {
     expect(groups).toHaveLength(2);
     expect(groups[0]?.identifier).toBe("SYM-5");
     expect(groups[0]?.sessions.map((session) => session.runId)).toEqual(["run-2", "run-1"]);
+    expect(groups[0]?.sessions.map((session) => session.runKind)).toEqual(["review", "normal"]);
     expect(groups[1]?.sessions[0]?.sessionId).toBe("blocked-session");
   });
 

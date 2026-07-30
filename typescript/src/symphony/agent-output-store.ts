@@ -91,6 +91,7 @@ export type AgentOutputRunMetadata = {
   issue_identifier: string;
   title: string | null;
   display_name: string | null;
+  run_kind?: "normal" | "review";
   backend: string;
   worker_host: string;
   run_id: string;
@@ -128,6 +129,7 @@ export type StartAgentOutputRun = {
   issueIdentifier: string;
   title?: string | null;
   displayName?: string | null;
+  runKind?: "normal" | "review";
   backend: string;
   workerHost: string | null;
   runId?: string;
@@ -229,6 +231,7 @@ export class AgentOutputStore {
       issue_identifier: issueIdentifier,
       title: context.title ?? null,
       display_name: sessionDisplayName(context.displayName ?? context.title),
+      run_kind: context.runKind ?? "normal",
       backend: context.backend,
       worker_host: context.workerHost ?? "local",
       run_id: runId,

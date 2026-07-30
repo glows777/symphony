@@ -140,6 +140,7 @@ async function runOnWorkerHost(
     issueIdentifier: issue.identifier ?? "unknown-issue",
     title: issue.title,
     displayName: issue.title ?? issue.description,
+    runKind: opts.review === true ? "review" : "normal",
     backend: backend.id,
     workerHost,
   });
@@ -242,7 +243,7 @@ async function runAgentTurns(
   backend: AgentBackendPlugin,
   output: AgentOutputRun,
 ): Promise<Result<undefined, unknown>> {
-  const maxTurns = opts.review === true ? 1 : (opts.maxTurns ?? settingsBang().agent.maxTurns);
+  const maxTurns = opts.maxTurns ?? settingsBang().agent.maxTurns;
   const issueStateFetcher: IssueStateFetcher =
     opts.issueStateFetcher ?? ((ids) => Tracker.fetchIssueStatesByIds(ids));
   const toolProvider = trackerToolProvider();
@@ -602,6 +603,17 @@ function buildContinuationTurnPrompt(
 ): string {
   if (turnNumber === 1) {
     return buildFullPrompt(issue, opts);
+  }
+  if (opts.review === true) {
+    return `Review continuation guidance:
+
+- Continue reviewing the current issue and linked PR; do not modify the workspace.
+- This is review turn #${turnNumber} of ${maxTurns} for the current agent run.
+- Re-check the acceptance criteria and any findings from earlier review turns.
+- If the task is incomplete or has an actionable defect, write the concrete findings to the Linear issue and move it to \`Rework\` before ending the review.
+- If no rework is needed, write the review conclusion to the Linear issue and leave the issue in \`Human Review\`.
+- Do not end with only a chat summary; complete the required tracker write-back first.
+`;
   }
   return `Continuation guidance:
 

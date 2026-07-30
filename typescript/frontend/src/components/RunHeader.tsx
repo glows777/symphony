@@ -1,4 +1,4 @@
-import type { IssueDetail, RunItem, RunMetadata } from "../lib/api";
+import type { IssueDetail, RunItem, RunKind, RunMetadata } from "../lib/api";
 
 type RunHeaderProps = {
   identifier: string | null;
@@ -22,6 +22,9 @@ export function RunHeader({
     ? null
     : (detail?.running ?? detail?.retry ?? detail?.blocked ?? null);
   const backend = run?.backend ?? detail?.logs?.latest_run?.backend ?? "agent";
+  const runKind = normalizeRunKind(
+    run?.run_kind ?? snapshotRun?.run_kind ?? detail?.logs?.latest_run?.run_kind,
+  );
   const status = run?.status ?? detail?.status ?? "waiting";
   const title = detail?.title ?? run?.title ?? identifier ?? "Select a run";
   const workspace =
@@ -67,6 +70,9 @@ export function RunHeader({
             {identifier ?? "Choose a run from the sidebar"}
             <span className="subtitle-divider">·</span>
             <span className="backend-badge">{backendLabel(backend)}</span>
+            <span className={`run-kind-badge run-kind-badge-${runKind}`}>
+              {runKindLabel(runKind)}
+            </span>
           </p>
         </div>
         {canRerun ? (
@@ -144,6 +150,14 @@ function Fact({
 
 function backendLabel(backend: string): string {
   return backend === "claude_code" ? "Claude Code" : backend === "codex" ? "Codex" : backend;
+}
+
+function normalizeRunKind(value: RunKind | null | undefined): RunKind {
+  return value === "review" ? "review" : "normal";
+}
+
+function runKindLabel(value: RunKind): string {
+  return value === "review" ? "Review agent" : "Normal run";
 }
 
 function statusTone(status: string): string {

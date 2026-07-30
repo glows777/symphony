@@ -1,10 +1,12 @@
 export type Backend = "codex" | "claude_code" | string;
+export type RunKind = "normal" | "review";
 
 export type RunItem = {
   issue_id?: string | null;
   issue_identifier: string;
   title?: string | null;
   display_name?: string | null;
+  run_kind?: RunKind;
   state?: string | null;
   status?: string | null;
   backend?: Backend | null;
@@ -111,6 +113,7 @@ export type RunMetadata = {
   issue_identifier: string;
   title: string | null;
   display_name?: string | null;
+  run_kind?: RunKind;
   backend: Backend;
   worker_host: string;
   run_id: string;

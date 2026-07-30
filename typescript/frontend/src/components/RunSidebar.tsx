@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { RunItem, RunMetadata } from "../lib/api";
+import type { RunItem, RunKind, RunMetadata } from "../lib/api";
 
 type RunSidebarProps = {
   running: RunItem[];
@@ -16,6 +16,7 @@ type SessionEntry = {
   runId: string | null;
   sessionId: string | null;
   displayName: string | null;
+  runKind: RunKind;
   status: string;
   backend: string | null | undefined;
   startedAt: string | null | undefined;
@@ -188,13 +189,16 @@ function SessionButton({
     >
       <span className={`status-dot status-dot-${statusTone(session.status)}`} aria-hidden="true" />
       <span className="session-button-copy">
-        <span className="session-button-label">{sessionLabel(session, index)}</span>
+        <span className="session-button-label">{sessionName(session, index)}</span>
         <span className="session-button-id">
           {compactId(session.sessionId ?? session.runId ?? "No session id")}
         </span>
       </span>
       <span className="session-button-meta">
         <span className="backend-chip">{backendLabel(session.backend)}</span>
+        <span className={`run-kind-chip run-kind-chip-${session.runKind}`}>
+          {runKindLabel(session.runKind)}
+        </span>
         <span>{relativeTime(session.updatedAt ?? session.endedAt ?? session.startedAt)}</span>
         {working ? (
           <span className="session-working-indicator" role="img" aria-label="Working" />
@@ -241,6 +245,7 @@ function sessionFromMetadata(run: RunMetadata): SessionEntry {
     runId: run.run_id,
     sessionId: run.session_id,
     displayName: run.display_name ?? null,
+    runKind: normalizeRunKind(run.run_kind),
     status: run.status,
     backend: run.backend,
     startedAt: run.started_at,
@@ -256,6 +261,7 @@ function sessionFromItem(item: RunItem): SessionEntry {
     runId: item.run_id ?? null,
     sessionId: item.session_id ?? null,
     displayName: item.display_name ?? null,
+    runKind: normalizeRunKind(item.run_kind),
     status: item.status ?? "completed",
     backend: item.backend,
     startedAt: item.started_at,
@@ -300,7 +306,21 @@ function sessionKey(runId: string | null, sessionId: string | null, identifier: 
 }
 
 function sessionLabel(session: SessionEntry, index: number): string {
+  const name =
+    session.displayName ?? (session.current ? "Current session" : `Session ${index + 1}`);
+  return `${name} · ${runKindLabel(session.runKind)}`;
+}
+
+function sessionName(session: SessionEntry, index: number): string {
   return session.displayName ?? (session.current ? "Current session" : `Session ${index + 1}`);
+}
+
+function normalizeRunKind(value: RunKind | null | undefined): RunKind {
+  return value === "review" ? "review" : "normal";
+}
+
+function runKindLabel(value: RunKind): string {
+  return value === "review" ? "Review" : "Normal";
 }
 
 function statusPriority(status: string | null | undefined): number {

@@ -492,6 +492,36 @@ summary:focus-visible {
   letter-spacing: 0.03em;
 }
 
+.run-kind-chip,
+.run-kind-badge {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 1.25;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.run-kind-chip-normal,
+.run-kind-badge-normal {
+  color: var(--ink-soft);
+  background: var(--surface-quiet);
+}
+
+.run-kind-chip-review,
+.run-kind-badge-review {
+  color: var(--green);
+  background: var(--green-wash);
+  border-color: rgba(81, 118, 96, 0.28);
+}
+
 .backend-chip {
   overflow: hidden;
   max-width: 80px;
@@ -632,6 +662,10 @@ summary:focus-visible {
   font-family: var(--font-code);
   font-size: var(--font-size-code);
   text-transform: uppercase;
+}
+
+.run-kind-badge {
+  flex: 0 0 auto;
 }
 
 .read-only-stamp {

@@ -319,6 +319,40 @@ describe("Orchestrator decisions/reconcile seams", () => {
     expect(task.stopped).toBe(true);
   });
 
+  test("review run entering Rework is released for the next normal dispatch", () => {
+    const issueId = "issue-review-to-rework";
+    const task = stoppableTask();
+    writeWorkflowFile(workflowFilePath(), {
+      tracker_active_states: ["Todo", "In Progress", "Merging", "Rework"],
+    });
+    const state: State = newState({
+      running: {
+        [issueId]: {
+          task,
+          ref: null,
+          identifier: "MT-REWORK-REVIEW",
+          issue: newIssue({ id: issueId, identifier: "MT-REWORK-REVIEW", state: "Human Review" }),
+          run_kind: "review",
+          started_at: new Date(),
+        },
+      },
+      claimed: new Set([issueId]),
+    });
+    const issue = newIssue({
+      id: issueId,
+      identifier: "MT-REWORK-REVIEW",
+      title: "Fix review findings",
+      state: "Rework",
+      labels: [],
+    });
+
+    const updated = reconcileIssueStatesForTest([issue], state);
+    expect(issueId in updated.running).toBe(false);
+    expect(updated.claimed.has(issueId)).toBe(false);
+    expect(task.stopped).toBe(true);
+    expect(shouldDispatchIssueForTest(issue, updated)).toBe(true);
+  });
+
   test("symphony-review label alone does not enqueue review", () => {
     writeWorkflowFile(workflowFilePath(), { tracker_required_labels: ["symphony"] });
     const issue = newIssue({

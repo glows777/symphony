@@ -40,6 +40,7 @@ describe("AgentOutputStore", () => {
       issueIdentifier: "SYM-NAME",
       title: "Issue title",
       displayName: "  检查 API\n 和   admin 同步状态  ",
+      runKind: "review",
       backend: "codex",
       workerHost: null,
       runId: "name-run",
@@ -48,8 +49,10 @@ describe("AgentOutputStore", () => {
     await run.finish("completed");
 
     expect(store.latestRun("SYM-NAME")?.display_name).toBe("检查 API");
+    expect(store.latestRun("SYM-NAME")?.run_kind).toBe("review");
     const restarted = new AgentOutputStore({ root, mode: "raw" });
     expect(restarted.latestRun("SYM-NAME")?.display_name).toBe("检查 API");
+    expect(restarted.latestRun("SYM-NAME")?.run_kind).toBe("review");
   });
 
   test("writes independently parseable raw JSONL with cursor reads and stream metadata", async () => {

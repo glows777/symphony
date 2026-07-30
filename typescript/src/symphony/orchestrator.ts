@@ -1054,6 +1054,7 @@ export type SnapshotRunning = {
   issue_id: string;
   identifier: string | null | undefined;
   title?: string | null;
+  run_kind?: RunKind;
   backend?: string | null;
   issue_url: string | null | undefined;
   state: string | null | undefined;
@@ -2501,6 +2502,7 @@ export class Orchestrator {
       issue_id: issueId,
       identifier: entry.identifier,
       title: isIssue(entry.issue) ? entry.issue.title : null,
+      run_kind: entry.run_kind ?? "normal",
       backend: typeof entry.backend === "string" ? entry.backend : null,
       issue_url: isIssue(entry.issue) ? entry.issue.url : null,
       state: isIssue(entry.issue) ? entry.issue.state : null,

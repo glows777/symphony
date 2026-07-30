@@ -187,7 +187,7 @@ describe("AgentRunner with a synthetic backend", () => {
     expect(backend.turns[2]?.prompt).toContain("continuation turn #3 of 3");
   });
 
-  test("review runs use the ordinary runner with a review prompt and one turn", async () => {
+  test("review runs use the ordinary runner turn budget and parking-state completion", async () => {
     const backend = fakeBackend({ multiTurn: true });
     putEnv("agent_backend_overrides", { codex: backend.plugin });
     writeWorkflowFile(workflowFilePath(), {
@@ -202,9 +202,9 @@ describe("AgentRunner with a synthetic backend", () => {
     await run(issue, null, { maxTurns: 5, issueStateFetcher: staysActive, review: true });
 
     expect(backend.turns.map((turn) => turn.turnNumber)).toEqual([1]);
-    expect(backend.turns.map((turn) => turn.maxTurns)).toEqual([1]);
+    expect(backend.turns.map((turn) => turn.maxTurns)).toEqual([5]);
     expect(backend.turns[0]?.prompt).toContain("## Symphony Review Agent");
-    expect(backend.turns[0]?.prompt).toContain("move the issue to `Rework`");
+    expect(backend.turns[0]?.prompt).toContain("update the issue state to `Rework`");
     expect(backend.turns[0]?.prompt).not.toContain("Symphony Review Handoff");
   });
 

@@ -295,6 +295,7 @@ function runningEntryPayload(entry: SnapshotRunning): Json {
     issue_identifier: entry.identifier,
     title: entry.title ?? null,
     display_name: entry.title ?? null,
+    run_kind: entry.run_kind ?? "normal",
     backend: entry.backend ?? settingsBang().agent.backend,
     status: "running",
     issue_url: entry.issue_url ?? null,
@@ -319,6 +320,7 @@ function retryEntryPayload(entry: LooseEntry): Json {
   return {
     issue_id: entry.issue_id,
     issue_identifier: entry.identifier,
+    run_kind: str(entry, "run_kind") ?? "normal",
     status: "retrying",
     issue_url: entry.issue_url ?? null,
     attempt: entry.attempt,
@@ -335,6 +337,7 @@ function blockedEntryPayload(entry: LooseEntry): Json {
     issue_identifier: entry.identifier,
     title: entry.title ?? null,
     display_name: entry.title ?? null,
+    run_kind: str(entry, "run_kind") ?? "normal",
     backend: entry.backend ?? settingsBang().agent.backend,
     status: "blocked",
     issue_url: entry.issue_url ?? null,
@@ -359,6 +362,7 @@ function blockedEntryPayload(entry: LooseEntry): Json {
 function runningIssuePayload(running: SnapshotRunning): Json {
   return {
     title: running.title ?? null,
+    run_kind: running.run_kind ?? "normal",
     backend: running.backend ?? settingsBang().agent.backend,
     worker_host: running.worker_host ?? null,
     workspace_path: running.workspace_path ?? null,
@@ -382,6 +386,7 @@ function retryIssuePayload(retry: LooseEntry): Json {
     attempt: retry.attempt,
     due_at: dueAtIso8601(retry.due_in_ms),
     error: retry.error,
+    run_kind: str(retry, "run_kind") ?? "normal",
     worker_host: retry.worker_host ?? null,
     workspace_path: retry.workspace_path ?? null,
   };
@@ -390,6 +395,7 @@ function retryIssuePayload(retry: LooseEntry): Json {
 function blockedIssuePayload(blocked: LooseEntry): Json {
   return {
     title: blocked.title ?? null,
+    run_kind: str(blocked, "run_kind") ?? "normal",
     backend: blocked.backend ?? settingsBang().agent.backend,
     worker_host: blocked.worker_host ?? null,
     workspace_path: blocked.workspace_path ?? null,
@@ -477,6 +483,7 @@ function completedEntryPayload(run: AgentOutputRunMetadata): Json {
     issue_identifier: run.issue_identifier,
     title: run.title,
     display_name: run.display_name ?? run.title,
+    run_kind: run.run_kind ?? "normal",
     backend: run.backend,
     worker_host: run.worker_host,
     run_id: run.run_id,

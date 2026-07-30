@@ -17,6 +17,7 @@ function staticSnapshot(): Snapshot {
       {
         issue_id: "issue-http",
         identifier: "MT-HTTP",
+        run_kind: "review",
         issue_url: "https://example.org/issues/MT-HTTP",
         state: "In Progress",
         worker_host: null,
@@ -38,6 +39,7 @@ function staticSnapshot(): Snapshot {
       {
         issue_id: "issue-retry",
         identifier: "MT-RETRY",
+        run_kind: "normal",
         issue_url: "https://example.org/issues/MT-RETRY",
         attempt: 2,
         due_in_ms: 2_000,
@@ -48,6 +50,7 @@ function staticSnapshot(): Snapshot {
       {
         issue_id: "issue-blocked",
         identifier: "MT-BLOCKED",
+        run_kind: "review",
         issue_url: "https://example.org/issues/MT-BLOCKED",
         state: "In Progress",
         error: "codex turn requires operator input",
@@ -127,6 +130,7 @@ describe("Presenter", () => {
     expect(running).toMatchObject({
       issue_id: "issue-http",
       issue_identifier: "MT-HTTP",
+      run_kind: "review",
       issue_url: "https://example.org/issues/MT-HTTP",
       state: "In Progress",
       worker_host: null,
@@ -209,6 +213,7 @@ describe("Presenter", () => {
       tracked: {},
     });
     expect(value.running).toMatchObject({
+      run_kind: "review",
       session_id: "thread-http",
       turn_count: 7,
       state: "In Progress",
