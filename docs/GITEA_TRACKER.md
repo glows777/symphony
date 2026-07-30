@@ -26,6 +26,7 @@ tracker:
     Rework: symphony/state-rework
     Done: symphony/state-done
   # assignee: automation
+  # assignee: me  # resolve the authenticated Gitea token user
 ```
 
 Required fields are `endpoint`, `token`, `owner`, `repo`, and `state_labels`.
@@ -39,7 +40,9 @@ Required fields are `endpoint`, `token`, `owner`, `repo`, and `state_labels`.
   `repository`, and `repository_name` are accepted aliases for deployments that
   already use those names.
 - `assignee`, when present, matches a Gitea assignee login or numeric user ID.
-  Without it, the plugin accepts both assigned and unassigned issues.
+  The special value `me` resolves through `GET /api/v1/user` and matches the
+  account represented by the configured token. Without `assignee`, the plugin
+  accepts both assigned and unassigned issues.
 - `required_labels` is matched case-insensitively and requires every listed
   label. The plugin also keeps the core's normal routing check in place.
 - `state_labels` maps Symphony workflow state names to dedicated Gitea labels.

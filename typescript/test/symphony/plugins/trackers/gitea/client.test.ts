@@ -167,6 +167,39 @@ describe("Gitea.Client", () => {
     expect(calls[0]?.headers.Authorization).toBe("token test-token");
   });
 
+  test("resolves assignee me from the authenticated Gitea user", async () => {
+    writeGiteaWorkflowFile(workflowFilePath(), { assignee: "me" });
+    const calls: Call[] = [];
+    const result = await fetchCandidateIssues({
+      requestFun: fakeTransport(calls, [
+        {
+          status: 200,
+          body: { id: 7, login: "runner", username: "runner" },
+        },
+        {
+          status: 200,
+          body: [
+            rawIssue(9),
+            rawIssue(10, { assignee: null, assignees: [] }),
+            rawIssue(11, {
+              assignee: { id: 8, login: "other" },
+              assignees: [{ id: 8, login: "other" }],
+            }),
+          ],
+        },
+      ]),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: [expect.objectContaining({ identifier: "acme/symphony#9" })],
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://gitea.test/api/v1/user",
+      "https://gitea.test/api/v1/repos/acme/symphony/issues?state=open&page=1&limit=50",
+    ]);
+  });
+
   test("filters pull requests when the Gitea instance rejects type=issues", async () => {
     writeGiteaWorkflowFile(workflowFilePath(), {
       required_labels: ["symphony", "backend"],
