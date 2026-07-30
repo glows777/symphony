@@ -17,6 +17,7 @@ const MAX_PAGINATION_PAGES = 100;
 const MAX_PAGINATION_ITEMS = 5_000;
 const MAX_PAGINATION_DURATION_MS = 60_000;
 const MAX_ERROR_BODY_LOG_BYTES = 1_000;
+const MAX_STATE_LABEL_RECONCILE_ATTEMPTS = 3;
 const PATH_VALIDATION_ORIGIN = "https://symphony.invalid";
 
 const OPEN_STATE_ALIASES = new Set(["open", "active", "todo", "in progress"]);
@@ -70,6 +71,18 @@ export type GiteaClientModule = {
 type AuthContext = { instanceUrl: string; token: string };
 type RepositoryContext = AuthContext & { owner: string; repo: string };
 type RawResponse = { status: number; body: unknown; headers?: ResponseHeaders; path: string };
+type LabelRef = { id: number | null; name: string; normalizedName: string };
+type StateLabelMapping = {
+  stateName: string;
+  normalizedStateName: string;
+  labelName: string;
+  normalizedLabelName: string;
+};
+type StateLabelPlan = {
+  mappings: StateLabelMapping[];
+  target: StateLabelMapping | null;
+  labelIds: Map<string, number>;
+};
 
 // ---- required tracker reads -------------------------------------------------
 
@@ -99,10 +112,13 @@ export async function fetchCandidateIssues(
   if (!result.ok) {
     return err(result.error);
   }
+  const filterByState = shouldFilterByRequestedStates(settings.tracker.activeStates, settings);
   return ok(
     result.value.filter(
       (issue) =>
-        issue.assignedToWorker && hasRequiredLabels(issue.labels, settings.tracker.requiredLabels),
+        (!filterByState || stateNamesInclude(settings.tracker.activeStates, issue.state)) &&
+        issue.assignedToWorker &&
+        hasRequiredLabels(issue.labels, settings.tracker.requiredLabels),
     ),
   );
 }
@@ -126,7 +142,14 @@ export async function fetchIssuesByStates(
   if (nativeStates.length === 0) {
     return ok([]);
   }
-  return fetchIssuesForNativeStates(repository.value, nativeStates, settings, opts);
+  const result = await fetchIssuesForNativeStates(repository.value, nativeStates, settings, opts);
+  if (!result.ok) {
+    return err(result.error);
+  }
+  if (!shouldFilterByRequestedStates(normalized, settings)) {
+    return result;
+  }
+  return ok(result.value.filter((issue) => stateNamesInclude(normalized, issue.state)));
 }
 
 export async function fetchIssueStatesByIds(
@@ -227,18 +250,68 @@ export async function updateIssueState(
   if (issueNumber === null) {
     return err(invalidIssueIdError(issueId));
   }
-  const response = await requestRaw(
-    "PATCH",
-    repositoryIssuePath(repository.value, issueNumber),
-    { state: nativeState },
-    opts,
-  );
+  const mappings = stateLabelMappings(settings);
+  if (mappings.length === 0) {
+    return updateNativeIssueState(
+      repository.value,
+      issueNumber,
+      nativeState,
+      settings,
+      gitea,
+      opts,
+    );
+  }
+  const issuePath = repositoryIssuePath(repository.value, issueNumber);
+  const currentResponse = await requestRaw("GET", issuePath, null, opts);
+  if (!currentResponse.ok) {
+    return err(currentResponse.error);
+  }
+  const currentIssue = decodeIssue(currentResponse.value.body, settings, gitea);
+  if (!currentIssue.ok) {
+    return err(currentIssue.error);
+  }
+  const currentRawIssue = currentResponse.value.body;
+  if (!isObject(currentRawIssue)) {
+    return err(invalidPayloadError(issuePath, currentRawIssue));
+  }
+  const previousNativeState = nativeStateFromPayload(currentRawIssue.state);
+  if (previousNativeState === null) {
+    return err(invalidPayloadError(issuePath, currentRawIssue));
+  }
+  const plan = await stateLabelPlan(currentRawIssue, stateName, settings, repository.value, opts);
+  if (!plan.ok) {
+    return err(plan.error);
+  }
+  const response = await requestRaw("PATCH", issuePath, { state: nativeState }, opts);
   if (!response.ok) {
     return err(response.error);
   }
   const issue = decodeIssue(response.value.body, settings, gitea);
   if (!issue.ok) {
-    return err(issue.error);
+    const rollback = await rollbackNativeIssueState(
+      repository.value,
+      issueNumber,
+      previousNativeState,
+      opts,
+    );
+    return err(stateLabelUpdateFailed(issue.error, rollback));
+  }
+  const reconciled = await reconcileIssueStateLabels(
+    repository.value,
+    issueNumber,
+    stateName,
+    nativeState,
+    settings,
+    gitea,
+    plan.value,
+    opts,
+  );
+  if (!reconciled.ok) {
+    const rollback =
+      previousNativeState === nativeState
+        ? ok(undefined)
+        : await rollbackNativeIssueState(repository.value, issueNumber, previousNativeState, opts);
+    return err(stateLabelUpdateFailed(reconciled.error, rollback));
   }
   return ok(undefined);
 }
@@ -278,6 +351,232 @@ export async function createComment(
     return err(comment.error);
   }
   return ok(undefined);
+}
+
+async function updateNativeIssueState(
+  repository: RepositoryContext,
+  issueNumber: number,
+  nativeState: "open" | "closed",
+  settings: ReturnType<typeof settingsBang>,
+  gitea: GiteaSettings,
+  opts: RequestOpts,
+): Promise<Result<undefined, TrackerError>> {
+  const response = await requestRaw(
+    "PATCH",
+    repositoryIssuePath(repository, issueNumber),
+    { state: nativeState },
+    opts,
+  );
+  if (!response.ok) {
+    return err(response.error);
+  }
+  const issue = decodeIssue(response.value.body, settings, gitea);
+  if (!issue.ok) {
+    return err(issue.error);
+  }
+  return ok(undefined);
+}
+
+async function rollbackNativeIssueState(
+  repository: RepositoryContext,
+  issueNumber: number,
+  nativeState: "open" | "closed",
+  opts: RequestOpts,
+): Promise<Result<undefined, TrackerError>> {
+  const response = await requestRaw(
+    "PATCH",
+    repositoryIssuePath(repository, issueNumber),
+    { state: nativeState },
+    opts,
+  );
+  return response.ok ? ok(undefined) : err(response.error);
+}
+
+async function stateLabelPlan(
+  rawIssue: JsonObject,
+  stateName: string,
+  settings: ReturnType<typeof settingsBang>,
+  repository: RepositoryContext,
+  opts: RequestOpts,
+): Promise<Result<StateLabelPlan, TrackerError>> {
+  const mappings = stateLabelMappings(settings);
+  const repositoryLabels = await fetchRepositoryLabelRefs(repository, opts);
+  if (!repositoryLabels.ok) {
+    return err(repositoryLabels.error);
+  }
+  const labelIds = labelIdIndex(repositoryLabels.value);
+  const target = stateLabelMappingForWorkflowState(stateName, settings);
+  if (target !== null && !labelIds.has(target.normalizedLabelName)) {
+    return err(missingStateLabelError(target.labelName, target.stateName));
+  }
+
+  const configuredLabels = stateLabelNameSet(mappings);
+  const targetLabel = target?.normalizedLabelName ?? null;
+  for (const label of issueLabelRefs(rawIssue)) {
+    if (
+      configuredLabels.has(label.normalizedName) &&
+      label.normalizedName !== targetLabel &&
+      label.id === null &&
+      !labelIds.has(label.normalizedName)
+    ) {
+      return err(missingStateLabelError(label.name, stateName));
+    }
+  }
+
+  return ok({ mappings, target, labelIds });
+}
+
+async function reconcileIssueStateLabels(
+  repository: RepositoryContext,
+  issueNumber: number,
+  stateName: string,
+  nativeState: "open" | "closed",
+  settings: ReturnType<typeof settingsBang>,
+  gitea: GiteaSettings,
+  plan: StateLabelPlan,
+  opts: RequestOpts,
+): Promise<Result<undefined, TrackerError>> {
+  let lastError: TrackerError | null = null;
+  for (let attempt = 0; attempt < MAX_STATE_LABEL_RECONCILE_ATTEMPTS; attempt += 1) {
+    const labels = await fetchIssueLabelRefs(repository, issueNumber, opts);
+    if (!labels.ok) {
+      lastError = labels.error;
+      continue;
+    }
+    const synced = await syncIssueStateLabels(repository, issueNumber, labels.value, plan, opts);
+    if (!synced.ok) {
+      lastError = synced.error;
+      continue;
+    }
+    const verified = await verifyIssueStateLabels(
+      repository,
+      issueNumber,
+      stateName,
+      nativeState,
+      settings,
+      gitea,
+      plan,
+      opts,
+    );
+    if (!verified.ok) {
+      lastError = verified.error;
+      continue;
+    }
+    if (verified.value) {
+      return ok(undefined);
+    }
+    lastError = stateLabelVerificationError(issueNumber, stateName);
+  }
+  return err(stateLabelReconcileFailed(issueNumber, stateName, lastError));
+}
+
+async function syncIssueStateLabels(
+  repository: RepositoryContext,
+  issueNumber: number,
+  currentLabels: LabelRef[],
+  plan: StateLabelPlan,
+  opts: RequestOpts,
+): Promise<Result<undefined, TrackerError>> {
+  const issuePath = repositoryIssuePath(repository, issueNumber);
+  const currentLabelNames = new Set(currentLabels.map((label) => label.normalizedName));
+  if (plan.target !== null && !currentLabelNames.has(plan.target.normalizedLabelName)) {
+    const targetId = plan.labelIds.get(plan.target.normalizedLabelName);
+    if (targetId === undefined) {
+      return err(missingStateLabelError(plan.target.labelName, plan.target.stateName));
+    }
+    const added = await requestRaw("POST", `${issuePath}/labels`, { labels: [targetId] }, opts);
+    if (!added.ok) {
+      return err(added.error);
+    }
+    const decoded = decodeArray(added.value.body, added.value.path);
+    if (!decoded.ok) {
+      return err(decoded.error);
+    }
+  }
+
+  const configuredLabels = stateLabelNameSet(plan.mappings);
+  const targetLabel = plan.target?.normalizedLabelName ?? null;
+  const deleted = new Set<number>();
+  for (const label of currentLabels) {
+    if (!configuredLabels.has(label.normalizedName) || label.normalizedName === targetLabel) {
+      continue;
+    }
+    const labelId = label.id ?? plan.labelIds.get(label.normalizedName);
+    if (labelId === undefined) {
+      return err(missingStateLabelError(label.name, null));
+    }
+    if (deleted.has(labelId)) {
+      continue;
+    }
+    deleted.add(labelId);
+    const removed = await requestRaw("DELETE", `${issuePath}/labels/${labelId}`, null, opts);
+    if (!removed.ok) {
+      return err(removed.error);
+    }
+  }
+
+  return ok(undefined);
+}
+
+async function verifyIssueStateLabels(
+  repository: RepositoryContext,
+  issueNumber: number,
+  stateName: string,
+  nativeState: "open" | "closed",
+  settings: ReturnType<typeof settingsBang>,
+  gitea: GiteaSettings,
+  plan: StateLabelPlan,
+  opts: RequestOpts,
+): Promise<Result<boolean, TrackerError>> {
+  const path = repositoryIssuePath(repository, issueNumber);
+  const response = await requestRaw("GET", path, null, opts);
+  if (!response.ok) {
+    return err(response.error);
+  }
+  const issue = decodeIssue(response.value.body, settings, gitea);
+  if (!issue.ok) {
+    return err(issue.error);
+  }
+  if (!isObject(response.value.body)) {
+    return err(invalidPayloadError(path, response.value.body));
+  }
+  const actualNativeState = nativeStateFromPayload(response.value.body.state);
+  const actualState = issue.value.state;
+  const expectedState = expectedStateNameForUpdate(stateName, nativeState, settings, plan);
+  return ok(
+    actualNativeState === nativeState &&
+      actualState !== null &&
+      stateNamesEqual(actualState, expectedState) &&
+      stateLabelsConverged(issueLabelRefs(response.value.body), plan),
+  );
+}
+
+async function fetchRepositoryLabelRefs(
+  repository: RepositoryContext,
+  opts: RequestOpts,
+): Promise<Result<LabelRef[], TrackerError>> {
+  const labels = await fetchPaginatedArray(
+    `${repositoryPath(repository)}/labels?page=1&limit=${LABEL_PAGE_SIZE}`,
+    opts,
+    LABEL_PAGE_SIZE,
+  );
+  if (!labels.ok) {
+    return err(labels.error);
+  }
+  return decodeLabelRefs(labels.value, "repository labels", true);
+}
+
+async function fetchIssueLabelRefs(
+  repository: RepositoryContext,
+  issueNumber: number,
+  opts: RequestOpts,
+): Promise<Result<LabelRef[], TrackerError>> {
+  const path = `${repositoryIssuePath(repository, issueNumber)}/labels`;
+  const labels = await fetchPaginatedArray(path, opts, null);
+  if (!labels.ok) {
+    return err(labels.error);
+  }
+  return decodeLabelRefs(labels.value, path, false);
 }
 
 export async function fetchIssueComments(
@@ -712,13 +1011,14 @@ function normalizeIssue(
   const identifier = `${gitea.owner}/${gitea.repo}#${number}`;
   const users = issueUsers(rawIssue);
   const assigneeId = firstUserId(users);
+  const labels = issueLabels(rawIssue);
   return newIssue({
     id: identifier,
     identifier,
     title: rawIssue.title,
     description: typeof rawIssue.body === "string" ? rawIssue.body : null,
     priority: null,
-    state: projectedState(nativeState, settings),
+    state: projectedState(nativeState, settings, labels),
     branchName: null,
     url:
       stringOrNull(rawIssue.html_url) ??
@@ -726,7 +1026,7 @@ function normalizeIssue(
       `${giteaInstanceUrl(gitea.endpoint ?? "") ?? ""}/${encodeURIComponent(gitea.owner)}/${encodeURIComponent(gitea.repo)}/issues/${number}`,
     assigneeId,
     blockedBy: [],
-    labels: issueLabels(rawIssue),
+    labels,
     assignedToWorker: assignedToWorker(users, gitea.assignee),
     createdAt: parseDateTime(rawIssue.created_at),
     updatedAt: parseDateTime(rawIssue.updated_at),
@@ -790,19 +1090,64 @@ function assignedToWorker(users: JsonObject[], configuredAssignee: string | null
 }
 
 function issueLabels(issue: JsonObject): string[] {
+  return issueLabelRefs(issue).map((label) => label.normalizedName);
+}
+
+function issueLabelRefs(issue: JsonObject): LabelRef[] {
   if (!Array.isArray(issue.labels)) {
     return [];
   }
   return issue.labels
-    .map((label) => {
-      if (typeof label === "string") {
-        return label;
-      }
-      return isObject(label) ? stringOrNull(label.name) : null;
-    })
-    .filter((label): label is string => label !== null)
-    .map((label) => label.trim().toLowerCase())
-    .filter((label) => label !== "");
+    .map((label) => labelRefFromPayload(label))
+    .filter((label): label is LabelRef => label !== null);
+}
+
+function labelRefFromPayload(label: unknown): LabelRef | null {
+  if (typeof label === "string") {
+    return labelRef(null, label);
+  }
+  if (!isObject(label)) {
+    return null;
+  }
+  const name = stringOrNull(label.name);
+  if (name === null) {
+    return null;
+  }
+  return labelRef(positiveInteger(label.id), name);
+}
+
+function labelRef(id: number | null, name: string): LabelRef | null {
+  const trimmed = name.trim();
+  if (trimmed === "") {
+    return null;
+  }
+  return { id, name: trimmed, normalizedName: normalizeLabelName(trimmed) };
+}
+
+function decodeLabelRefs(
+  labels: unknown[],
+  path: string,
+  requireId: boolean,
+): Result<LabelRef[], TrackerError> {
+  const result: LabelRef[] = [];
+  for (const label of labels) {
+    const ref = labelRefFromPayload(label);
+    if (ref === null || (requireId && ref.id === null)) {
+      return err(invalidPayloadError(path, label));
+    }
+    result.push(ref);
+  }
+  return ok(result);
+}
+
+function labelIdIndex(labels: LabelRef[]): Map<string, number> {
+  const index = new Map<string, number>();
+  for (const label of labels) {
+    if (label.id !== null && !index.has(label.normalizedName)) {
+      index.set(label.normalizedName, label.id);
+    }
+  }
+  return index;
 }
 
 function hasRequiredLabels(labels: string[], requiredLabels: string[]): boolean {
@@ -860,6 +1205,18 @@ function nativeStateForWorkflowState(
   stateName: string,
   settings: ReturnType<typeof settingsBang>,
 ): "open" | "closed" | null {
+  const nativeState = nativeStateForCoreWorkflowState(stateName, settings);
+  if (nativeState !== null) {
+    return nativeState;
+  }
+  const mapping = stateLabelMappingForWorkflowState(stateName, settings);
+  return mapping === null ? null : nativeStateForMappedState(mapping.stateName, settings);
+}
+
+function nativeStateForCoreWorkflowState(
+  stateName: string,
+  settings: ReturnType<typeof settingsBang>,
+): "open" | "closed" | null {
   const normalized = stateName.trim().toLowerCase();
   if (OPEN_STATE_ALIASES.has(normalized)) {
     return "open";
@@ -879,13 +1236,122 @@ function nativeStateForWorkflowState(
 function projectedState(
   nativeState: "open" | "closed",
   settings: ReturnType<typeof settingsBang>,
+  labels: string[],
 ): string {
+  const labeled = projectedStateFromLabels(nativeState, settings, labels);
+  if (labeled !== null) {
+    return labeled;
+  }
   const configured =
     nativeState === "open" ? settings.tracker.activeStates : settings.tracker.terminalStates;
   const matching = configured.find(
     (state) => nativeStateForWorkflowState(state, settings) === nativeState,
   );
   return matching ?? configured[0] ?? nativeState;
+}
+
+function stateLabelMappings(settings: ReturnType<typeof settingsBang>): StateLabelMapping[] {
+  return Object.entries(giteaSettings(settings).stateLabels).map(([stateName, labelName]) => ({
+    stateName,
+    normalizedStateName: normalizeStateName(stateName),
+    labelName,
+    normalizedLabelName: normalizeLabelName(labelName),
+  }));
+}
+
+function stateLabelMappingForWorkflowState(
+  stateName: string,
+  settings: ReturnType<typeof settingsBang>,
+): StateLabelMapping | null {
+  const normalized = normalizeStateName(stateName);
+  return (
+    stateLabelMappings(settings).find((mapping) => mapping.normalizedStateName === normalized) ??
+    null
+  );
+}
+
+function nativeStateForMappedState(
+  stateName: string,
+  settings: ReturnType<typeof settingsBang>,
+): "open" | "closed" {
+  return nativeStateForCoreWorkflowState(stateName, settings) === "closed" ? "closed" : "open";
+}
+
+function projectedStateFromLabels(
+  nativeState: "open" | "closed",
+  settings: ReturnType<typeof settingsBang>,
+  labels: string[],
+): string | null {
+  if (labels.length === 0) {
+    return null;
+  }
+  const labelSet = new Set(labels.map(normalizeLabelName));
+  for (const mapping of stateLabelMappings(settings)) {
+    if (
+      labelSet.has(mapping.normalizedLabelName) &&
+      nativeStateForMappedState(mapping.stateName, settings) === nativeState
+    ) {
+      return mapping.stateName;
+    }
+  }
+  return null;
+}
+
+function shouldFilterByRequestedStates(
+  stateNames: string[],
+  settings: ReturnType<typeof settingsBang>,
+): boolean {
+  if (stateNames.length === 0) {
+    return false;
+  }
+  return stateNames.some((stateName) => stateLabelMappingForWorkflowState(stateName, settings));
+}
+
+function stateNamesInclude(stateNames: string[], stateName: string | null): boolean {
+  if (stateName === null) {
+    return false;
+  }
+  return stateNames.some((candidate) => stateNamesEqual(candidate, stateName));
+}
+
+function expectedStateNameForUpdate(
+  requestedState: string,
+  nativeState: "open" | "closed",
+  settings: ReturnType<typeof settingsBang>,
+  plan: StateLabelPlan,
+): string {
+  if (plan.target !== null) {
+    return plan.target.stateName;
+  }
+  const configured = [...settings.tracker.activeStates, ...settings.tracker.terminalStates].find(
+    (state) => stateNamesEqual(state, requestedState),
+  );
+  return configured ?? projectedState(nativeState, settings, []);
+}
+
+function stateNamesEqual(left: string, right: string): boolean {
+  return normalizeStateName(left) === normalizeStateName(right);
+}
+
+function stateLabelsConverged(labels: LabelRef[], plan: StateLabelPlan): boolean {
+  const configuredLabels = stateLabelNameSet(plan.mappings);
+  const present = labels.filter((label) => configuredLabels.has(label.normalizedName));
+  if (plan.target === null) {
+    return present.length === 0;
+  }
+  return present.length === 1 && present[0]?.normalizedName === plan.target.normalizedLabelName;
+}
+
+function stateLabelNameSet(mappings: StateLabelMapping[]): Set<string> {
+  return new Set(mappings.map((mapping) => mapping.normalizedLabelName));
+}
+
+function normalizeStateName(stateName: string): string {
+  return stateName.trim().toLowerCase();
+}
+
+function normalizeLabelName(labelName: string): string {
+  return labelName.trim().toLowerCase();
 }
 
 // ---- paths and config errors ------------------------------------------------
@@ -1121,6 +1587,52 @@ function unknownStateError(stateName: string): TrackerError {
     code: "unsupported_operation",
     message: `Gitea state is not mapped by tracker.active_states or tracker.terminal_states: ${JSON.stringify(stateName)}`,
     detail: { stateName },
+  };
+}
+
+function missingStateLabelError(labelName: string, stateName: string | null): TrackerError {
+  return {
+    tag: "gitea_missing_state_label",
+    code: "missing_config",
+    message: "Gitea state_labels references a label that does not exist in the repository",
+    detail: { labelName, stateName },
+  };
+}
+
+function stateLabelVerificationError(issueNumber: number, stateName: string): TrackerError {
+  return {
+    tag: "gitea_state_label_verification_failed",
+    code: "provider_error",
+    message: "Gitea issue state label reconciliation did not converge",
+    detail: { issueNumber, stateName },
+  };
+}
+
+function stateLabelReconcileFailed(
+  issueNumber: number,
+  stateName: string,
+  cause: TrackerError | null,
+): TrackerError {
+  return {
+    tag: "gitea_state_label_reconcile_failed",
+    code: cause?.code ?? "provider_error",
+    message: "Gitea issue state label reconciliation failed",
+    detail: { issueNumber, stateName, cause },
+  };
+}
+
+function stateLabelUpdateFailed(
+  cause: TrackerError,
+  rollback: Result<undefined, TrackerError>,
+): TrackerError {
+  return {
+    tag: "gitea_state_label_update_failed",
+    code: cause.code,
+    message: "Gitea issue state update failed while reconciling state labels",
+    detail: {
+      cause,
+      rollback: rollback.ok ? { ok: true } : { ok: false, error: rollback.error },
+    },
   };
 }
 
