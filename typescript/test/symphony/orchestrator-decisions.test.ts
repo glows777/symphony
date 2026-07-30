@@ -358,6 +358,75 @@ describe("Orchestrator decisions/reconcile seams", () => {
     );
   });
 
+  test("In Progress to Human Review enqueues while the normal agent is still running", () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_required_labels: ["symphony"] });
+    const issueId = "issue-review-running";
+    const issue = newIssue({
+      id: issueId,
+      identifier: "MT-REVIEW-RUNNING",
+      title: "Running review edge",
+      state: "Human Review",
+      labels: ["symphony"],
+    });
+    const state = newState({
+      running: {
+        [issueId]: {
+          task: stoppableTask(),
+          ref: null,
+          identifier: "MT-REVIEW-RUNNING",
+          issue: newIssue({
+            id: issueId,
+            identifier: "MT-REVIEW-RUNNING",
+            state: "In Progress",
+            labels: ["symphony"],
+          }),
+          run_kind: "normal",
+          started_at: new Date(),
+        },
+      },
+      claimed: new Set([issueId]),
+      review_observed_states: { [issueId]: "in progress" },
+    });
+
+    const updated = reconcileReviewQueueForTest([issue], state);
+    expect(Object.keys(updated.review_queue)).toEqual([issueId]);
+    expect(updated.review_queue[issueId]?.issue.state).toBe("Human Review");
+    expect(issueId in updated.running).toBe(true);
+  });
+
+  test("In Progress to Human Review enqueues while the issue is blocked", () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_required_labels: ["symphony"] });
+    const issueId = "issue-review-blocked";
+    const issue = newIssue({
+      id: issueId,
+      identifier: "MT-REVIEW-BLOCKED",
+      title: "Blocked review edge",
+      state: "Human Review",
+      labels: ["symphony"],
+    });
+    const state = newState({
+      blocked: {
+        [issueId]: {
+          identifier: "MT-REVIEW-BLOCKED",
+          issue: newIssue({
+            id: issueId,
+            identifier: "MT-REVIEW-BLOCKED",
+            state: "In Progress",
+            labels: ["symphony"],
+          }),
+          error: "operator input required",
+          worker_host: null,
+        },
+      },
+      claimed: new Set([issueId]),
+      review_observed_states: { [issueId]: "in progress" },
+    });
+
+    const updated = reconcileReviewQueueForTest([issue], state);
+    expect(Object.keys(updated.review_queue)).toEqual([issueId]);
+    expect(issueId in updated.blocked).toBe(true);
+  });
+
   test("Rework to Human Review enqueues one review agent job", () => {
     writeWorkflowFile(workflowFilePath(), { tracker_required_labels: ["symphony"] });
     const issue = newIssue({
@@ -373,6 +442,125 @@ describe("Orchestrator decisions/reconcile seams", () => {
 
     const updated = reconcileReviewQueueForTest([issue], state);
     expect(Object.keys(updated.review_queue)).toEqual(["issue-review-rework"]);
+  });
+
+  test("stopping the normal run preserves an already queued review intent", () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_required_labels: ["symphony"] });
+    const issueId = "issue-review-preserve-running";
+    const task = stoppableTask();
+    const issue = newIssue({
+      id: issueId,
+      identifier: "MT-REVIEW-PRESERVE",
+      title: "Queued review",
+      state: "Human Review",
+      labels: ["symphony"],
+    });
+    const state = newState({
+      running: {
+        [issueId]: {
+          task,
+          ref: null,
+          identifier: "MT-REVIEW-PRESERVE",
+          issue: newIssue({
+            id: issueId,
+            identifier: "MT-REVIEW-PRESERVE",
+            state: "In Progress",
+            labels: ["symphony"],
+          }),
+          run_kind: "normal",
+          started_at: new Date(),
+        },
+      },
+      claimed: new Set([issueId]),
+      review_queue: { [issueId]: { issue, enqueued_at: new Date() } },
+    });
+
+    const updated = reconcileIssueStatesForTest([issue], state);
+    expect(issueId in updated.running).toBe(false);
+    expect(updated.claimed.has(issueId)).toBe(false);
+    expect(updated.review_queue[issueId]?.issue.state).toBe("Human Review");
+    expect(task.stopped).toBe(true);
+  });
+
+  test("normal retry release preserves an already queued review intent", () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_required_labels: ["symphony"] });
+    const issueId = "issue-review-preserve-retry";
+    const issue = newIssue({
+      id: issueId,
+      identifier: "MT-REVIEW-RETRY-PRESERVE",
+      title: "Queued review retry",
+      state: "Human Review",
+      labels: ["symphony"],
+    });
+    const state = newState({
+      claimed: new Set([issueId]),
+      retry_attempts: {
+        [issueId]: {
+          attempt: 1,
+          timer_ref: null,
+          retry_token: Symbol("retry"),
+          due_at_ms: 0,
+          identifier: issue.identifier,
+          issue_url: issue.url,
+        },
+      },
+      review_queue: { [issueId]: { issue, enqueued_at: new Date() } },
+    });
+
+    const updated = handleRetryIssueLookupForTest(issue, state, issueId, 1, {
+      identifier: issue.identifier,
+      issue_url: issue.url,
+    });
+    expect(updated.claimed.has(issueId)).toBe(false);
+    expect(issueId in updated.retry_attempts).toBe(false);
+    expect(updated.review_queue[issueId]?.issue.state).toBe("Human Review");
+  });
+
+  test("terminal issue state clears an already queued review intent", () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_required_labels: ["symphony"] });
+    const issueId = "issue-review-terminal";
+    const state = newState({
+      running: {
+        [issueId]: {
+          task: stoppableTask(),
+          ref: null,
+          identifier: "MT-REVIEW-TERMINAL",
+          issue: newIssue({
+            id: issueId,
+            identifier: "MT-REVIEW-TERMINAL",
+            state: "Human Review",
+            labels: ["symphony"],
+          }),
+          started_at: new Date(),
+        },
+      },
+      claimed: new Set([issueId]),
+      review_queue: {
+        [issueId]: {
+          issue: newIssue({
+            id: issueId,
+            identifier: "MT-REVIEW-TERMINAL",
+            state: "Human Review",
+            labels: ["symphony"],
+          }),
+          enqueued_at: new Date(),
+        },
+      },
+    });
+
+    const updated = reconcileIssueStatesForTest(
+      [
+        newIssue({
+          id: issueId,
+          identifier: "MT-REVIEW-TERMINAL",
+          title: "Terminal review",
+          state: "Done",
+          labels: ["symphony"],
+        }),
+      ],
+      state,
+    );
+    expect(issueId in updated.review_queue).toBe(false);
   });
 
   test("reconcile stops a running issue reassigned away from this worker", () => {

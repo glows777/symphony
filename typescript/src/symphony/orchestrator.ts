@@ -251,37 +251,47 @@ function reconcileIssueState(
     logger.info(
       `Issue moved to terminal state: ${issueContext(issue)} state=${issue.state}; stopping active agent`,
     );
-    return terminateRunningIssue(
-      state,
+    return clearReviewQueueEntry(
+      terminateRunningIssue(
+        state,
+        issue.id,
+        true,
+        cancellationReason("issue_terminal_state", { state: issue.state }),
+      ),
       issue.id,
-      true,
-      cancellationReason("issue_terminal_state", { state: issue.state }),
     );
   }
   if (!issueRoutable(issue)) {
     logger.info(
       `Issue no longer routed to this worker: ${issueContext(issue)}; stopping active agent`,
     );
-    return terminateRunningIssue(state, issue.id, false, cancellationReason("issue_not_routable"));
+    return clearReviewQueueEntry(
+      terminateRunningIssue(state, issue.id, false, cancellationReason("issue_not_routable")),
+      issue.id,
+    );
   }
   if (activeIssueState(issue.state, activeStates)) {
     if (enteredReworkState(issue, state)) {
       logger.info(
         `Issue entered Rework: ${issueContext(issue)}; stopping the previous agent before a clean dispatch`,
       );
-      return terminateRunningIssue(state, issue.id, false, cancellationReason("issue_rework"));
+      return clearReviewQueueEntry(
+        terminateRunningIssue(state, issue.id, false, cancellationReason("issue_rework")),
+        issue.id,
+      );
     }
     return refreshRunningIssueState(state, issue);
   }
   logger.info(
     `Issue moved to non-active state: ${issueContext(issue)} state=${issue.state}; stopping active agent`,
   );
-  return terminateRunningIssue(
+  const next = terminateRunningIssue(
     state,
     issue.id,
     false,
     cancellationReason("issue_non_active_state", { state: issue.state }),
   );
+  return humanReviewIssueState(issue.state) ? next : clearReviewQueueEntry(next, issue.id);
 }
 
 function reconcileReviewIssueState(issue: Issue, state: State, terminalStates: Set<string>): State {
@@ -289,22 +299,28 @@ function reconcileReviewIssueState(issue: Issue, state: State, terminalStates: S
     logger.info(
       `Review issue moved to terminal state: ${issueContext(issue)} state=${issue.state}; stopping review agent`,
     );
-    return terminateRunningIssue(
-      state,
+    return clearReviewQueueEntry(
+      terminateRunningIssue(
+        state,
+        issue.id,
+        true,
+        cancellationReason("review_issue_terminal_state", { state: issue.state }),
+      ),
       issue.id,
-      true,
-      cancellationReason("review_issue_terminal_state", { state: issue.state }),
     );
   }
   if (!issueRoutable(issue)) {
     logger.info(
       `Review issue no longer routed to this worker: ${issueContext(issue)}; stopping review agent`,
     );
-    return terminateRunningIssue(
-      state,
+    return clearReviewQueueEntry(
+      terminateRunningIssue(
+        state,
+        issue.id,
+        false,
+        cancellationReason("review_issue_not_routable"),
+      ),
       issue.id,
-      false,
-      cancellationReason("review_issue_not_routable"),
     );
   }
   if (humanReviewIssueState(issue.state)) {
@@ -313,11 +329,14 @@ function reconcileReviewIssueState(issue: Issue, state: State, terminalStates: S
   logger.info(
     `Review issue left Human Review: ${issueContext(issue)} state=${issue.state}; stopping review agent`,
   );
-  return terminateRunningIssue(
-    state,
+  return clearReviewQueueEntry(
+    terminateRunningIssue(
+      state,
+      issue.id,
+      false,
+      cancellationReason("review_issue_left_human_review", { state: issue.state }),
+    ),
     issue.id,
-    false,
-    cancellationReason("review_issue_left_human_review", { state: issue.state }),
   );
 }
 
@@ -342,22 +361,22 @@ function reconcileBlockedIssueState(
   if (terminalIssueState(issue.state, terminalStates)) {
     logger.info(`Blocked issue moved to terminal state: ${issueContext(issue)}; releasing block`);
     cleanupIssueWorkspace(issue.identifier, blockedIssueWorkerHost(state, issue.id));
-    return releaseIssueClaim(state, issue.id);
+    return releaseIssueClaim(clearReviewQueueEntry(state, issue.id), issue.id);
   }
   if (!issueRoutable(issue)) {
     logger.info(
       `Blocked issue no longer routed to this worker: ${issueContext(issue)}; releasing block`,
     );
-    return releaseIssueClaim(state, issue.id);
-  }
-  if (blockedReviewIssue(issue, state) && humanReviewIssueState(issue.state)) {
-    return refreshBlockedIssueState(state, issue);
+    return releaseIssueClaim(clearReviewQueueEntry(state, issue.id), issue.id);
   }
   if (activeIssueState(issue.state, activeStates)) {
     return refreshBlockedIssueState(state, issue);
   }
+  if (humanReviewIssueState(issue.state)) {
+    return refreshBlockedIssueState(state, issue);
+  }
   logger.info(`Blocked issue moved to non-active state: ${issueContext(issue)}; releasing block`);
-  return releaseIssueClaim(state, issue.id);
+  return releaseIssueClaim(clearReviewQueueEntry(state, issue.id), issue.id);
 }
 
 function refreshRunningIssueState(state: State, issue: Issue): State {
@@ -409,7 +428,6 @@ function terminateRunningIssue(
     claimed: setWithout(next.claimed, issueId),
     blocked: omitKey(next.blocked, issueId),
     retry_attempts: omitKey(next.retry_attempts, issueId),
-    review_queue: omitKey(next.review_queue, issueId),
   };
   return next;
 }
@@ -423,8 +441,18 @@ function releaseIssueClaim(state: State, issueId: string | null): State {
     claimed: setWithout(state.claimed, issueId),
     blocked: omitKey(state.blocked, issueId),
     retry_attempts: omitKey(state.retry_attempts, issueId),
-    review_queue: omitKey(state.review_queue, issueId),
   };
+}
+
+function clearReviewQueueEntry(state: State, issueId: string | null): State {
+  if (issueId === null || !(issueId in state.review_queue)) {
+    return state;
+  }
+  return { ...state, review_queue: omitKey(state.review_queue, issueId) };
+}
+
+function hasPendingReview(state: State, issueId: string | null): boolean {
+  return issueId !== null && issueId in state.review_queue;
 }
 
 function recordSessionCompletionTotals(state: State, entry: RunningEntry): State {
@@ -468,10 +496,6 @@ function blockedIssueWorkerHost(state: State, issueId: string | null): string | 
   return state.blocked[issueId]?.worker_host ?? null;
 }
 
-function blockedReviewIssue(issue: Issue, state: State): boolean {
-  return typeof issue.id === "string" && state.blocked[issue.id]?.run_kind === "review";
-}
-
 // ---- review queue ----------------------------------------------------------
 
 function reconcileReviewQueue(issues: Issue[], state: State): State {
@@ -486,8 +510,7 @@ function reconcileReviewQueue(issues: Issue[], state: State): State {
     if (
       reviewTransitionEligible(previousState, issue) &&
       !(issue.id in queue) &&
-      !(issue.id in state.running) &&
-      !(issue.id in state.blocked)
+      !runningReviewIssue(issue, state)
     ) {
       logger.info(
         `Queueing review agent from status edge: ${issueContext(issue)} previous_state=${previousState} state=${issue.state}`,
@@ -574,15 +597,21 @@ function handleRetryIssueLookup(
       `Issue state is terminal: issue_id=${issueId} issue_identifier=${issue.identifier} state=${issue.state}; removing associated workspace`,
     );
     cleanupIssueWorkspace(issue.identifier ?? null, metadata.worker_host ?? null);
-    return releaseIssueClaim(state, issueId);
+    return releaseIssueClaim(clearReviewQueueEntry(state, issueId), issueId);
   }
   if (retryCandidateIssue(issue, terminalStates)) {
     return handleActiveRetry(state, issue, attempt, metadata, ctx);
   }
+  if (hasPendingReview(state, issueId) && reviewQueueCandidate(issue)) {
+    logger.debug(
+      `Issue is pending review during normal retry lookup, releasing normal claim issue_id=${issueId} issue_identifier=${issue.identifier}`,
+    );
+    return releaseIssueClaim(state, issueId);
+  }
   logger.debug(
     `Issue left active states, removing claim issue_id=${issueId} issue_identifier=${issue.identifier}`,
   );
-  return releaseIssueClaim(state, issueId);
+  return releaseIssueClaim(clearReviewQueueEntry(state, issueId), issueId);
 }
 
 function handleActiveRetry(
@@ -2358,6 +2387,12 @@ export class Orchestrator {
         );
         return releaseIssueClaim(completeIssue(state, issueId), issueId);
       }
+      if (hasPendingReview(state, issueId)) {
+        logger.info(
+          `Agent task completed for issue_id=${issueId} session_id=${sessionId}; pending review exists, releasing normal claim without continuation retry`,
+        );
+        return releaseIssueClaim(completeIssue(state, issueId), issueId);
+      }
       logger.info(
         `Agent task completed for issue_id=${issueId} session_id=${sessionId}; scheduling active-state continuation check`,
       );
@@ -2931,7 +2966,8 @@ export class Orchestrator {
       running: { ...state.running, [issueId]: entry },
       claimed: new Set(state.claimed).add(issueId),
       retry_attempts: omitKey(state.retry_attempts, issueId),
-      review_queue: omitKey(state.review_queue, issueId),
+      review_queue:
+        runKind === "review" ? omitKey(state.review_queue, issueId) : state.review_queue,
     };
   }
 
@@ -3013,7 +3049,7 @@ export class Orchestrator {
     logger.debug(
       `Review retry issue left Human Review, removing claim issue_id=${issueId} issue_identifier=${metadata.identifier ?? issueId}`,
     );
-    return releaseIssueClaim(state, issueId);
+    return releaseIssueClaim(clearReviewQueueEntry(state, issueId), issueId);
   }
 
   private async handleRetryIssueLookupLive(
@@ -3033,15 +3069,21 @@ export class Orchestrator {
         `Issue state is terminal: issue_id=${issueId} issue_identifier=${issue.identifier} state=${issue.state}; removing associated workspace`,
       );
       cleanupIssueWorkspace(issue.identifier ?? null, metadata.worker_host ?? null);
-      return releaseIssueClaim(state, issueId);
+      return releaseIssueClaim(clearReviewQueueEntry(state, issueId), issueId);
     }
     if (retryCandidateIssue(issue, terminalStates)) {
       return this.handleActiveRetryLive(state, issue, attempt, metadata);
     }
+    if (hasPendingReview(state, issueId) && reviewQueueCandidate(issue)) {
+      logger.debug(
+        `Issue is pending review during normal retry lookup, releasing normal claim issue_id=${issueId} issue_identifier=${issue.identifier}`,
+      );
+      return releaseIssueClaim(state, issueId);
+    }
     logger.debug(
       `Issue left active states, removing claim issue_id=${issueId} issue_identifier=${issue.identifier}`,
     );
-    return releaseIssueClaim(state, issueId);
+    return releaseIssueClaim(clearReviewQueueEntry(state, issueId), issueId);
   }
 
   private async handleActiveRetryLive(
