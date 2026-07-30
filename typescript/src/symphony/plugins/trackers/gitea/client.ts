@@ -158,6 +158,11 @@ export async function fetchIssueStatesByIds(
   if (!repository.ok) {
     return err(repository.error);
   }
+  const assignee = await resolveAssignee(gitea, opts);
+  if (!assignee.ok) {
+    return err(assignee.error);
+  }
+  const resolvedGitea = { ...gitea, assignee: assignee.value };
 
   const issues: Issue[] = [];
   for (const issueId of ids) {
@@ -173,7 +178,7 @@ export async function fetchIssueStatesByIds(
       }
       return err(response.error);
     }
-    const issue = decodeIssue(response.value.body, settings, gitea);
+    const issue = decodeIssue(response.value.body, settings, resolvedGitea);
     if (!issue.ok) {
       return err(issue.error);
     }
