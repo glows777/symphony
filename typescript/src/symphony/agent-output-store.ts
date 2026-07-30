@@ -2538,6 +2538,9 @@ function mergeEvents(...groups: AgentOutputEvent[][]): AgentOutputEvent[] {
 }
 
 function sanitizeReason(value: unknown): Record<string, string> | undefined {
+  if (isRecord(value) && value.tag === "agent_run_cancelled") {
+    return sanitizeAgentRunCancellation(value);
+  }
   const candidate = isRecord(value) && isRecord(value.reason) ? value.reason : value;
   if (!isRecord(candidate) && typeof candidate !== "string") {
     return undefined;
@@ -2553,6 +2556,49 @@ function sanitizeReason(value: unknown): Record<string, string> | undefined {
     result.message = boundText(candidate.message.trim(), 1_024).value;
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function sanitizeAgentRunCancellation(value: Record<string, unknown>): Record<string, string> {
+  const result: Record<string, string> = { tag: "agent_run_cancelled" };
+  copyBoundedStringField(value, result, "reason", 128);
+  copyBoundedStringField(value, result, "state", 128);
+  copyBoundedStringField(value, result, "session_id", 256);
+  copyBoundedStringField(value, result, "error", 1_024);
+  copyBoundedStringField(value, result, "signal_reason", 256);
+  copyBoundedNumberField(value, result, "elapsed_ms");
+
+  const cause = value.cause;
+  if (isRecord(cause)) {
+    if (typeof cause.tag === "string" && cause.tag.trim() !== "") {
+      result.cause_tag = boundText(cause.tag.trim(), 128).value;
+    }
+    copyBoundedNumberField(cause, result, "status", "cause_status");
+  }
+  return result;
+}
+
+function copyBoundedStringField(
+  source: Record<string, unknown>,
+  target: Record<string, string>,
+  key: string,
+  maxBytes: number,
+): void {
+  const value = source[key];
+  if (typeof value === "string" && value.trim() !== "") {
+    target[key] = boundText(value.trim(), maxBytes).value;
+  }
+}
+
+function copyBoundedNumberField(
+  source: Record<string, unknown>,
+  target: Record<string, string>,
+  key: string,
+  targetKey = key,
+): void {
+  const value = source[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    target[targetKey] = String(value);
+  }
 }
 
 function issueKey(value: string): string {
