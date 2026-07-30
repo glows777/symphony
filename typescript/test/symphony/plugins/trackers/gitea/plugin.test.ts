@@ -273,10 +273,65 @@ describe("Gitea.Plugin", () => {
         path: "/api/v1/repos/acme/symphony/issues/7/labels",
         body: { labels: [2, "bug"] },
       },
+      {
+        method: "GET",
+        path: "/api/v1/repos/acme/symphony/pulls?state=open&head=symphony%2FENG-7",
+      },
+      {
+        method: "POST",
+        path: "/api/v1/repos/acme/symphony/pulls",
+        body: {
+          title: "Implement the requested change",
+          body: "Issue: https://gitea.test/acme/symphony/issues/7",
+          head: "symphony/ENG-7",
+          base: "main",
+        },
+      },
+      {
+        method: "GET",
+        path: "/api/v1/repos/acme/symphony/pulls/11",
+      },
+      {
+        method: "GET",
+        path: "/api/v1/repos/acme/symphony/pulls/11/reviews",
+      },
+      {
+        method: "PATCH",
+        path: "/api/v1/repos/acme/symphony/pulls/11",
+        body: { state: "closed" },
+      },
     ]) {
       await expect(
         GiteaPlugin.agentTools?.executeAgentTool("gitea_api", request, { giteaClient }),
       ).resolves.toEqual({ success: true, payload: { login: "runner" } });
+    }
+
+    for (const request of [
+      {
+        method: "POST",
+        path: "/api/v1/repos/acme/symphony/pulls",
+        body: { title: "missing head and base" },
+      },
+      {
+        method: "POST",
+        path: "/api/v1/repos/acme/symphony/pulls",
+        body: {
+          title: "unexpected field",
+          head: "symphony/ENG-7",
+          base: "main",
+          labels: [1],
+        },
+      },
+    ]) {
+      const invalidPullRequest = await GiteaPlugin.agentTools?.executeAgentTool(
+        "gitea_api",
+        request,
+        { giteaClient },
+      );
+      expect(invalidPullRequest).toMatchObject({
+        success: false,
+        payload: { error: { message: expect.stringContaining("only permits") } },
+      });
     }
 
     const destructive = await GiteaPlugin.agentTools?.executeAgentTool(

@@ -5,6 +5,7 @@ import { buildPrompt } from "../../src/symphony/prompt-builder.ts";
 import { newIssue } from "../../src/symphony/work-item.ts";
 import { setWorkflowFilePath, workflowFilePath } from "../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";
+import { writeGiteaWorkflowFile } from "./plugins/trackers/gitea/gitea-test-support.ts";
 
 // Translated from the prompt-builder cases in core_test.exs.
 describe("PromptBuilder.build_prompt", () => {
@@ -161,10 +162,33 @@ describe("PromptBuilder.build_prompt", () => {
     expect(prompt).toContain("acceptance criteria");
     expect(prompt).toContain("actionable defect");
     expect(prompt).toContain("Linear issue");
-    expect(prompt).toContain("review is incomplete until the required Linear comment");
+    expect(prompt).toContain("review is incomplete until the required Linear issue comment");
     expect(prompt).toContain("update the issue state to `Rework`");
     expect(prompt).toContain("No GitHub review context is injected");
     expect(prompt).not.toContain("Symphony Review Handoff");
+  });
+
+  test("uses the active tracker noun and tool in review guidance", () => {
+    const savedToken = process.env.GITEA_API_TOKEN;
+    process.env.GITEA_API_TOKEN = "gitea-test-token";
+    try {
+      writeGiteaWorkflowFile(workflowFilePath());
+      const prompt = buildPrompt(
+        newIssue({ identifier: "acme/symphony#7", title: "Review Gitea change" }),
+        { review: true },
+      );
+
+      expect(prompt).toContain("Read the Gitea issue description");
+      expect(prompt).toContain("with `gitea_api` as needed");
+      expect(prompt).toContain("on the Gitea issue");
+      expect(prompt).not.toContain("linear_graphql");
+    } finally {
+      if (savedToken === undefined) {
+        Reflect.deleteProperty(process.env, "GITEA_API_TOKEN");
+      } else {
+        process.env.GITEA_API_TOKEN = savedToken;
+      }
+    }
   });
 
   test("reports workflow load failures separately from template parse errors", () => {

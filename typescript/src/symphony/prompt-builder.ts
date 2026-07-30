@@ -7,7 +7,8 @@
 // changes; `issue.metadata.*` exposes the plugin-private extension slot.
 
 import { Liquid, type Template } from "liquidjs";
-import { workflowPrompt } from "./config.ts";
+import { settings, workflowPrompt } from "./config.ts";
+import { trackerPluginOrNull } from "./plugins/trackers/registry.ts";
 import type { Issue } from "./work-item.ts";
 import { current as workflowCurrent } from "./workflow.ts";
 
@@ -88,7 +89,26 @@ function toSolidValue(value: unknown): unknown {
   return value;
 }
 
-function reviewAgentPrompt(): string {
+export type ReviewTrackerContext = {
+  workItemNoun: string;
+  toolReference: string;
+};
+
+export function reviewTrackerContext(): ReviewTrackerContext {
+  const config = settings();
+  if (!config.ok) {
+    return { workItemNoun: "work item", toolReference: "the configured tracker tool" };
+  }
+  const plugin = trackerPluginOrNull(config.value.tracker.kind);
+  const toolName = plugin?.agentTools?.listAgentTools()[0]?.name ?? null;
+  return {
+    workItemNoun: plugin?.ui?.workItemNoun ?? "work item",
+    toolReference: toolName === null ? "the configured tracker tool" : `\`${toolName}\``,
+  };
+}
+
+export function reviewAgentPrompt(): string {
+  const tracker = reviewTrackerContext();
   return [
     "## Symphony Review Agent",
     "",
@@ -97,7 +117,7 @@ function reviewAgentPrompt(): string {
     "",
     "Review scope:",
     "",
-    "- Read the Linear issue description, comments, workpad, current status, linked PRs, and relevant discussion with `linear_graphql` as needed.",
+    `- Read the ${tracker.workItemNoun} description, comments, workpad, current status, linked PRs, and relevant discussion with ${tracker.toolReference} as needed.`,
     "- Inspect the local code diff and related backend/frontend behavior directly in the workspace.",
     "- Run focused tests or browser checks when they are needed to verify the review conclusion.",
     "- Do not expect or create a review handoff file. No GitHub review context is injected by Symphony.",
@@ -105,9 +125,9 @@ function reviewAgentPrompt(): string {
     "Review decision:",
     "",
     "- Verify both the issue's acceptance criteria and the implementation. An unmet acceptance criterion or any actionable defect that requires code or test changes means the task needs rework; style preferences and optional improvements do not.",
-    "- If the task is incomplete or has an actionable defect, use the configured tracker tool to write a concise Chinese review conclusion and concrete findings on the Linear issue, then update the issue state to `Rework`. `Rework` is the only return state for problems.",
-    "- If no rework is needed, use the configured tracker tool to write the review conclusion on the Linear issue and leave the issue in `Human Review` for the normal human approval path.",
-    "- Do not finish with only a chat summary: the review is incomplete until the required Linear comment and, when applicable, the successful `Rework` state update have been performed. If a write fails, retry or report the write failure instead of claiming the review is complete.",
+    `- If the task is incomplete or has an actionable defect, use ${tracker.toolReference} to write a concise Chinese review conclusion and concrete findings on the ${tracker.workItemNoun}, then update the issue state to \`Rework\`. \`Rework\` is the only return state for problems.`,
+    `- If no rework is needed, use ${tracker.toolReference} to write the review conclusion on the ${tracker.workItemNoun} and leave the issue in \`Human Review\` for the normal human approval path.`,
+    `- Do not finish with only a chat summary: the review is incomplete until the required ${tracker.workItemNoun} comment and, when applicable, the successful \`Rework\` state update have been performed. If a write fails, retry or report the write failure instead of claiming the review is complete.`,
     "- This Review Agent is explicitly authorized to write the review conclusion and change the issue to `Rework`; read-only code-review guidance does not override these required tracker actions.",
   ].join("\n");
 }

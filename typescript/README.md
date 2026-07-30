@@ -3,11 +3,12 @@
 The reference implementation of Symphony, in TypeScript running on [Bun](https://bun.sh). It began
 as a literal, module-for-module port of an Elixir reference implementation (now removed; preserved
 in git history) and is the canonical implementation today. Symphony is an autonomous
-agent-orchestration service: it polls a tracker (Linear) for work, creates an isolated workspace
+agent-orchestration service: it polls a configured tracker (such as Linear or Gitea) for work,
+creates an isolated workspace
 per issue, runs Codex in app-server mode inside that workspace, and supervises the agent until the
 issue is done. See [`../SPEC.md`](../SPEC.md) for the language-agnostic specification. The
-tracker layer is pluggable (Linear, Lark/Feishu Bitable, Lark/Feishu task center, and an
-in-memory tracker ship built in);
+tracker layer is pluggable (Linear, Gitea, Lark/Feishu Bitable, Lark/Feishu task center, and
+an in-memory tracker ship built in);
 see [`../docs/PLUGIN_CONTRACT.md`](../docs/PLUGIN_CONTRACT.md) for the tracker plugin contract.
 
 > [!NOTE]
@@ -39,11 +40,12 @@ bun run frontend:build  # production assets; served by the Bun app when present
 
 ## Workflow files
 
-Three workflow files ship here, for three different jobs:
+Four workflow files ship here, for four different jobs:
 
 | File | Tracker / backend | For |
 |---|---|---|
 | [`WORKFLOW.md`](./WORKFLOW.md) | Linear + codex | The real thing: credentials, real workspaces, real PRs |
+| [`examples/gitea.workflow.md`](./examples/gitea.workflow.md) | Gitea + codex | Gitea Issue routing and controlled issue/PR API access |
 | [`examples/local.workflow.md`](./examples/local.workflow.md) | memory + codex | Credential-free local run ([acceptance checklist](../docs/CLAUDE_CODE_LOCAL_ACCEPTANCE.md)) |
 | [`examples/smoke.workflow.md`](./examples/smoke.workflow.md) | memory + fake codex | The `bun run verify` fixture — not for real work |
 

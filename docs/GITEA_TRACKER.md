@@ -60,8 +60,8 @@ export GITEA_API_TOKEN='...'
 
 Requests use Gitea's `/api/v1` REST API. The client sends the configured token
 as `Authorization: token <token>` and restricts agent `gitea_api` calls to the
-configured host and the configured repository's supported issue routes. The
-main routes are:
+configured host and the configured repository's supported issue and
+pull-request routes. The main routes are:
 
 - `GET /api/v1/repos/{owner}/{repo}/issues?state={open|closed}&type=issues&page={page}&limit={limit}`
 - `GET /api/v1/repos/{owner}/{repo}/issues/{index}`
@@ -70,6 +70,11 @@ main routes are:
 - `GET|POST|PUT /api/v1/repos/{owner}/{repo}/issues/{index}/labels`
 - `DELETE /api/v1/repos/{owner}/{repo}/issues/{index}/labels/{id}`
 - `PATCH /api/v1/repos/{owner}/{repo}/issues/{index}` with `{ state: "open" | "closed" }`
+- `GET /api/v1/repos/{owner}/{repo}/pulls?state={open|closed}&head={branch}`
+- `POST /api/v1/repos/{owner}/{repo}/pulls` with `{ title, head, base }` and an optional `body`
+- `GET /api/v1/repos/{owner}/{repo}/pulls/{index}`
+- `GET /api/v1/repos/{owner}/{repo}/pulls/{index}/reviews`
+- `PATCH /api/v1/repos/{owner}/{repo}/pulls/{index}` with `{ state: "open" | "closed" }`
 
 Issue and repository-label reads send `page` and `limit`. The client follows a
 `Link` header with `rel="next"`, and uses `x-total-count` as the fallback for
@@ -151,10 +156,29 @@ With `state_labels` configured:
 The plugin implements `comments` and `stateUpdates`. It also advertises a
 controlled `gitea_api` agent tool. The tool accepts only `GET`, `POST`, `PUT`,
 and `PATCH` requests for the configured repository's issue, comment, label,
-and state routes. Write bodies are constrained to comment creation, issue
-state changes, and complete label replacement. `DELETE`, unrelated API
-endpoints, other repositories, and arbitrary request bodies are rejected before
-the client is called.
+state, and pull-request routes. Pull-request creation is limited to the
+required `title`, `head`, and `base` fields plus an optional `body`; pull-request
+updates only allow the open/closed state. `DELETE`, unrelated API endpoints,
+other repositories, and arbitrary request bodies are rejected before the
+client is called.
+
+## Pull-request lifecycle
+
+The tracker does not merge pull requests automatically. A workflow that uses
+Gitea for delivery should have the agent:
+
+1. push the issue branch over SSH;
+2. list open pull requests for that branch and reuse an existing one when
+   present;
+3. create a pull request when none exists, with the issue URL, change summary,
+   and verification results in its body;
+4. comment the pull-request URL back onto the Issue and move its state label to
+   `Human Review` while keeping the native Issue open.
+
+Human review and merge happen in Gitea. After the merge, the Issue can move to
+the mapped `Done` state. If a rework cycle starts, the old pull request should
+be closed before the workspace is reset so the next attempt creates a fresh
+pull request.
 
 ## Compatibility and errors
 

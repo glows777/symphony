@@ -10,6 +10,7 @@
   "scripts": {
     "start": "bun run src/cli.ts",
     "start:linear": "bun run src/cli.ts --i-understand-that-this-will-be-running-without-the-usual-guardrails --port 4000 ./WORKFLOW.md",
+    "start:xz-system": "bun run src/cli.ts --i-understand-that-this-will-be-running-without-the-usual-guardrails --port 4001 ../projects/xz-system/workflow.md",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
     "typecheck": "tsc --noEmit",

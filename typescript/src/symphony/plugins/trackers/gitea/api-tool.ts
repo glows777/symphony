@@ -1,6 +1,6 @@
 // The `gitea_api` agent-facing dynamic tool. It exposes only the configured
-// repository's issue, comment, label, and state routes; the host and
-// Authorization header always come from the tracker plugin.
+// repository's issue, comment, label, state, and pull-request routes; the host
+// and Authorization header always come from the tracker plugin.
 
 import { type Result, err, ok } from "../../../result.ts";
 import type { AgentToolExecuteOpts, AgentToolOutcome, AgentToolSpec } from "../types.ts";
@@ -11,7 +11,7 @@ const GITEA_API_METHODS = ["GET", "POST", "PUT", "PATCH"] as const;
 const PATH_VALIDATION_ORIGIN = "https://symphony.invalid";
 
 const GITEA_API_DESCRIPTION =
-  "Execute a constrained Gitea issue API request for the configured repository. Only issue, comment, label, and state routes are permitted.\n";
+  "Execute a constrained Gitea issue or pull-request API request for the configured repository. Only issue, comment, label, state, and pull-request routes are permitted.\n";
 
 const GITEA_API_INPUT_SCHEMA = {
   type: "object",
@@ -162,6 +162,9 @@ function validateRoute(
   const issuePath = new RegExp(`^${escapeRegExp(issueCollectionPath)}/[1-9]\\d*$`);
   const commentsPath = new RegExp(`^${escapeRegExp(issueCollectionPath)}/[1-9]\\d*/comments$`);
   const labelsPath = new RegExp(`^${escapeRegExp(issueCollectionPath)}/[1-9]\\d*/labels$`);
+  const pullCollectionPath = `${repoPath}/pulls`;
+  const pullPath = new RegExp(`^${escapeRegExp(pullCollectionPath)}/[1-9]\\d*$`);
+  const pullReviewsPath = new RegExp(`^${escapeRegExp(pullCollectionPath)}/[1-9]\\d*/reviews$`);
 
   const allowed =
     (parsed.pathname === `${repoPath}/labels` && method === "GET" && body === null) ||
@@ -171,7 +174,12 @@ function validateRoute(
     (commentsPath.test(parsed.pathname) &&
       ((method === "GET" && body === null) || (method === "POST" && isCommentBody(body)))) ||
     (labelsPath.test(parsed.pathname) &&
-      ((method === "GET" && body === null) || (method === "PUT" && isLabelsBody(body))));
+      ((method === "GET" && body === null) || (method === "PUT" && isLabelsBody(body)))) ||
+    (parsed.pathname === pullCollectionPath &&
+      ((method === "GET" && body === null) || (method === "POST" && isPullCreateBody(body)))) ||
+    (pullPath.test(parsed.pathname) &&
+      ((method === "GET" && body === null) || (method === "PATCH" && isStateBody(body)))) ||
+    (pullReviewsPath.test(parsed.pathname) && method === "GET" && body === null);
 
   return allowed
     ? ok(undefined)
@@ -206,6 +214,26 @@ function isLabelsBody(body: Record<string, unknown> | null): boolean {
         (typeof label === "number" && Number.isInteger(label) && label >= 0),
     )
   );
+}
+
+function isPullCreateBody(body: Record<string, unknown> | null): boolean {
+  if (
+    body === null ||
+    !hasNonBlankString(body.title) ||
+    !hasNonBlankString(body.head) ||
+    !hasNonBlankString(body.base)
+  ) {
+    return false;
+  }
+  const keys = new Set(["title", "body", "head", "base"]);
+  return (
+    Object.keys(body).every((key) => keys.has(key)) &&
+    (body.body === undefined || typeof body.body === "string")
+  );
+}
+
+function hasNonBlankString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
@@ -274,7 +302,7 @@ function toolErrorPayload(reason: unknown): Record<string, unknown> {
       return {
         error: {
           message:
-            "`gitea_api` only permits configured-repository issue, comment, label, and state routes with their supported request bodies.",
+            "`gitea_api` only permits configured-repository issue, comment, label, state, and pull-request routes with their supported request bodies.",
           detail: (reason as { detail?: unknown }).detail ?? null,
         },
       };

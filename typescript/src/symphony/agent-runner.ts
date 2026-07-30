@@ -26,7 +26,7 @@ import type {
   ToolProvider,
 } from "./plugins/agents/types.ts";
 import { trackerPluginOrNull } from "./plugins/trackers/registry.ts";
-import { buildPrompt } from "./prompt-builder.ts";
+import { buildPrompt, reviewTrackerContext } from "./prompt-builder.ts";
 import { type Result, err, ok } from "./result.ts";
 import * as Tracker from "./tracker/tracker.ts";
 import { type Issue, routable } from "./work-item.ts";
@@ -605,13 +605,14 @@ function buildContinuationTurnPrompt(
     return buildFullPrompt(issue, opts);
   }
   if (opts.review === true) {
+    const tracker = reviewTrackerContext();
     return `Review continuation guidance:
 
 - Continue reviewing the current issue and linked PR; do not modify the workspace.
 - This is review turn #${turnNumber} of ${maxTurns} for the current agent run.
 - Re-check the acceptance criteria and any findings from earlier review turns.
-- If the task is incomplete or has an actionable defect, write the concrete findings to the Linear issue and move it to \`Rework\` before ending the review.
-- If no rework is needed, write the review conclusion to the Linear issue and leave the issue in \`Human Review\`.
+- If the task is incomplete or has an actionable defect, write the concrete findings to the ${tracker.workItemNoun} with ${tracker.toolReference} and move it to \`Rework\` before ending the review.
+- If no rework is needed, write the review conclusion to the ${tracker.workItemNoun} with ${tracker.toolReference} and leave the issue in \`Human Review\`.
 - Do not end with only a chat summary; complete the required tracker write-back first.
 `;
   }
