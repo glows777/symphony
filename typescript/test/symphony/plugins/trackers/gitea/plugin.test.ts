@@ -67,6 +67,49 @@ describe("Gitea.Plugin", () => {
     expect(GiteaPlugin.ui?.projectUrl?.(settings)).toBe("https://gitea.test/acme/symphony");
   });
 
+  test("parses provider-specific state label mappings", () => {
+    writeGiteaWorkflowFile(workflowFilePath(), {
+      state_labels: {
+        Todo: "symphony/state-todo",
+        "In Progress": "symphony/state-in-progress",
+        "Human Review": "symphony/state-review",
+        Done: "symphony/state-done",
+      },
+    });
+
+    expect(settingsBang().tracker.plugin.state_labels).toEqual({
+      Todo: "symphony/state-todo",
+      "In Progress": "symphony/state-in-progress",
+      "Human Review": "symphony/state-review",
+      Done: "symphony/state-done",
+    });
+    expect(validate()).toEqual({ ok: true, value: undefined });
+  });
+
+  test("rejects invalid and duplicate state label mappings", () => {
+    writeGiteaWorkflowFile(workflowFilePath(), { state_labels: ["symphony/state-todo"] });
+    const invalidShape = validate();
+    expect(invalidShape.ok).toBe(false);
+    if (!invalidShape.ok) {
+      expect((invalidShape.error as { tag: string; message: string }).tag).toBe(
+        "invalid_workflow_config",
+      );
+      expect((invalidShape.error as { message: string }).message).toContain("tracker.state_labels");
+    }
+
+    writeGiteaWorkflowFile(workflowFilePath(), {
+      state_labels: {
+        Todo: "symphony/state-active",
+        "In Progress": " Symphony/State-Active ",
+      },
+    });
+    const duplicate = validate();
+    expect(duplicate).toMatchObject({
+      ok: false,
+      error: { tag: "gitea_duplicate_state_label", code: "missing_config" },
+    });
+  });
+
   test("reports missing endpoint, token, owner, and repository configuration", () => {
     const cases: [Record<string, unknown>, string][] = [
       [{ endpoint: undefined }, "missing_gitea_endpoint"],

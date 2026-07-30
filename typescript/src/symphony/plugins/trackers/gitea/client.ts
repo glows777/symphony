@@ -99,10 +99,13 @@ export async function fetchCandidateIssues(
   if (!result.ok) {
     return err(result.error);
   }
+  const filterByState = shouldFilterByRequestedStates(settings.tracker.activeStates, settings);
   return ok(
     result.value.filter(
       (issue) =>
-        issue.assignedToWorker && hasRequiredLabels(issue.labels, settings.tracker.requiredLabels),
+        (!filterByState || stateNamesInclude(settings.tracker.activeStates, issue.state)) &&
+        issue.assignedToWorker &&
+        hasRequiredLabels(issue.labels, settings.tracker.requiredLabels),
     ),
   );
 }
@@ -126,7 +129,14 @@ export async function fetchIssuesByStates(
   if (nativeStates.length === 0) {
     return ok([]);
   }
-  return fetchIssuesForNativeStates(repository.value, nativeStates, settings, opts);
+  const result = await fetchIssuesForNativeStates(repository.value, nativeStates, settings, opts);
+  if (!result.ok) {
+    return err(result.error);
+  }
+  if (!shouldFilterByRequestedStates(normalized, settings)) {
+    return result;
+  }
+  return ok(result.value.filter((issue) => stateNamesInclude(normalized, issue.state)));
 }
 
 export async function fetchIssueStatesByIds(
@@ -239,6 +249,13 @@ export async function updateIssueState(
   const issue = decodeIssue(response.value.body, settings, gitea);
   if (!issue.ok) {
     return err(issue.error);
+  }
+  const labels = nextIssueLabels(response.value.body, stateName, settings);
+  if (labels !== null) {
+    const replaced = await replaceIssueLabels(issueId, labels, opts);
+    if (!replaced.ok) {
+      return err(replaced.error);
+    }
   }
   return ok(undefined);
 }
@@ -712,13 +729,14 @@ function normalizeIssue(
   const identifier = `${gitea.owner}/${gitea.repo}#${number}`;
   const users = issueUsers(rawIssue);
   const assigneeId = firstUserId(users);
+  const labels = issueLabels(rawIssue);
   return newIssue({
     id: identifier,
     identifier,
     title: rawIssue.title,
     description: typeof rawIssue.body === "string" ? rawIssue.body : null,
     priority: null,
-    state: projectedState(nativeState, settings),
+    state: projectedState(nativeState, settings, labels),
     branchName: null,
     url:
       stringOrNull(rawIssue.html_url) ??
@@ -726,7 +744,7 @@ function normalizeIssue(
       `${giteaInstanceUrl(gitea.endpoint ?? "") ?? ""}/${encodeURIComponent(gitea.owner)}/${encodeURIComponent(gitea.repo)}/issues/${number}`,
     assigneeId,
     blockedBy: [],
-    labels: issueLabels(rawIssue),
+    labels,
     assignedToWorker: assignedToWorker(users, gitea.assignee),
     createdAt: parseDateTime(rawIssue.created_at),
     updatedAt: parseDateTime(rawIssue.updated_at),
@@ -790,6 +808,12 @@ function assignedToWorker(users: JsonObject[], configuredAssignee: string | null
 }
 
 function issueLabels(issue: JsonObject): string[] {
+  return issueLabelNames(issue)
+    .map(normalizeLabelName)
+    .filter((label) => label !== "");
+}
+
+function issueLabelNames(issue: JsonObject): string[] {
   if (!Array.isArray(issue.labels)) {
     return [];
   }
@@ -801,7 +825,7 @@ function issueLabels(issue: JsonObject): string[] {
       return isObject(label) ? stringOrNull(label.name) : null;
     })
     .filter((label): label is string => label !== null)
-    .map((label) => label.trim().toLowerCase())
+    .map((label) => label.trim())
     .filter((label) => label !== "");
 }
 
@@ -860,6 +884,18 @@ function nativeStateForWorkflowState(
   stateName: string,
   settings: ReturnType<typeof settingsBang>,
 ): "open" | "closed" | null {
+  const nativeState = nativeStateForCoreWorkflowState(stateName, settings);
+  if (nativeState !== null) {
+    return nativeState;
+  }
+  const mapping = stateLabelMappingForWorkflowState(stateName, settings);
+  return mapping === null ? null : nativeStateForMappedState(mapping.stateName, settings);
+}
+
+function nativeStateForCoreWorkflowState(
+  stateName: string,
+  settings: ReturnType<typeof settingsBang>,
+): "open" | "closed" | null {
   const normalized = stateName.trim().toLowerCase();
   if (OPEN_STATE_ALIASES.has(normalized)) {
     return "open";
@@ -879,13 +915,131 @@ function nativeStateForWorkflowState(
 function projectedState(
   nativeState: "open" | "closed",
   settings: ReturnType<typeof settingsBang>,
+  labels: string[],
 ): string {
+  const labeled = projectedStateFromLabels(nativeState, settings, labels);
+  if (labeled !== null) {
+    return labeled;
+  }
   const configured =
     nativeState === "open" ? settings.tracker.activeStates : settings.tracker.terminalStates;
   const matching = configured.find(
     (state) => nativeStateForWorkflowState(state, settings) === nativeState,
   );
   return matching ?? configured[0] ?? nativeState;
+}
+
+type StateLabelMapping = {
+  stateName: string;
+  normalizedStateName: string;
+  labelName: string;
+  normalizedLabelName: string;
+};
+
+function stateLabelMappings(settings: ReturnType<typeof settingsBang>): StateLabelMapping[] {
+  return Object.entries(giteaSettings(settings).stateLabels).map(([stateName, labelName]) => ({
+    stateName,
+    normalizedStateName: normalizeStateName(stateName),
+    labelName,
+    normalizedLabelName: normalizeLabelName(labelName),
+  }));
+}
+
+function stateLabelMappingForWorkflowState(
+  stateName: string,
+  settings: ReturnType<typeof settingsBang>,
+): StateLabelMapping | null {
+  const normalized = normalizeStateName(stateName);
+  return (
+    stateLabelMappings(settings).find((mapping) => mapping.normalizedStateName === normalized) ??
+    null
+  );
+}
+
+function nativeStateForMappedState(
+  stateName: string,
+  settings: ReturnType<typeof settingsBang>,
+): "open" | "closed" {
+  return nativeStateForCoreWorkflowState(stateName, settings) === "closed" ? "closed" : "open";
+}
+
+function projectedStateFromLabels(
+  nativeState: "open" | "closed",
+  settings: ReturnType<typeof settingsBang>,
+  labels: string[],
+): string | null {
+  if (labels.length === 0) {
+    return null;
+  }
+  const labelSet = new Set(labels.map(normalizeLabelName));
+  for (const mapping of stateLabelMappings(settings)) {
+    if (
+      labelSet.has(mapping.normalizedLabelName) &&
+      nativeStateForMappedState(mapping.stateName, settings) === nativeState
+    ) {
+      return mapping.stateName;
+    }
+  }
+  return null;
+}
+
+function shouldFilterByRequestedStates(
+  stateNames: string[],
+  settings: ReturnType<typeof settingsBang>,
+): boolean {
+  if (stateNames.length === 0) {
+    return false;
+  }
+  return stateNames.some((stateName) => stateLabelMappingForWorkflowState(stateName, settings));
+}
+
+function stateNamesInclude(stateNames: string[], stateName: string | null): boolean {
+  if (stateName === null) {
+    return false;
+  }
+  const normalized = normalizeStateName(stateName);
+  return stateNames.some((candidate) => normalizeStateName(candidate) === normalized);
+}
+
+function nextIssueLabels(
+  rawIssue: unknown,
+  stateName: string,
+  settings: ReturnType<typeof settingsBang>,
+): string[] | null {
+  const mappings = stateLabelMappings(settings);
+  if (mappings.length === 0 || !isObject(rawIssue)) {
+    return null;
+  }
+  const stateLabelNames = new Set(mappings.map((mapping) => mapping.normalizedLabelName));
+  const nextLabels = issueLabelNames(rawIssue).filter(
+    (label) => !stateLabelNames.has(normalizeLabelName(label)),
+  );
+  const target = stateLabelMappingForWorkflowState(stateName, settings);
+  if (target !== null) {
+    nextLabels.push(target.labelName);
+  }
+  return uniqueLabels(nextLabels);
+}
+
+function uniqueLabels(labels: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const label of labels) {
+    const normalized = normalizeLabelName(label);
+    if (normalized !== "" && !seen.has(normalized)) {
+      seen.add(normalized);
+      result.push(label);
+    }
+  }
+  return result;
+}
+
+function normalizeStateName(stateName: string): string {
+  return stateName.trim().toLowerCase();
+}
+
+function normalizeLabelName(labelName: string): string {
+  return labelName.trim().toLowerCase();
 }
 
 // ---- paths and config errors ------------------------------------------------

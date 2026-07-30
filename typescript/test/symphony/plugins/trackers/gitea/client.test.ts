@@ -24,6 +24,14 @@ type Call = {
   body: unknown;
 };
 
+const STATE_LABELS = {
+  Todo: "symphony/state-todo",
+  "In Progress": "symphony/state-in-progress",
+  "Human Review": "symphony/state-review",
+  Rework: "symphony/state-rework",
+  Done: "symphony/state-done",
+};
+
 function fakeTransport(
   calls: Call[],
   responses: { status: number; body: unknown; headers?: Record<string, string> }[],
@@ -186,6 +194,205 @@ describe("Gitea.Client", () => {
       value: [expect.objectContaining({ id: "acme/symphony#9", state: "Done" })],
     });
     expect(calls[0]?.url).toContain("state=closed");
+  });
+
+  test("projects configured state labels without folding open workflow states", async () => {
+    writeGiteaWorkflowFile(workflowFilePath(), {
+      active_states: ["Todo", "In Progress", "Rework"],
+      terminal_states: ["Done"],
+      state_labels: STATE_LABELS,
+    });
+
+    expect(
+      normalizeIssueForTest(
+        rawIssue(10, {
+          labels: [{ name: "Symphony" }, { name: "symphony/state-in-progress" }],
+        }),
+      )?.state,
+    ).toBe("In Progress");
+    expect(
+      normalizeIssueForTest(
+        rawIssue(11, {
+          labels: [{ name: "Symphony" }, { name: "symphony/state-review" }],
+        }),
+      )?.state,
+    ).toBe("Human Review");
+    expect(
+      normalizeIssueForTest(
+        rawIssue(12, {
+          state: "closed",
+          labels: [{ name: "Symphony" }, { name: "symphony/state-done" }],
+        }),
+      )?.state,
+    ).toBe("Done");
+  });
+
+  test("filters candidates by configured state labels while keeping required labels separate", async () => {
+    writeGiteaWorkflowFile(workflowFilePath(), {
+      active_states: ["Todo", "In Progress", "Rework"],
+      terminal_states: ["Done"],
+      required_labels: ["symphony"],
+      state_labels: STATE_LABELS,
+    });
+    const calls: Call[] = [];
+    const requestFun = fakeTransport(calls, [
+      {
+        status: 200,
+        body: [
+          rawIssue(20, {
+            labels: [{ name: "Symphony" }, { name: "symphony/state-todo" }],
+          }),
+          rawIssue(21, {
+            labels: [{ name: "Symphony" }, { name: "symphony/state-review" }],
+          }),
+          rawIssue(22, {
+            labels: [{ name: "Backend" }, { name: "symphony/state-in-progress" }],
+          }),
+          rawIssue(23, {
+            labels: [{ name: "Symphony" }, { name: "symphony/state-in-progress" }],
+          }),
+        ],
+      },
+    ]);
+
+    const result = await fetchCandidateIssues({ requestFun });
+
+    expect(result).toEqual({
+      ok: true,
+      value: [
+        expect.objectContaining({ id: "acme/symphony#20", state: "Todo" }),
+        expect.objectContaining({ id: "acme/symphony#23", state: "In Progress" }),
+      ],
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("persists stateUpdates through configured labels across the next refresh", async () => {
+    writeGiteaWorkflowFile(workflowFilePath(), {
+      active_states: ["Todo", "In Progress", "Rework"],
+      terminal_states: ["Done"],
+      state_labels: STATE_LABELS,
+    });
+    const calls: Call[] = [];
+    const requestFun = fakeTransport(calls, [
+      {
+        status: 200,
+        body: rawIssue(30, {
+          labels: [
+            { name: "Symphony" },
+            { name: "Backend" },
+            { name: "symphony/state-in-progress" },
+          ],
+        }),
+      },
+      {
+        status: 200,
+        body: [
+          { id: 1, name: "Symphony" },
+          { id: 2, name: "Backend" },
+          { id: 3, name: "symphony/state-review" },
+        ],
+      },
+      {
+        status: 200,
+        body: rawIssue(30, {
+          labels: [{ name: "Symphony" }, { name: "Backend" }, { name: "symphony/state-review" }],
+        }),
+      },
+    ]);
+
+    expect(await updateIssueState("acme/symphony#30", "Human Review", { requestFun })).toEqual({
+      ok: true,
+      value: undefined,
+    });
+    const refreshed = await fetchIssueStatesByIds(["acme/symphony#30"], { requestFun });
+
+    expect(refreshed).toEqual({
+      ok: true,
+      value: [expect.objectContaining({ id: "acme/symphony#30", state: "Human Review" })],
+    });
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      "PATCH https://gitea.test/api/v1/repos/acme/symphony/issues/30",
+      "PUT https://gitea.test/api/v1/repos/acme/symphony/issues/30/labels",
+      "GET https://gitea.test/api/v1/repos/acme/symphony/issues/30",
+    ]);
+    expect(calls[0]?.body).toEqual({ state: "open" });
+    expect(calls[1]?.body).toEqual({
+      labels: ["Symphony", "Backend", "symphony/state-review"],
+    });
+  });
+
+  test("writes terminal state labels and removes stale active state labels", async () => {
+    writeGiteaWorkflowFile(workflowFilePath(), {
+      active_states: ["Todo", "In Progress", "Rework"],
+      terminal_states: ["Done"],
+      state_labels: STATE_LABELS,
+    });
+    const calls: Call[] = [];
+
+    expect(
+      await updateIssueState("acme/symphony#31", "Done", {
+        requestFun: fakeTransport(calls, [
+          {
+            status: 200,
+            body: rawIssue(31, {
+              state: "closed",
+              labels: [
+                { name: "Symphony" },
+                { name: "symphony/state-todo" },
+                { name: "symphony/state-in-progress" },
+              ],
+            }),
+          },
+          {
+            status: 200,
+            body: [
+              { id: 1, name: "Symphony" },
+              { id: 2, name: "symphony/state-done" },
+            ],
+          },
+        ]),
+      }),
+    ).toEqual({ ok: true, value: undefined });
+
+    expect(calls.map((call) => call.method)).toEqual(["PATCH", "PUT"]);
+    expect(calls[0]?.body).toEqual({ state: "closed" });
+    expect(calls[1]?.body).toEqual({ labels: ["Symphony", "symphony/state-done"] });
+  });
+
+  test("handles duplicate, stale, and unknown state labels deterministically", () => {
+    writeGiteaWorkflowFile(workflowFilePath(), {
+      active_states: ["Todo", "In Progress", "Rework"],
+      terminal_states: ["Done"],
+      state_labels: STATE_LABELS,
+    });
+
+    expect(
+      normalizeIssueForTest(
+        rawIssue(40, {
+          labels: [
+            { name: "Symphony" },
+            { name: "symphony/state-review" },
+            { name: "symphony/state-in-progress" },
+          ],
+        }),
+      )?.state,
+    ).toBe("In Progress");
+    expect(
+      normalizeIssueForTest(
+        rawIssue(41, {
+          labels: [{ name: "Symphony" }, { name: "symphony/state-unknown" }],
+        }),
+      )?.state,
+    ).toBe("Todo");
+    expect(
+      normalizeIssueForTest(
+        rawIssue(42, {
+          state: "closed",
+          labels: [{ name: "Symphony" }, { name: "symphony/state-in-progress" }],
+        }),
+      )?.state,
+    ).toBe("Done");
   });
 
   test("refreshes issue states by repository issue number in request order", async () => {
