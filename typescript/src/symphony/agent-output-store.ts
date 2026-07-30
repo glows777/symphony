@@ -1790,8 +1790,20 @@ function buildAgentOutputMessages(
     }
     seenActivityEvents.add(dedupeKey);
 
-    const scope = activityScope(event, activity);
+    let scope = activityScope(event, activity);
     let current = active.get(scope);
+    if (
+      current === undefined &&
+      activity.type === "assistant_message" &&
+      activity.id === null &&
+      activity.phase !== "start"
+    ) {
+      const activeAssistant = findActiveAssistantMessage(active, event);
+      if (activeAssistant !== null) {
+        scope = activeAssistant.scope;
+        current = activeAssistant.message;
+      }
+    }
     const id = activity.id ?? current?.activity_id ?? legacyActivityId(event, activity);
     if (activity.phase === "start") {
       if (current !== undefined && current.status === "streaming" && current.activity_id !== id) {
@@ -2050,6 +2062,27 @@ function storedChatEvent(event: AgentOutputEvent): StoredChatEvent | null {
 
 function activityScope(event: AgentOutputEvent, activity: StoredActivityEvent): string {
   return `${event.run_id}:${event.turn ?? "unknown"}:${activity.type}:${activity.id ?? "active"}`;
+}
+
+function findActiveAssistantMessage(
+  active: Map<string, AgentOutputMessage>,
+  event: AgentOutputEvent,
+): { scope: string; message: AgentOutputMessage } | null {
+  let candidate: { scope: string; message: AgentOutputMessage } | null = null;
+  for (const [scope, message] of active) {
+    if (
+      message.activity_type !== "assistant_message" ||
+      message.status !== "streaming" ||
+      message.run_id !== event.run_id ||
+      message.turn !== event.turn
+    ) {
+      continue;
+    }
+    if (candidate === null || message.seq_end > candidate.message.seq_end) {
+      candidate = { scope, message };
+    }
+  }
+  return candidate;
 }
 
 function legacyActivityId(event: AgentOutputEvent, activity: StoredActivityEvent): string {
