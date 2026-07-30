@@ -41,6 +41,7 @@ export type AgentSettings = {
   maxConcurrentAgents: number;
   maxTurns: number;
   maxRetryBackoffMs: number;
+  maxRetryAttempts: number;
   maxConcurrentAgentsByState: JsonMap;
   // Backend-neutral stall budget: how long a running issue may go without a
   // backend event before the orchestrator restarts it. `null` falls back to
@@ -444,6 +445,8 @@ function castAgent(attrs: JsonMap, section: string, errors: FieldError[]): Agent
     errors,
   );
   validateGreaterThan(maxBackoff, section, "max_retry_backoff_ms", 0, errors);
+  const maxRetryAttempts = field<number>(r, "max_retry_attempts", section, castInteger, 3, errors);
+  validateGreaterThan(maxRetryAttempts, section, "max_retry_attempts", 0, errors);
 
   const byStateField = field<JsonMap>(
     r,
@@ -477,6 +480,7 @@ function castAgent(attrs: JsonMap, section: string, errors: FieldError[]): Agent
     maxConcurrentAgents: maxConcurrent.value,
     maxTurns: maxTurns.value,
     maxRetryBackoffMs: maxBackoff.value,
+    maxRetryAttempts: maxRetryAttempts.value,
     maxConcurrentAgentsByState: byState,
     stallTimeoutMs: stallTimeout.value,
     backendConfig: castAgentBackendSection(attrs, backend, errors),

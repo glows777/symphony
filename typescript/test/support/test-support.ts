@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resetAgentOutputStoreForTest } from "../../src/symphony/agent-output-store.ts";
-import { deleteEnv } from "../../src/symphony/app-env.ts";
+import { deleteEnv, putEnv } from "../../src/symphony/app-env.ts";
 import { resetTokenCacheForTest as resetLarkTokenCache } from "../../src/symphony/plugins/trackers/lark-common/http.ts";
 import { getRunningStore } from "../../src/symphony/workflow-store.ts";
 import { setWorkflowFilePath } from "../../src/symphony/workflow.ts";
@@ -34,6 +34,7 @@ function defaults(): Overrides {
     max_concurrent_agents: 10,
     max_turns: 20,
     max_retry_backoff_ms: 300_000,
+    max_retry_attempts: 3,
     max_concurrent_agents_by_state: {},
     codex_command: "codex app-server",
     codex_approval_policy: "on-request",
@@ -97,6 +98,7 @@ function workflowContent(overrides: Overrides): string {
     `  max_concurrent_agents: ${yamlValue(g("max_concurrent_agents"))}`,
     `  max_turns: ${yamlValue(g("max_turns"))}`,
     `  max_retry_backoff_ms: ${yamlValue(g("max_retry_backoff_ms"))}`,
+    `  max_retry_attempts: ${yamlValue(g("max_retry_attempts"))}`,
     `  max_concurrent_agents_by_state: ${yamlValue(g("max_concurrent_agents_by_state"))}`,
     "codex:",
     `  command: ${yamlValue(g("codex_command"))}`,
@@ -289,13 +291,20 @@ function serverYaml(port: unknown, host: unknown, unsafeAllowRemote: unknown): s
   return lines.join("\n");
 }
 
+export function setupAgentOutputRoot(root: string): string {
+  const agentOutputRoot = path.join(root, "agent-output");
+  putEnv("agent_output_root", agentOutputRoot);
+  return agentOutputRoot;
+}
+
 // Mirrors the ExUnit `setup` block: a fresh temp WORKFLOW.md per test.
-export function setupWorkflow(): { root: string; workflowFile: string } {
+export function setupWorkflow(): { root: string; workflowFile: string; agentOutputRoot: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-workflow-"));
   const workflowFile = path.join(root, "WORKFLOW.md");
+  const agentOutputRoot = setupAgentOutputRoot(root);
   writeWorkflowFile(workflowFile);
   setWorkflowFilePath(workflowFile);
-  return { root, workflowFile };
+  return { root, workflowFile, agentOutputRoot };
 }
 
 export function teardownWorkflow(root: string): void {

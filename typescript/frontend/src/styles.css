@@ -558,6 +558,60 @@ summary:focus-visible {
   line-height: 1;
 }
 
+.rerun-button {
+  flex: 0 0 auto;
+  padding: 9px 12px;
+  color: var(--red);
+  background: var(--red-wash);
+  border: 1px solid rgba(163, 47, 47, 0.34);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.rerun-button:disabled {
+  cursor: progress;
+  opacity: 0.65;
+}
+
+.blocked-callout {
+  display: grid;
+  grid-template-columns: auto minmax(0, max-content) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  margin-top: 15px;
+  padding: 10px 12px;
+  color: var(--ink);
+  background: var(--red-wash);
+  border: 1px solid rgba(163, 47, 47, 0.24);
+  border-radius: var(--radius-sm);
+}
+
+.blocked-callout-label {
+  color: var(--red);
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.blocked-callout-reason,
+.blocked-callout-prompt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.blocked-callout-prompt {
+  color: var(--ink-soft);
+}
+
 .run-history-row {
   margin-top: 18px;
 }
@@ -1315,6 +1369,16 @@ summary:focus-visible {
   .read-only-stamp {
     padding: 6px 8px;
     font-size: var(--font-size-code);
+  }
+
+  .rerun-button {
+    padding: 8px 10px;
+  }
+
+  .blocked-callout {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 6px;
   }
 
   .run-facts {

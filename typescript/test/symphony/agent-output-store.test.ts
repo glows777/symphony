@@ -109,6 +109,37 @@ describe("AgentOutputStore", () => {
     await run.finish("failed", { tag: "port_exit", status: 1 });
   });
 
+  test("keeps agent cancellation stop reasons in summary terminal events", async () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "summary" });
+    const run = store.startRun({
+      issueId: "issue-cancel",
+      issueIdentifier: "SYM-CANCEL",
+      backend: "codex",
+      workerHost: null,
+      runId: "run-cancel",
+    });
+
+    await run.finish("cancelled", {
+      tag: "agent_run_cancelled",
+      reason: "issue_stalled",
+      session_id: "thread-stall-turn-stall",
+      elapsed_ms: 5019,
+      cause: { tag: "port_exit", status: 143 },
+    });
+
+    const terminal = store
+      .readIssueOutput("SYM-CANCEL")
+      .events.find((event) => event.event === "run_cancelled");
+    expect(terminal?.reason).toMatchObject({
+      tag: "agent_run_cancelled",
+      reason: "issue_stalled",
+      session_id: "thread-stall-turn-stall",
+      elapsed_ms: "5019",
+      cause_tag: "port_exit",
+      cause_status: "143",
+    });
+  });
+
   test("keeps the live run object authoritative after an output read", async () => {
     const store = new AgentOutputStore({ root: tempRoot(), mode: "raw" });
     const run = store.startRun({
@@ -241,6 +272,46 @@ describe("AgentOutputStore", () => {
     await run.finish("completed");
 
     expect(store.readIssueOutput("TRANSCRIPT-1").messages[0]?.status).toBe("completed");
+  });
+
+  test("aggregates legacy assistant summaries with streaming deltas", async () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "summary" });
+    const run = store.startRun({
+      issueId: "issue-legacy-transcript",
+      issueIdentifier: "TRANSCRIPT-LEGACY",
+      backend: "codex",
+      workerHost: null,
+      runId: "legacy-transcript-run",
+    });
+    const legacyMessage = (): AgentMessage => message({ payload: {}, raw: "{}" });
+
+    run.record(legacyMessage(), 1, "item started: agent message (msg-1)");
+    run.record(legacyMessage(), 1, "agent message streaming: Hello");
+    run.record(legacyMessage(), 1, "agent message streaming: world");
+
+    const streaming = store.readIssueOutput("TRANSCRIPT-LEGACY");
+    expect(streaming.messages).toHaveLength(1);
+    expect(streaming.messages[0]).toMatchObject({
+      message_id: "msg-1",
+      activity_id: "msg-1",
+      activity_type: "assistant_message",
+      activity_status: "streaming",
+      content: "Helloworld",
+      status: "streaming",
+    });
+
+    run.record(legacyMessage(), 1, "item completed: agent message (msg-1)");
+    await run.finish("completed");
+
+    const completed = store.readIssueOutput("TRANSCRIPT-LEGACY");
+    expect(completed.messages).toHaveLength(1);
+    expect(completed.messages[0]).toMatchObject({
+      message_id: "msg-1",
+      activity_id: "msg-1",
+      content: "Helloworld",
+      status: "completed",
+      activity_status: "completed",
+    });
   });
 
   test("closes streaming assistant messages when the turn ends without item completion", async () => {

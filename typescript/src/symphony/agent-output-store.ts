@@ -148,6 +148,7 @@ type PersistedRun = {
   pendingWriteBytes: number;
   bufferedWriteBytes: number;
   writeFlushTimer: ReturnType<typeof setTimeout> | null;
+  discardedForTest: boolean;
   activeChatId: string | null;
   activeChatTurn: number | null;
   chatSequence: number;
@@ -253,6 +254,7 @@ export class AgentOutputStore {
       pendingWriteBytes: 0,
       bufferedWriteBytes: 0,
       writeFlushTimer: null,
+      discardedForTest: false,
       activeChatId: null,
       activeChatTurn: null,
       chatSequence: 0,
@@ -614,7 +616,11 @@ export class AgentOutputStore {
   }
 
   private append(state: PersistedRun, input: Record<string, unknown>): AgentOutputEvent | null {
-    if (state.mode === "off" || (state.metadata.truncated && input.terminal !== true)) {
+    if (
+      state.mode === "off" ||
+      state.discardedForTest ||
+      (state.metadata.truncated && input.terminal !== true)
+    ) {
       return null;
     }
     const event = this.boundedEvent(state, input);
@@ -919,6 +925,7 @@ export class AgentOutputStore {
       pendingWriteBytes: 0,
       bufferedWriteBytes: 0,
       writeFlushTimer: null,
+      discardedForTest: false,
       activeChatId: null,
       activeChatTurn: null,
       chatSequence: 0,
@@ -954,6 +961,9 @@ export class AgentOutputStore {
     contents: string,
     terminal = false,
   ): boolean {
+    if (state.discardedForTest) {
+      return true;
+    }
     const writeBytes = Buffer.byteLength(contents, "utf8");
     if (state.bufferedWriteBytes + writeBytes > MAX_PENDING_WRITE_BYTES && !terminal) {
       state.metadata.truncated = true;
@@ -971,6 +981,9 @@ export class AgentOutputStore {
   }
 
   private scheduleWriteFlush(state: PersistedRun): void {
+    if (state.discardedForTest) {
+      return;
+    }
     if (state.writeFlushTimer !== null) {
       return;
     }
@@ -984,6 +997,12 @@ export class AgentOutputStore {
     if (state.writeFlushTimer !== null) {
       clearTimeout(state.writeFlushTimer);
       state.writeFlushTimer = null;
+    }
+    if (state.discardedForTest) {
+      state.pendingWrites = [];
+      state.pendingWriteBytes = 0;
+      state.bufferedWriteBytes = 0;
+      return;
     }
     if (state.pendingWrites.length === 0) {
       return;
@@ -1004,9 +1023,18 @@ export class AgentOutputStore {
 
     state.writeChain = state.writeChain
       .then(async () => {
+        if (state.discardedForTest) {
+          return;
+        }
         for (const [filePath, contents] of grouped) {
           try {
+            if (state.discardedForTest) {
+              return;
+            }
             await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+            if (state.discardedForTest) {
+              return;
+            }
             if (filePath.endsWith(RUN_METADATA_SUFFIX)) {
               await fs.promises.writeFile(filePath, contents, "utf8");
             } else {
@@ -1022,6 +1050,21 @@ export class AgentOutputStore {
       .finally(() => {
         state.bufferedWriteBytes = Math.max(0, state.bufferedWriteBytes - batchBytes);
       });
+  }
+
+  discardPendingWritesForTest(): void {
+    for (const state of this.runs.values()) {
+      state.discardedForTest = true;
+      if (state.writeFlushTimer !== null) {
+        clearTimeout(state.writeFlushTimer);
+        state.writeFlushTimer = null;
+      }
+      state.pendingWrites = [];
+      state.pendingWriteBytes = 0;
+      state.bufferedWriteBytes = 0;
+    }
+    this.runs.clear();
+    this.listeners.clear();
   }
 
   private persistMetadata(state: PersistedRun, terminal = false): void {
@@ -1074,6 +1117,7 @@ export function getAgentOutputStore(): AgentOutputStore {
 }
 
 export function resetAgentOutputStoreForTest(): void {
+  configuredStore?.discardPendingWritesForTest();
   configuredStore = null;
 }
 
@@ -1746,8 +1790,20 @@ function buildAgentOutputMessages(
     }
     seenActivityEvents.add(dedupeKey);
 
-    const scope = activityScope(event, activity);
+    let scope = activityScope(event, activity);
     let current = active.get(scope);
+    if (
+      current === undefined &&
+      activity.type === "assistant_message" &&
+      activity.id === null &&
+      activity.phase !== "start"
+    ) {
+      const activeAssistant = findActiveAssistantMessage(active, event);
+      if (activeAssistant !== null) {
+        scope = activeAssistant.scope;
+        current = activeAssistant.message;
+      }
+    }
     const id = activity.id ?? current?.activity_id ?? legacyActivityId(event, activity);
     if (activity.phase === "start") {
       if (current !== undefined && current.status === "streaming" && current.activity_id !== id) {
@@ -2006,6 +2062,27 @@ function storedChatEvent(event: AgentOutputEvent): StoredChatEvent | null {
 
 function activityScope(event: AgentOutputEvent, activity: StoredActivityEvent): string {
   return `${event.run_id}:${event.turn ?? "unknown"}:${activity.type}:${activity.id ?? "active"}`;
+}
+
+function findActiveAssistantMessage(
+  active: Map<string, AgentOutputMessage>,
+  event: AgentOutputEvent,
+): { scope: string; message: AgentOutputMessage } | null {
+  let candidate: { scope: string; message: AgentOutputMessage } | null = null;
+  for (const [scope, message] of active) {
+    if (
+      message.activity_type !== "assistant_message" ||
+      message.status !== "streaming" ||
+      message.run_id !== event.run_id ||
+      message.turn !== event.turn
+    ) {
+      continue;
+    }
+    if (candidate === null || message.seq_end > candidate.message.seq_end) {
+      candidate = { scope, message };
+    }
+  }
+  return candidate;
 }
 
 function legacyActivityId(event: AgentOutputEvent, activity: StoredActivityEvent): string {
@@ -2461,6 +2538,9 @@ function mergeEvents(...groups: AgentOutputEvent[][]): AgentOutputEvent[] {
 }
 
 function sanitizeReason(value: unknown): Record<string, string> | undefined {
+  if (isRecord(value) && value.tag === "agent_run_cancelled") {
+    return sanitizeAgentRunCancellation(value);
+  }
   const candidate = isRecord(value) && isRecord(value.reason) ? value.reason : value;
   if (!isRecord(candidate) && typeof candidate !== "string") {
     return undefined;
@@ -2476,6 +2556,49 @@ function sanitizeReason(value: unknown): Record<string, string> | undefined {
     result.message = boundText(candidate.message.trim(), 1_024).value;
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function sanitizeAgentRunCancellation(value: Record<string, unknown>): Record<string, string> {
+  const result: Record<string, string> = { tag: "agent_run_cancelled" };
+  copyBoundedStringField(value, result, "reason", 128);
+  copyBoundedStringField(value, result, "state", 128);
+  copyBoundedStringField(value, result, "session_id", 256);
+  copyBoundedStringField(value, result, "error", 1_024);
+  copyBoundedStringField(value, result, "signal_reason", 256);
+  copyBoundedNumberField(value, result, "elapsed_ms");
+
+  const cause = value.cause;
+  if (isRecord(cause)) {
+    if (typeof cause.tag === "string" && cause.tag.trim() !== "") {
+      result.cause_tag = boundText(cause.tag.trim(), 128).value;
+    }
+    copyBoundedNumberField(cause, result, "status", "cause_status");
+  }
+  return result;
+}
+
+function copyBoundedStringField(
+  source: Record<string, unknown>,
+  target: Record<string, string>,
+  key: string,
+  maxBytes: number,
+): void {
+  const value = source[key];
+  if (typeof value === "string" && value.trim() !== "") {
+    target[key] = boundText(value.trim(), maxBytes).value;
+  }
+}
+
+function copyBoundedNumberField(
+  source: Record<string, unknown>,
+  target: Record<string, string>,
+  key: string,
+  targetKey = key,
+): void {
+  const value = source[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    target[targetKey] = String(value);
+  }
 }
 
 function issueKey(value: string): string {

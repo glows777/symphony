@@ -19,11 +19,13 @@ import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/t
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-function stoppableTask(): RunningTask & { stopped: boolean } {
+function stoppableTask(): RunningTask & { stopped: boolean; reason: unknown } {
   const task = {
     stopped: false,
-    stop() {
+    reason: null as unknown,
+    stop(reason?: unknown) {
       task.stopped = true;
+      task.reason = reason;
     },
   };
   return task;
@@ -551,6 +553,11 @@ describe("Orchestrator status / live GenServer", () => {
 
     const state = orch.getState();
     expect(issueId in state.running).toBe(false);
+    expect(task.reason).toMatchObject({
+      tag: "agent_run_cancelled",
+      reason: "issue_stalled",
+      session_id: "thread-stall-turn-stall",
+    });
     const retry = state.retry_attempts[issueId];
     expect(retry?.attempt).toBe(1);
     expect(retry?.identifier).toBe("MT-STALL");
@@ -680,6 +687,268 @@ describe("Orchestrator status / live GenServer", () => {
     expect(state.claimed.has(issueId)).toBe(true);
     expect(state.blocked[issueId]?.identifier).toBe("MT-INPUT");
     expect(state.blocked[issueId]?.error).toBe("codex turn requires operator input");
+  });
+
+  test("keeps original input-required blocker when a generic error event follows", async () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_api_token: null });
+    const orch = makeOrchestrator();
+    const issueId = "issue-input-required-overwrite";
+    const ref = Symbol("ref");
+    const issue = newIssue({
+      id: issueId,
+      identifier: "MT-INPUT-ORDER",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-INPUT-ORDER",
+    });
+    const elicitation = {
+      method: "mcpServer/elicitation/request",
+      params: { message: "Allow GitHub to run tool update_pull_request?" },
+    };
+    injectRunning(
+      orch,
+      issueId,
+      runningEntry({
+        ref,
+        identifier: issue.identifier,
+        issue,
+        session_id: "thread-input-order-turn-input-order",
+      }),
+    );
+
+    const blockedAt = new Date();
+    await orch.cast({
+      tag: "codex_worker_update",
+      issueId,
+      update: {
+        event: "turn_input_required",
+        sessionId: "thread-input-order-turn-input-order",
+        payload: elicitation,
+        timestamp: blockedAt,
+      },
+    });
+    await orch.cast({
+      tag: "codex_worker_update",
+      issueId,
+      update: {
+        event: "turn_input_required",
+        sessionId: "thread-input-order-turn-input-order",
+        payload: {
+          method: "mcpServer/elicitation/request",
+          params: { message: "Duplicate prompt must not replace the original" },
+        },
+        timestamp: new Date(blockedAt.getTime() + 1),
+      },
+    });
+    await orch.cast({
+      tag: "codex_worker_update",
+      issueId,
+      update: {
+        event: "turn_ended_with_error",
+        sessionId: "thread-input-order-turn-input-order",
+        reason: { tag: "turn_input_required", payload: elicitation },
+        timestamp: new Date(blockedAt.getTime() + 2),
+      },
+    });
+    await orch.cast({ tag: "down", ref, reason: "Agent run failed" });
+
+    const state = orch.getState();
+    expect(issueId in state.running).toBe(false);
+    expect(issueId in state.retry_attempts).toBe(false);
+    const blocked = state.blocked[issueId];
+    expect(blocked?.error).toBe("codex turn requires operator input");
+    expect(blocked?.last_codex_event).toBe("turn_input_required");
+    expect(blocked?.last_codex_message).toEqual({
+      event: "turn_input_required",
+      message: elicitation,
+      timestamp: blockedAt,
+    });
+    expect(blocked?.raw_blocker_payload).toEqual(elicitation);
+    expect(blocked?.operator_prompt).toBe("Allow GitHub to run tool update_pull_request?");
+    expect(blocked?.session_id).toBe("thread-input-order-turn-input-order");
+
+    const snapshot = await snap(orch);
+    expect(snapshot.blocked).toHaveLength(1);
+    expect(snapshot.retrying).toHaveLength(0);
+    expect(snapshot.blocked[0]).toMatchObject({
+      identifier: "MT-INPUT-ORDER",
+      disposition: "blocked",
+      blocked_reason: "codex turn requires operator input",
+      operator_prompt: "Allow GitHub to run tool update_pull_request?",
+      raw_blocker_payload: elicitation,
+      manual_recovery: {
+        action: "provide_required_input_or_approval_then_rerun",
+        automatic_retry: false,
+        resume_supported: false,
+        rerun_supported: true,
+      },
+    });
+  });
+
+  test("blocks approval-required exits independently from input-required exits", async () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_api_token: null });
+    const orch = makeOrchestrator();
+    const issueId = "issue-approval-required";
+    const ref = Symbol("ref");
+    const approval = {
+      method: "item/commandExecution/requestApproval",
+      params: { reason: "Allow command execution?" },
+    };
+    injectRunning(
+      orch,
+      issueId,
+      runningEntry({
+        ref,
+        identifier: "MT-APPROVAL",
+        issue: newIssue({ id: issueId, identifier: "MT-APPROVAL", state: "In Progress" }),
+      }),
+    );
+
+    await orch.cast({
+      tag: "codex_worker_update",
+      issueId,
+      update: {
+        event: "approval_required",
+        sessionId: "thread-approval-turn-approval",
+        payload: approval,
+        timestamp: new Date(),
+      },
+    });
+    await orch.cast({
+      tag: "codex_worker_update",
+      issueId,
+      update: {
+        event: "turn_ended_with_error",
+        sessionId: "thread-approval-turn-approval",
+        reason: { tag: "approval_required", payload: approval },
+        timestamp: new Date(),
+      },
+    });
+    await orch.cast({ tag: "down", ref, reason: "Agent run failed" });
+
+    const state = orch.getState();
+    expect(issueId in state.retry_attempts).toBe(false);
+    expect(state.blocked[issueId]?.error).toBe("codex turn requires approval");
+    expect(state.blocked[issueId]?.last_codex_event).toBe("approval_required");
+    expect(state.blocked[issueId]?.operator_prompt).toBe("Allow command execution?");
+  });
+
+  test("blocks deterministic turn failures instead of retrying blind", async () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_api_token: null });
+    const orch = makeOrchestrator();
+    const issueId = "issue-turn-failed";
+    const ref = Symbol("ref");
+    injectRunning(
+      orch,
+      issueId,
+      runningEntry({
+        ref,
+        identifier: "MT-TURN-FAILED",
+        issue: newIssue({ id: issueId, identifier: "MT-TURN-FAILED", state: "In Progress" }),
+      }),
+    );
+
+    await orch.cast({
+      tag: "codex_worker_update",
+      issueId,
+      update: {
+        event: "turn_failed",
+        payload: { method: "turn/failed", params: { error: "invalid prompt" } },
+        timestamp: new Date(),
+      },
+    });
+    await orch.cast({ tag: "down", ref, reason: { tag: "turn_failed" } });
+
+    const state = orch.getState();
+    expect(issueId in state.retry_attempts).toBe(false);
+    expect(state.blocked[issueId]?.disposition).toBe("blocked");
+    expect(state.blocked[issueId]?.error).toBe("agent failure is not retryable: agent turn failed");
+    expect(state.blocked[issueId]?.manual_recovery).toMatchObject({
+      action: "inspect_failure_then_rerun",
+      automatic_retry: false,
+    });
+  });
+
+  test("retries explicit transient turn timeouts with backoff", async () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_api_token: null });
+    const orch = makeOrchestrator();
+    const issueId = "issue-turn-timeout";
+    const ref = Symbol("ref");
+    injectRunning(
+      orch,
+      issueId,
+      runningEntry({
+        ref,
+        identifier: "MT-TIMEOUT",
+        issue: newIssue({ id: issueId, identifier: "MT-TIMEOUT", state: "In Progress" }),
+      }),
+    );
+
+    const before = nowMs();
+    await orch.cast({
+      tag: "codex_worker_update",
+      issueId,
+      update: {
+        event: "turn_ended_with_error",
+        reason: { tag: "turn_timeout" },
+        timestamp: new Date(),
+      },
+    });
+    await orch.cast({ tag: "down", ref, reason: { tag: "turn_timeout" } });
+
+    const state = orch.getState();
+    expect(issueId in state.blocked).toBe(false);
+    const retry = state.retry_attempts[issueId];
+    expect(retry?.attempt).toBe(1);
+    expect(retry?.retry_class).toBe("retryable");
+    expect(retry?.error).toBe('agent exited: {"tag":"turn_timeout"}');
+    expect(retry?.due_at_ms).toBeGreaterThanOrEqual(before + 9_500);
+    expect(retry?.due_at_ms).toBeLessThanOrEqual(before + 10_500);
+  });
+
+  test("blocks retryable failures after max retry attempts are exhausted", async () => {
+    writeWorkflowFile(workflowFilePath(), { tracker_api_token: null, max_retry_attempts: 2 });
+    const orch = makeOrchestrator();
+    const issueId = "issue-timeout-exhausted";
+    const ref = Symbol("ref");
+    injectRunning(
+      orch,
+      issueId,
+      runningEntry({
+        ref,
+        identifier: "MT-TIMEOUT-MAX",
+        retry_attempt: 2,
+        issue: newIssue({
+          id: issueId,
+          identifier: "MT-TIMEOUT-MAX",
+          state: "In Progress",
+          url: "https://example.org/issues/MT-TIMEOUT-MAX",
+        }),
+        workspace_path: "/workspaces/MT-TIMEOUT-MAX",
+      }),
+    );
+
+    await orch.cast({ tag: "down", ref, reason: { tag: "turn_timeout" } });
+
+    const state = orch.getState();
+    expect(issueId in state.retry_attempts).toBe(false);
+    const blocked = state.blocked[issueId];
+    expect(blocked?.disposition).toBe("terminal");
+    expect(blocked?.retry_attempt).toBe(2);
+    expect(blocked?.error).toBe(
+      'retry attempts exhausted after 2 attempts: agent exited: {"tag":"turn_timeout"}',
+    );
+
+    const snapshot = await snap(orch);
+    expect(snapshot.blocked[0]).toMatchObject({
+      identifier: "MT-TIMEOUT-MAX",
+      issue_url: "https://example.org/issues/MT-TIMEOUT-MAX",
+      disposition: "terminal",
+      retry_attempt: 2,
+      manual_recovery: {
+        action: "inspect_failure_then_rerun",
+        automatic_retry: false,
+      },
+    });
   });
 
   test("blocks normal worker exits after input required completion", async () => {

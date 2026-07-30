@@ -29,6 +29,7 @@ type OutputQuery = {
 const UNAVAILABLE_PROVIDER: SnapshotProvider = {
   snapshot: () => Promise.resolve("unavailable"),
   requestRefresh: () => Promise.resolve("unavailable"),
+  rerunBlockedIssue: () => Promise.resolve("unavailable"),
 };
 
 export type RequestHandler = (req: Request) => Response | Promise<Response>;
@@ -95,6 +96,13 @@ export function createRouter(
       return method === "POST" ? handleRefresh(provider) : methodNotAllowed();
     }
 
+    const rerunRoute = apiV1IssueActionRoute(path, "rerun");
+    if (rerunRoute !== null) {
+      return method === "POST"
+        ? handleRerunBlocked(provider, rerunRoute.issueIdentifier, req)
+        : methodNotAllowed();
+    }
+
     const outputRoute = apiV1IssueOutputRoute(path);
     if (outputRoute !== null) {
       if (method !== "GET") {
@@ -131,6 +139,23 @@ export function createRouter(
 
     return notFound();
   };
+}
+
+function apiV1IssueActionRoute(path: string, action: string): { issueIdentifier: string } | null {
+  const prefix = "/api/v1/";
+  const suffix = `/${action}`;
+  if (!path.startsWith(prefix) || !path.endsWith(suffix)) {
+    return null;
+  }
+  const encodedIdentifier = path.slice(prefix.length, -suffix.length);
+  if (encodedIdentifier === "" || encodedIdentifier.includes("/")) {
+    return null;
+  }
+  try {
+    return { issueIdentifier: decodeURIComponent(encodedIdentifier) };
+  } catch {
+    return null;
+  }
 }
 
 function apiV1IssueOutputRoute(path: string): { issueIdentifier: string; stream: boolean } | null {
@@ -449,6 +474,52 @@ async function handleRefresh(provider: SnapshotProvider): Promise<Response> {
     return jsonResponse(202, result.value);
   }
   return errorResponse(503, "orchestrator_unavailable", "Orchestrator is unavailable");
+}
+
+async function handleRerunBlocked(
+  provider: SnapshotProvider,
+  issueIdentifier: string,
+  req: Request,
+): Promise<Response> {
+  const result = await Presenter.rerunBlockedPayload(issueIdentifier, provider);
+  if (result.ok) {
+    if (htmlFormSubmission(req)) {
+      return redirectResponse("/");
+    }
+    return jsonResponse(result.status, result.value);
+  }
+  switch (result.error) {
+    case "blocked_issue_not_found":
+      return errorResponse(result.status, "blocked_issue_not_found", "Blocked issue not found");
+    case "issue_not_active":
+      return errorResponse(result.status, "issue_not_active", "Issue is not active");
+    case "issue_refresh_failed":
+      return errorResponse(result.status, "issue_refresh_failed", "Issue refresh failed");
+    case "no_dispatch_capacity":
+      return errorResponse(result.status, "no_dispatch_capacity", "No dispatch capacity available");
+    case "unavailable":
+      return errorResponse(
+        result.status,
+        "orchestrator_unavailable",
+        "Orchestrator is unavailable",
+      );
+  }
+}
+
+function htmlFormSubmission(req: Request): boolean {
+  const accept = req.headers.get("accept") ?? "";
+  const contentType = req.headers.get("content-type") ?? "";
+  return (
+    contentType.includes("application/x-www-form-urlencoded") ||
+    (accept.includes("text/html") && !accept.includes("application/json"))
+  );
+}
+
+function redirectResponse(location: string): Response {
+  return new Response(null, {
+    status: 303,
+    headers: { location },
+  });
 }
 
 function methodNotAllowed(): Response {

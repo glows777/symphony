@@ -63,6 +63,13 @@ export type RunOpts = {
   signal?: AbortSignal;
 };
 
+export type AgentRunCancellation = {
+  tag: "agent_run_cancelled";
+  reason: string;
+  cause?: unknown;
+  [key: string]: unknown;
+};
+
 type ContinueOutcome =
   | { kind: "continue"; issue: Issue }
   | { kind: "done"; issue: Issue }
@@ -101,9 +108,20 @@ export async function run(
 
   const result = await runOnWorkerHost(issue, recipient, opts, workerHost, backend.value);
   if (!result.ok) {
+    if (isAgentRunCancellation(result.error)) {
+      logger.info(`Agent run cancelled for ${issueContext(issue)}: ${inspect(result.error)}`);
+      return;
+    }
     logger.error(`Agent run failed for ${issueContext(issue)}: ${inspect(result.error)}`);
     throw new Error(`Agent run failed for ${issueContext(issue)}: ${inspect(result.error)}`);
   }
+}
+
+export function agentRunCancellation(
+  reason: string,
+  details: Record<string, unknown> = {},
+): AgentRunCancellation {
+  return { tag: "agent_run_cancelled", reason, ...details };
 }
 
 async function runOnWorkerHost(
@@ -147,13 +165,23 @@ async function runOnWorkerHost(
       backend,
       output,
     );
-    await output.finish(
-      opts.signal?.aborted === true ? "cancelled" : result.ok ? "completed" : "failed",
-      result.ok ? null : result.error,
+    const cancellation = cancellationFromSignal(
+      opts.signal ?? null,
+      result.ok ? undefined : result.error,
     );
+    if (cancellation !== null) {
+      await output.finish("cancelled", cancellation);
+      return err(cancellation);
+    }
+    await output.finish(result.ok ? "completed" : "failed", result.ok ? null : result.error);
     return result;
   } catch (error) {
-    await output.finish(opts.signal?.aborted === true ? "cancelled" : "failed", error);
+    const cancellation = cancellationFromSignal(opts.signal ?? null, error);
+    if (cancellation !== null) {
+      await output.finish("cancelled", cancellation);
+      return err(cancellation);
+    }
+    await output.finish("failed", error);
     throw error;
   } finally {
     Workspace.runAfterRunHook(workspace, issue, workerHost);
@@ -307,7 +335,7 @@ async function runMultiTurnSession(
 ): Promise<Result<undefined, unknown>> {
   const signal = opts.signal ?? null;
   if (isAborted(signal)) {
-    return err({ tag: "aborted" });
+    return err(cancellationFromSignal(signal) ?? agentRunCancellation("abort_signal"));
   }
   const currentTurn = { value: 0 };
   const session = await backend.sessions.startSession(workspace, {
@@ -344,6 +372,37 @@ async function runMultiTurnSession(
 // checks to `false`. Reading it through a call keeps every check honest.
 function isAborted(signal: AbortSignal | null): boolean {
   return signal?.aborted === true;
+}
+
+function isAgentRunCancellation(value: unknown): value is AgentRunCancellation {
+  return isObject(value) && value.tag === "agent_run_cancelled" && typeof value.reason === "string";
+}
+
+function cancellationFromSignal(
+  signal: AbortSignal | null,
+  cause?: unknown,
+): AgentRunCancellation | null {
+  if (!isAborted(signal)) {
+    return null;
+  }
+  if (isAgentRunCancellation(cause)) {
+    return cause;
+  }
+  const signalReason = signal?.reason;
+  const base = isAgentRunCancellation(signalReason)
+    ? signalReason
+    : agentRunCancellation("abort_signal", fallbackCancellationDetails(signalReason));
+  if (cause === undefined) {
+    return base;
+  }
+  return { ...base, cause };
+}
+
+function fallbackCancellationDetails(reason: unknown): Record<string, unknown> {
+  if (typeof reason === "string") {
+    return { signal_reason: reason };
+  }
+  return {};
 }
 
 // Stops the live session as soon as the signal aborts (and immediately if it
@@ -441,7 +500,7 @@ async function runFreshSessionTurns(
   // turn itself).
   const signal = opts.signal ?? null;
   if (isAborted(signal)) {
-    return err({ tag: "aborted" });
+    return err(cancellationFromSignal(signal) ?? agentRunCancellation("abort_signal"));
   }
   const prompt = buildFullPrompt(issue, opts);
   const session = await backend.sessions.startSession(workspace, {
@@ -626,4 +685,8 @@ function inspect(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

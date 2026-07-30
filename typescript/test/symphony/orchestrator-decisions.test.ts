@@ -19,11 +19,13 @@ import { newIssue } from "../../src/symphony/work-item.ts";
 import { workflowFilePath } from "../../src/symphony/workflow.ts";
 import { setupWorkflow, teardownWorkflow, writeWorkflowFile } from "../support/test-support.ts";
 
-function stoppableTask(): RunningTask & { stopped: boolean } {
+function stoppableTask(): RunningTask & { stopped: boolean; reason: unknown } {
   const task = {
     stopped: false,
-    stop() {
+    reason: null as unknown,
+    stop(reason?: unknown) {
       task.stopped = true;
+      task.reason = reason;
     },
   };
   return task;
@@ -203,6 +205,11 @@ describe("Orchestrator decisions/reconcile seams", () => {
     expect(issueId in updated.running).toBe(false);
     expect(updated.claimed.has(issueId)).toBe(false);
     expect(task.stopped).toBe(true);
+    expect(task.reason).toMatchObject({
+      tag: "agent_run_cancelled",
+      reason: "issue_non_active_state",
+      state: "Backlog",
+    });
     expect(fs.existsSync(workspace)).toBe(true);
   });
 
@@ -242,6 +249,11 @@ describe("Orchestrator decisions/reconcile seams", () => {
     expect(issueId in updated.running).toBe(false);
     expect(updated.claimed.has(issueId)).toBe(false);
     expect(task.stopped).toBe(true);
+    expect(task.reason).toMatchObject({
+      tag: "agent_run_cancelled",
+      reason: "issue_terminal_state",
+      state: "Closed",
+    });
     expect(fs.existsSync(workspace)).toBe(false);
   });
 

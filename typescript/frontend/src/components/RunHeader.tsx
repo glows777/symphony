@@ -7,6 +7,8 @@ type RunHeaderProps = {
   runHistory: RunMetadata[];
   selectedRunId: string | null;
   onSelectRun: (runId: string) => void;
+  onRerunBlocked: (identifier: string) => void;
+  rerunning: boolean;
   loading: boolean;
 };
 
@@ -17,6 +19,8 @@ export function RunHeader({
   runHistory,
   selectedRunId,
   onSelectRun,
+  onRerunBlocked,
+  rerunning,
   loading,
 }: RunHeaderProps) {
   const metadataRun = run !== null && "event_count" in run;
@@ -41,6 +45,12 @@ export function RunHeader({
   const tokens = metadataRun ? null : (snapshotRun?.tokens?.total_tokens ?? null);
   const startedAt = snapshotRun?.started_at ?? run?.started_at ?? null;
   const endedAt = run?.ended_at ?? null;
+  const blocked = detail?.blocked ?? null;
+  const recovery = blocked?.manual_recovery ?? null;
+  const canRerun =
+    identifier !== null && detail?.status === "blocked" && recovery?.rerun_supported !== false;
+  const blockedReason = blocked?.blocked_reason ?? blocked?.error ?? detail?.last_error ?? null;
+  const operatorPrompt = blocked?.operator_prompt ?? recovery?.prompt ?? null;
 
   return (
     <header className="run-header">
@@ -65,11 +75,38 @@ export function RunHeader({
             <span className="backend-badge">{backendLabel(backend)}</span>
           </p>
         </div>
-        <div className="read-only-stamp">
-          <span className="read-only-icon">⊙</span>
-          <span>Read only</span>
-        </div>
+        {canRerun ? (
+          <button
+            type="button"
+            className="rerun-button"
+            disabled={rerunning}
+            onClick={() => {
+              if (
+                identifier !== null &&
+                window.confirm(
+                  `Rerun blocked agent for ${identifier}? This may execute tools or modify external tracker and repository state.`,
+                )
+              ) {
+                onRerunBlocked(identifier);
+              }
+            }}
+          >
+            {rerunning ? "Rerunning" : "Rerun"}
+          </button>
+        ) : (
+          <div className="read-only-stamp">
+            <span className="read-only-icon">⊙</span>
+            <span>Read only</span>
+          </div>
+        )}
       </div>
+      {detail?.status === "blocked" && blockedReason !== null ? (
+        <div className="blocked-callout">
+          <span className="blocked-callout-label">Blocked</span>
+          <span className="blocked-callout-reason">{blockedReason}</span>
+          {operatorPrompt ? <span className="blocked-callout-prompt">{operatorPrompt}</span> : null}
+        </div>
+      ) : null}
       {runHistory.length > 0 ? (
         <div className="run-history-row">
           <label className="run-history-control">
