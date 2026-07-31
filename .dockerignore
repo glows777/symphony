@@ -1,0 +1,14 @@
+.git
+.git/**
+.DS_Store
+.env
+.env.*
+**/node_modules
+**/coverage
+**/dist
+**/runtime
+**/runtime-*
+**/logs
+projects/*/data
+projects/*/.codex
+projects/*/.ssh
