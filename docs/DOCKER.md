@@ -19,6 +19,10 @@ The base image deliberately does not set `NODE_ENV=production`; derived project
 images can install their development toolchains while task agents build and
 test project code.
 
+The default workflow argument is the relative path `WORKFLOW.md` from the
+container work directory `/opt/symphony`. Set `SYMPHONY_WORKFLOW_FILE` to
+replace it with another relative path.
+
 ## Project-local deployment
 
 The current xz-system deployment files intentionally live outside Git under
@@ -31,14 +35,24 @@ The xz-system Compose file starts:
 - one shared MySQL 8.4 container;
 - one shared Redis container.
 
-The Symphony container receives the project workflow as a read-only mount. The
-workflow's workspaces and agent output are mounted below
-`runtime/xz-system/`, while MySQL and Redis state stays below
-`projects/xz-system/data/`.
+The Symphony container receives the project workflow as a read-only mount at
+the relative container path selected by `SYMPHONY_WORKFLOW_FILE`. The host
+source is selected by `SYMPHONY_WORKFLOW_HOST_PATH`, which is resolved relative
+to `projects/xz-system/` when using the Compose file. The workflow's workspaces
+and agent output are mounted below `runtime/xz-system/`, while MySQL and Redis
+state stays below `projects/xz-system/data/`.
 
-Before starting the live stack, provide the local `GITEA_API_TOKEN`, Codex
-authentication directory, and SSH directory through the environment used by
-Compose. These values must not be written to the image or committed.
+The xz-system Compose service sets `seccomp=unconfined` because Codex's
+`workspace-write` sandbox uses `bwrap` user namespaces, which the default
+Docker seccomp profile blocks on this local runtime. This is a local-only
+deployment setting; keep the service bound to localhost and do not expose it
+publicly. `--privileged` is not required.
+
+Before starting the live stack, provide the local `GITEA_API_TOKEN`, the
+directory containing `auth.json`, and the SSH directory through the environment
+used by Compose. The Compose file mounts only `auth.json` read-only; Codex's
+writable SQLite state is persisted below `runtime/xz-system/codex/`. These
+values must not be written to the image or committed.
 
 ```bash
 export XZ_SYSTEM_DB_ROOT_PASSWORD='choose-a-local-password'
@@ -47,6 +61,8 @@ export GIT_USER_NAME='your-gitea-username'
 export GIT_USER_EMAIL='your-email@example.com'
 export CODEX_AUTH_DIR=/absolute/path/to/.codex
 export SSH_DIR=/absolute/path/to/.ssh
+export SYMPHONY_WORKFLOW_FILE=WORKFLOW.md
+export SYMPHONY_WORKFLOW_HOST_PATH=./workflow.md
 
 docker build --progress=plain -t symphony-base:local .
 docker compose -f projects/xz-system/docker-compose.yml up -d

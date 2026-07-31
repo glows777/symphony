@@ -3,6 +3,21 @@ set -euo pipefail
 
 log_root="${SYMPHONY_LOG_ROOT:-/var/lib/symphony/log}"
 log_file="$log_root/symphony.log"
+workflow_file="${SYMPHONY_WORKFLOW_FILE:-WORKFLOW.md}"
+
+validate_workflow_path() {
+  local candidate="$1"
+
+  case "$candidate" in
+    ""|/*|..|../*|*/../*|*/..)
+      printf '%s\n' "workflow path must be non-empty, relative, and stay below /opt/symphony: $candidate" >&2
+      exit 64
+      ;;
+  esac
+}
+
+validate_workflow_path "$workflow_file"
+
 mkdir -p "$log_root"
 
 app_pid=0
@@ -19,7 +34,37 @@ stop_children() {
 
 trap stop_children TERM INT
 
-bun run src/cli.ts "$@" >>"$log_file" 2>&1 &
+args=("$@")
+workflow_index=-1
+skip_next=0
+for index in "${!args[@]}"; do
+  if (( skip_next > 0 )); then
+    skip_next=0
+    continue
+  fi
+
+  case "${args[$index]}" in
+    --logs-root|--port)
+      skip_next=1
+      ;;
+    --logs-root=*|--port=*|--*)
+      ;;
+    *)
+      workflow_index=$index
+      ;;
+  esac
+done
+
+if (( workflow_index < 0 )); then
+  args+=("$workflow_file")
+  workflow_index=$((${#args[@]} - 1))
+elif [[ "${args[$workflow_index]}" == "__SYMPHONY_WORKFLOW_FILE__" ]]; then
+  args[$workflow_index]="$workflow_file"
+fi
+
+validate_workflow_path "${args[$workflow_index]}"
+
+bun run src/cli.ts "${args[@]}" >>"$log_file" 2>&1 &
 app_pid=$!
 tail -n 0 -F "$log_file" &
 tail_pid=$!

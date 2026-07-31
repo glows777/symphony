@@ -41,9 +41,10 @@ COPY docker/entrypoint.sh /usr/local/bin/symphony-entrypoint
 RUN chmod 0755 /usr/local/bin/symphony-entrypoint \
   && mkdir -p /etc/symphony /var/lib/symphony/log /var/lib/symphony/workspaces
 
-ENV HOME=/root
+ENV HOME=/root \
+    SYMPHONY_WORKFLOW_FILE=WORKFLOW.md
 
 EXPOSE 4000
 
 ENTRYPOINT ["/usr/local/bin/symphony-entrypoint"]
-CMD ["--i-understand-that-this-will-be-running-without-the-usual-guardrails", "--port", "4000", "--logs-root", "/var/lib/symphony", "/etc/symphony/WORKFLOW.md"]
+CMD ["--i-understand-that-this-will-be-running-without-the-usual-guardrails", "--port", "4000", "--logs-root", "/var/lib/symphony", "__SYMPHONY_WORKFLOW_FILE__"]
