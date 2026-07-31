@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
 import { mergeLiveOutput, mergeOutput, withTranscript } from "../../frontend/src/App.tsx";
-import { groupRunsByIssue } from "../../frontend/src/components/RunSidebar.tsx";
+import { RunSidebar, groupRunsByIssue } from "../../frontend/src/components/RunSidebar.tsx";
 import {
   hasThinkingSummary,
   isVisibleActivity,
@@ -118,6 +119,45 @@ describe("frontend transcript merge", () => {
     expect(groups[0]?.sessions.map((session) => session.runId)).toEqual(["run-2", "run-1"]);
     expect(groups[0]?.sessions.map((session) => session.runKind)).toEqual(["review", "normal"]);
     expect(groups[1]?.sessions[0]?.sessionId).toBe("blocked-session");
+  });
+
+  test("keeps issue order when the selected issue changes", () => {
+    const completed: RunItem[] = [
+      {
+        issue_identifier: "SYM-1",
+        title: "First issue",
+        status: "completed",
+        run_id: "run-1",
+        session_id: "session-1",
+      },
+      {
+        issue_identifier: "SYM-2",
+        title: "Second issue",
+        status: "completed",
+        run_id: "run-2",
+        session_id: "session-2",
+      },
+    ];
+
+    const renderIssueOrder = (selected: string | null): string[] => {
+      const markup = renderToStaticMarkup(
+        <RunSidebar
+          running={[]}
+          retrying={[]}
+          blocked={[]}
+          completed={completed}
+          selected={selected}
+          selectedRunId={null}
+          onSelect={() => {}}
+        />,
+      );
+      return [...markup.matchAll(/class="issue-project-id">([^<]+)/g)].map(
+        (match) => match[1] ?? "",
+      );
+    };
+
+    expect(renderIssueOrder(null)).toEqual(["SYM-1", "SYM-2"]);
+    expect(renderIssueOrder("SYM-2")).toEqual(["SYM-1", "SYM-2"]);
   });
 
   test("does not add a snapshot placeholder before the running session id arrives", () => {

@@ -52,14 +52,9 @@ export function RunSidebar({
     ...blocked,
     ...completed,
   ]);
-  const orderedGroups = [...groups].sort((left, right) => {
-    const leftSelected = left.identifier === selected;
-    const rightSelected = right.identifier === selected;
-    if (leftSelected !== rightSelected) {
-      return leftSelected ? -1 : 1;
-    }
-    return statusPriority(right.status) - statusPriority(left.status);
-  });
+  const orderedGroups = [...groups].sort(
+    (left, right) => statusPriority(right.status) - statusPriority(left.status),
+  );
 
   return (
     <>
