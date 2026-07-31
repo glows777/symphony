@@ -138,6 +138,69 @@ describe("Plugins.Agents.ClaudeCodePlugin", () => {
     expect(messages.some((m) => m.event === "turn_completed")).toBe(true);
   });
 
+  test("projects working blocks and promotes the successful result to response", async () => {
+    installClaude({
+      sessionId: "sess-output",
+      turns: [
+        {
+          actions: [
+            { t: "init" },
+            { t: "thinking", text: "Inspecting the issue." },
+            { t: "assistant", tool: "Read", toolId: "toolu-read", input: { path: "README.md" } },
+            { t: "toolResult", toolId: "toolu-read", text: "README contents" },
+            { t: "assistant", uuid: "assistant-final", text: "I found the root cause." },
+            {
+              t: "result",
+              subtype: "success",
+              result: "The issue is fixed and the verification passed.",
+              usage: { input_tokens: 3, output_tokens: 4 },
+            },
+          ],
+        },
+      ],
+    });
+    const { started, messages } = await start(workspaceFor("CC-OUTPUT"));
+    expect(started.ok).toBe(true);
+    if (!started.ok) {
+      return;
+    }
+
+    const turn = await ClaudeCodePlugin.sessions.runTurn(
+      started.value,
+      "inspect the issue",
+      turnContext("CC-OUTPUT"),
+    );
+    ClaudeCodePlugin.sessions.stopSession(started.value);
+
+    expect(turn.ok).toBe(true);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          activity_type: "thinking",
+          presentation_role: "working",
+          activity_id: expect.stringContaining("thinking"),
+        }),
+        expect.objectContaining({
+          activity_type: "tool_call",
+          activity_id: "toolu-read",
+          presentation_role: "working",
+          activity_status: "completed",
+        }),
+        expect.objectContaining({
+          activity_type: "assistant_message",
+          activity_id: "assistant-final",
+          presentation_role: "working",
+          chat_delta: "I found the root cause.",
+        }),
+        expect.objectContaining({
+          event: "turn_completed",
+          final_activity_id: "assistant-final",
+          final_content: "The issue is fixed and the verification passed.",
+        }),
+      ]),
+    );
+  });
+
   test("fails the turn when the result is an error subtype", async () => {
     installClaude({
       sessionId: "sess-B",

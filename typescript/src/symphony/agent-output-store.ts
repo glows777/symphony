@@ -6,7 +6,7 @@ import { settingsBang } from "./config.ts";
 import type { AgentOutputMode } from "./config/schema.ts";
 import { defaultLogFile } from "./log-file.ts";
 import { logger } from "./logger.ts";
-import type { AgentMessage } from "./plugins/agents/types.ts";
+import type { AgentMessage, AgentPresentationRole } from "./plugins/agents/types.ts";
 
 const DEFAULT_MAX_EVENT_BYTES = 64 * 1024;
 const DEFAULT_MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -40,7 +40,11 @@ export type AgentOutputEvent = {
   activity_type?: AgentActivityType;
   activity_status?: AgentActivityStatus;
   activity_id?: string;
+  presentation_role?: AgentPresentationRole;
+  final_activity_id?: string;
+  final_content?: string;
   parent_message_id?: string;
+  parent_tool_use_id?: string;
   thinking_summary_delta?: string;
   tool_name?: string;
   tool_input?: unknown;
@@ -66,12 +70,14 @@ export type AgentOutputMessage = {
   activity_id: string;
   activity_type: AgentActivityType;
   activity_status: AgentActivityStatus;
+  presentation_role?: AgentPresentationRole;
   issue_identifier: string;
   backend: string;
   run_id: string;
   session_id?: string;
   turn?: number;
   parent_message_id?: string;
+  parent_tool_use_id?: string;
   role?: "assistant";
   content: string;
   status: AgentActivityStatus;
@@ -426,9 +432,7 @@ export class AgentOutputStore {
     const messages =
       firstEventSeq === null || lastEventSeq === null
         ? []
-        : allMessages.filter(
-            (message) => message.seq_end >= firstEventSeq && message.seq_start <= lastEventSeq,
-          );
+        : includeStableResponseMessages(allMessages, firstEventSeq, lastEventSeq);
     const result: AgentOutputReadResult = {
       events,
       messages,
@@ -1134,6 +1138,25 @@ export class AgentOutputStore {
   }
 }
 
+function includeStableResponseMessages(
+  messages: AgentOutputMessage[],
+  firstEventSeq: number,
+  lastEventSeq: number,
+): AgentOutputMessage[] {
+  // Event pagination is intentionally tail-oriented, but the final response
+  // is the stable result users need immediately. Keep explicitly promoted
+  // responses visible even when the agent continued with another turn after
+  // producing one, so the UI does not require a separate history fetch before
+  // it can render the response section.
+  return messages
+    .filter(
+      (message) =>
+        message.presentation_role === "response" ||
+        (message.seq_end >= firstEventSeq && message.seq_start <= lastEventSeq),
+    )
+    .sort((left, right) => left.seq_start - right.seq_start);
+}
+
 let configuredStore: AgentOutputStore | null = null;
 
 export function getAgentOutputStore(): AgentOutputStore {
@@ -1361,6 +1384,11 @@ function activityFieldsForMessage(
   event: string,
   chatFields: Record<string, unknown>,
 ): Record<string, unknown> {
+  const explicit = explicitActivityFields(message);
+  if (Object.keys(explicit).length > 0) {
+    return { ...chatFields, ...explicit };
+  }
+
   const chatPhase = chatFields.chat_phase;
   if (
     (chatPhase === "start" || chatPhase === "delta" || chatPhase === "complete") &&
@@ -1410,6 +1438,48 @@ function activityFieldsForMessage(
     }
     if (projection.toolError !== undefined) {
       fields.tool_error = projection.toolError;
+    }
+  }
+  return fields;
+}
+
+function explicitActivityFields(message: AgentMessage): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  if (message.activity_type !== undefined) {
+    fields.activity_type = message.activity_type;
+  }
+  if (message.activity_status !== undefined) {
+    fields.activity_status = message.activity_status;
+  }
+  if (typeof message.activity_id === "string") {
+    fields.activity_id = message.activity_id;
+  }
+  if (message.presentation_role !== undefined) {
+    fields.presentation_role = message.presentation_role;
+  }
+  if (typeof message.final_activity_id === "string") {
+    fields.final_activity_id = message.final_activity_id;
+  }
+  if (typeof message.final_content === "string") {
+    fields.final_content = message.final_content;
+  }
+  if (typeof message.parent_message_id === "string") {
+    fields.parent_message_id = message.parent_message_id;
+  }
+  if (typeof message.parent_tool_use_id === "string") {
+    fields.parent_tool_use_id = message.parent_tool_use_id;
+  }
+  if (typeof message.chat_id === "string") {
+    fields.chat_id = message.chat_id;
+  }
+  if (message.chat_phase !== undefined) {
+    fields.chat_phase = message.chat_phase;
+  }
+  if (typeof message.chat_delta === "string") {
+    const bounded = boundText(message.chat_delta, 16 * 1024);
+    fields.chat_delta = bounded.value;
+    if (bounded.truncated) {
+      fields.chat_delta_truncated = true;
     }
   }
   return fields;
@@ -1807,6 +1877,7 @@ function buildAgentOutputMessages(
 
   for (const event of events) {
     if (isActivityClosingEvent(event)) {
+      promoteFinalActivity(messages, event);
       closeActiveMessages(active, event.run_id, event.turn, event, terminalStatusForEvent(event));
       continue;
     }
@@ -1886,7 +1957,9 @@ type StoredActivityEvent = {
   phase: ActivityPhase;
   id: string | null;
   status: AgentActivityStatus;
+  presentationRole?: AgentPresentationRole | null;
   parentMessageId: string | null;
+  parentToolUseId?: string | null;
   contentDelta?: string;
   toolName?: string;
   toolInput?: unknown;
@@ -1906,7 +1979,12 @@ function storedActivityEvent(event: AgentOutputEvent): StoredActivityEvent | nul
       phase,
       id: typeof event.activity_id === "string" ? event.activity_id : (chat?.chatId ?? null),
       status,
+      ...(presentationRole(event.presentation_role) !== null
+        ? { presentationRole: presentationRole(event.presentation_role) }
+        : {}),
       parentMessageId: typeof event.parent_message_id === "string" ? event.parent_message_id : null,
+      parentToolUseId:
+        typeof event.parent_tool_use_id === "string" ? event.parent_tool_use_id : null,
       ...(chat?.delta !== undefined ? { contentDelta: chat.delta } : {}),
     };
   }
@@ -1917,7 +1995,12 @@ function storedActivityEvent(event: AgentOutputEvent): StoredActivityEvent | nul
       phase: phaseForStatus(status),
       id: typeof event.activity_id === "string" ? event.activity_id : null,
       status,
+      ...(presentationRole(event.presentation_role) !== null
+        ? { presentationRole: presentationRole(event.presentation_role) }
+        : {}),
       parentMessageId: typeof event.parent_message_id === "string" ? event.parent_message_id : null,
+      parentToolUseId:
+        typeof event.parent_tool_use_id === "string" ? event.parent_tool_use_id : null,
       ...(typeof event.thinking_summary_delta === "string"
         ? { contentDelta: event.thinking_summary_delta }
         : {}),
@@ -1930,7 +2013,12 @@ function storedActivityEvent(event: AgentOutputEvent): StoredActivityEvent | nul
       phase: phaseForStatus(status),
       id: typeof event.activity_id === "string" ? event.activity_id : null,
       status,
+      ...(presentationRole(event.presentation_role) !== null
+        ? { presentationRole: presentationRole(event.presentation_role) }
+        : {}),
       parentMessageId: typeof event.parent_message_id === "string" ? event.parent_message_id : null,
+      parentToolUseId:
+        typeof event.parent_tool_use_id === "string" ? event.parent_tool_use_id : null,
       ...storedToolMetadata(event),
     };
   }
@@ -1943,6 +2031,7 @@ function storedActivityEvent(event: AgentOutputEvent): StoredActivityEvent | nul
       id: chat.chatId,
       status: chat.phase === "complete" ? "completed" : "streaming",
       parentMessageId: null,
+      parentToolUseId: null,
       ...(chat.delta !== undefined ? { contentDelta: chat.delta } : {}),
     };
   }
@@ -2044,6 +2133,10 @@ function storedActivityType(value: unknown): AgentActivityType | null {
     value === "unknown"
     ? value
     : null;
+}
+
+function presentationRole(value: unknown): AgentPresentationRole | null {
+  return value === "working" || value === "response" ? value : null;
 }
 
 function storedActivityStatus(value: unknown): AgentActivityStatus {
@@ -2152,6 +2245,12 @@ function createOutputMessage(
   if (activity.parentMessageId !== null) {
     message.parent_message_id = activity.parentMessageId;
   }
+  if (activity.parentToolUseId !== undefined && activity.parentToolUseId !== null) {
+    message.parent_tool_use_id = activity.parentToolUseId;
+  }
+  if (activity.presentationRole !== undefined && activity.presentationRole !== null) {
+    message.presentation_role = activity.presentationRole;
+  }
   return message;
 }
 
@@ -2183,6 +2282,12 @@ function applyActivityEvent(
   message.status = activity.status;
   if (activity.parentMessageId !== null) {
     message.parent_message_id = activity.parentMessageId;
+  }
+  if (activity.parentToolUseId !== undefined && activity.parentToolUseId !== null) {
+    message.parent_tool_use_id = activity.parentToolUseId;
+  }
+  if (activity.presentationRole !== undefined && activity.presentationRole !== null) {
+    message.presentation_role = activity.presentationRole;
   }
   if (activity.type === "assistant_message" || activity.type === "thinking") {
     if (activity.contentDelta !== undefined) {
@@ -2220,6 +2325,52 @@ function completeActivity(
   message.activity_status = status;
   message.seq_end = seqEnd;
   message.updated_at = updatedAt;
+}
+
+function promoteFinalActivity(messages: AgentOutputMessage[], event: AgentOutputEvent): void {
+  const finalId = typeof event.final_activity_id === "string" ? event.final_activity_id : null;
+  if (finalId === null) {
+    return;
+  }
+
+  let message = messages.find(
+    (candidate) =>
+      candidate.run_id === event.run_id &&
+      candidate.turn === event.turn &&
+      (candidate.activity_id === finalId || candidate.message_id === finalId),
+  );
+  if (message === undefined) {
+    const content = typeof event.final_content === "string" ? event.final_content : "";
+    message = {
+      message_id: finalId,
+      activity_id: finalId,
+      activity_type: "assistant_message",
+      activity_status: "completed",
+      presentation_role: "response",
+      issue_identifier: event.issue_identifier,
+      backend: event.backend,
+      run_id: event.run_id,
+      ...(event.session_id !== undefined ? { session_id: event.session_id } : {}),
+      ...(event.turn !== undefined ? { turn: event.turn } : {}),
+      role: "assistant",
+      content,
+      status: "completed",
+      seq_start: event.seq,
+      seq_end: event.seq,
+      at: event.at,
+      updated_at: event.at,
+    };
+    messages.push(message);
+  } else {
+    message.presentation_role = "response";
+    message.activity_status = "completed";
+    message.status = "completed";
+    message.seq_end = Math.max(message.seq_end, event.seq);
+    message.updated_at = event.at;
+    if (typeof event.final_content === "string") {
+      message.content = event.final_content;
+    }
+  }
 }
 
 function isActivityClosingEvent(event: AgentOutputEvent): boolean {

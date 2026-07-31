@@ -68,7 +68,11 @@ export type AgentOutputEvent = {
   activity_type?: "assistant_message" | "thinking" | "tool_call" | "system" | "unknown";
   activity_status?: "streaming" | "completed" | "failed";
   activity_id?: string;
+  presentation_role?: "working" | "response";
+  final_activity_id?: string;
+  final_content?: string;
   parent_message_id?: string;
+  parent_tool_use_id?: string;
   thinking_summary_delta?: string;
   tool_name?: string;
   tool_input?: unknown;
@@ -88,12 +92,14 @@ export type AgentOutputMessage = {
   activity_id?: string;
   activity_type?: "assistant_message" | "thinking" | "tool_call" | "system" | "unknown";
   activity_status?: AgentActivityStatus;
+  presentation_role?: "working" | "response";
   issue_identifier: string;
   backend: Backend;
   run_id: string;
   session_id?: string;
   turn?: number;
   parent_message_id?: string;
+  parent_tool_use_id?: string;
   role?: "assistant";
   content: string;
   status: AgentActivityStatus;

@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // Scenario-driven fake `claude` CLI for claude-code plugin tests — the
 // stream-json twin of test/harness/fake-codex.ts. It reproduces the message
-// shapes verified live against claude CLI 2.1.218 (system/init, assistant,
-// result with per-turn usage + permission_denials) without needing the real CLI
+// shapes verified against current Claude Code (system/init, assistant content
+// blocks, tool results, result with per-turn usage + permission_denials) without needing the real CLI
 // or network.
 //
 // Invocation: the plugin spawns `<command> -p --input-format stream-json ...`,
@@ -16,6 +16,8 @@
 // Action kinds:
 //   { "t": "init" }                              -> emit system/init(session_id)
 //   { "t": "assistant", "text"|"tool": "..." }   -> emit an assistant line
+//   { "t": "thinking", "text": "..." }           -> emit a thinking block
+//   { "t": "toolResult", "toolId": "..." }       -> emit a tool_result block
 //   { "t": "emit", "line": <object> }            -> emit an arbitrary object line
 //   { "t": "raw", "line": "<string>" }           -> emit a raw (maybe non-JSON) line
 //   { "t": "result", ...fields }                 -> emit a result line
@@ -78,6 +80,12 @@ async function runAction(action: Action): Promise<void> {
     case "assistant":
       emit(assistantMessage(action));
       return;
+    case "thinking":
+      emit(assistantMessage({ ...action, thinking: action.text }));
+      return;
+    case "toolResult":
+      emit(toolResultMessage(action));
+      return;
     case "emit":
       emit(action.line);
       return;
@@ -103,13 +111,45 @@ async function runAction(action: Action): Promise<void> {
 }
 
 function assistantMessage(action: Action): Record<string, unknown> {
-  const content =
-    typeof action.tool === "string"
-      ? [{ type: "tool_use", id: "toolu_fake", name: action.tool, input: {} }]
-      : [{ type: "text", text: typeof action.text === "string" ? action.text : "" }];
+  const content = Array.isArray(action.blocks)
+    ? action.blocks
+    : typeof action.thinking === "string"
+      ? [{ type: "thinking", thinking: action.thinking }]
+      : typeof action.tool === "string"
+        ? [
+            {
+              type: "tool_use",
+              id: typeof action.toolId === "string" ? action.toolId : "toolu_fake",
+              name: action.tool,
+              input: action.input ?? {},
+            },
+          ]
+        : [{ type: "text", text: typeof action.text === "string" ? action.text : "" }];
   return {
     type: "assistant",
+    uuid: typeof action.uuid === "string" ? action.uuid : undefined,
     message: { role: "assistant", model: "fake-model", content },
+    session_id: sessionId,
+    ...(typeof action.parent_tool_use_id === "string"
+      ? { parent_tool_use_id: action.parent_tool_use_id }
+      : {}),
+  };
+}
+
+function toolResultMessage(action: Action): Record<string, unknown> {
+  return {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: typeof action.toolId === "string" ? action.toolId : "toolu_fake",
+          content: typeof action.text === "string" ? action.text : "tool result",
+          is_error: action.error === true,
+        },
+      ],
+    },
     session_id: sessionId,
   };
 }

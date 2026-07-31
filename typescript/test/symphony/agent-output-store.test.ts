@@ -408,6 +408,112 @@ describe("AgentOutputStore", () => {
     await run.finish("completed");
   });
 
+  test("promotes the backend-marked final activity without using message order", async () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "summary" });
+    const run = store.startRun({
+      issueId: "issue-final-role",
+      issueIdentifier: "TRANSCRIPT-ROLE",
+      backend: "claude_code",
+      workerHost: null,
+      runId: "role-run",
+    });
+    run.record(
+      message({
+        activity_type: "assistant_message",
+        activity_status: "completed",
+        activity_id: "assistant-progress",
+        presentation_role: "working",
+        chat_id: "assistant-progress",
+        chat_phase: "complete",
+        chat_delta: "I checked the files.",
+      }),
+      1,
+    );
+    run.record(
+      message({
+        activity_type: "assistant_message",
+        activity_status: "completed",
+        activity_id: "assistant-final",
+        presentation_role: "working",
+        chat_id: "assistant-final",
+        chat_phase: "complete",
+        chat_delta: "The implementation is ready.",
+      }),
+      1,
+    );
+    run.record(
+      message({
+        event: "turn_completed",
+        final_activity_id: "assistant-final",
+        final_content: "The implementation is ready and verified.",
+      }),
+      1,
+    );
+    await run.finish("completed");
+
+    const result = store.readIssueOutput("TRANSCRIPT-ROLE");
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0]).toMatchObject({
+      activity_id: "assistant-progress",
+      presentation_role: "working",
+      content: "I checked the files.",
+    });
+    expect(result.messages[1]).toMatchObject({
+      activity_id: "assistant-final",
+      presentation_role: "response",
+      content: "The implementation is ready and verified.",
+    });
+  });
+
+  test("keeps promoted responses visible in a tail page after later working events", async () => {
+    const store = new AgentOutputStore({ root: tempRoot(), mode: "summary" });
+    const run = store.startRun({
+      issueId: "issue-paginated-response",
+      issueIdentifier: "TRANSCRIPT-PAGE",
+      backend: "claude_code",
+      workerHost: null,
+      runId: "paginated-response-run",
+    });
+    run.record(
+      message({
+        activity_type: "assistant_message",
+        activity_status: "completed",
+        activity_id: "assistant-final",
+        presentation_role: "working",
+        chat_id: "assistant-final",
+        chat_phase: "complete",
+        chat_delta: "The response is complete.",
+      }),
+      1,
+    );
+    run.record(
+      message({
+        event: "turn_completed",
+        final_activity_id: "assistant-final",
+        final_content: "The response is complete and preserved.",
+      }),
+      1,
+    );
+    run.record(
+      message({
+        activity_type: "thinking",
+        activity_status: "completed",
+        activity_id: "thinking-later",
+        thinking_summary_delta: "Continuing the next working turn.",
+      }),
+      2,
+    );
+    run.record(message({ payload: { later: true } }), 2, "Later working event");
+    await run.finish("completed");
+
+    const tail = store.readIssueOutput("TRANSCRIPT-PAGE", { limit: 2 });
+    expect(tail.events).toHaveLength(2);
+    expect(tail.messages.find((item) => item.presentation_role === "response")).toMatchObject({
+      activity_id: "assistant-final",
+      content: "The response is complete and preserved.",
+    });
+  });
+
   test("projects reasoning summaries and tool calls without exposing hidden reasoning text", async () => {
     const store = new AgentOutputStore({ root: tempRoot(), mode: "raw" });
     const run = store.startRun({

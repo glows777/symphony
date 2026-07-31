@@ -113,7 +113,259 @@ function normalizeCodexMessage(message: AppServer.AppServerMessage): AgentMessag
       normalized.rate_limits = rateLimits;
     }
   }
+  Object.assign(normalized, codexOutputFields(message));
   return normalized;
+}
+
+type CodexOutputFields = Pick<
+  AgentMessage,
+  | "activity_type"
+  | "activity_status"
+  | "activity_id"
+  | "presentation_role"
+  | "final_activity_id"
+  | "final_content"
+  | "parent_message_id"
+  | "chat_id"
+  | "chat_phase"
+  | "chat_delta"
+  | "thinking_summary_delta"
+  | "tool_name"
+  | "tool_input"
+  | "tool_command"
+  | "tool_output_delta"
+  | "tool_error"
+>;
+
+function codexOutputFields(message: AppServer.AppServerMessage): CodexOutputFields {
+  const payload = message.payload;
+  const method = stringAt(payload, [["method"]]);
+  const itemType = stringAt(payload, [
+    ["params", "item", "type"],
+    ["params", "itemType"],
+    ["params", "msg", "item", "type"],
+  ]);
+  const activityId = stringAt(payload, [
+    ["params", "itemId"],
+    ["params", "item", "id"],
+    ["params", "toolCallId"],
+    ["params", "callId"],
+    ["params", "msg", "itemId"],
+    ["params", "msg", "item", "id"],
+  ]);
+  const parentMessageId = stringAt(payload, [
+    ["params", "parentMessageId"],
+    ["params", "parentItemId"],
+    ["params", "item", "parentMessageId"],
+    ["params", "item", "parentItemId"],
+  ]);
+
+  if (message.event === "turn_completed" || method === "turn/completed") {
+    const status = stringAt(payload, [
+      ["params", "turn", "status"],
+      ["params", "status"],
+    ]);
+    if (status !== null && status !== "completed") {
+      return {};
+    }
+    const final = finalAgentMessage(payload);
+    if (final === null || final.text.trim() === "") {
+      return {};
+    }
+    const turnId =
+      stringAt(payload, [
+        ["params", "turn", "id"],
+        ["params", "turnId"],
+      ]) ?? "unknown";
+    return {
+      final_activity_id: final.id ?? `codex:turn:${turnId}`,
+      final_content: final.text,
+    };
+  }
+
+  const normalizedMethod = method?.toLowerCase() ?? "";
+  const phase = itemPhase(normalizedMethod);
+  const normalizedItemType = normalizeType(itemType);
+  const isAgentMessage =
+    normalizedItemType === "agentmessage" || normalizedMethod.includes("agentmessage");
+  if (isAgentMessage) {
+    const delta = stringAt(payload, [
+      ["params", "delta"],
+      ["params", "textDelta"],
+      ["params", "text"],
+      ["params", "msg", "delta"],
+    ]);
+    return {
+      activity_type: "assistant_message",
+      activity_status: phase === "complete" ? "completed" : "streaming",
+      presentation_role: "working",
+      ...(activityId !== null ? { activity_id: activityId, chat_id: activityId } : {}),
+      ...(phase !== null ? { chat_phase: phase } : {}),
+      ...(delta !== null ? { chat_delta: delta } : {}),
+      ...(parentMessageId !== null ? { parent_message_id: parentMessageId } : {}),
+    };
+  }
+
+  if (normalizedMethod.includes("reasoning") || normalizedTypeIs(normalizedItemType, "reasoning")) {
+    const summary = stringAt(payload, [
+      ["params", "summaryTextDelta"],
+      ["params", "summaryText"],
+      ["params", "msg", "summaryTextDelta"],
+    ]);
+    return {
+      activity_type: "thinking",
+      activity_status: phase === "complete" ? "completed" : "streaming",
+      presentation_role: "working",
+      ...(activityId !== null ? { activity_id: activityId } : {}),
+      ...(summary !== null ? { thinking_summary_delta: summary } : {}),
+      ...(parentMessageId !== null ? { parent_message_id: parentMessageId } : {}),
+    };
+  }
+
+  if (
+    normalizedMethod.includes("commandexecution") ||
+    normalizedMethod.includes("filechange") ||
+    normalizedMethod.includes("mcptoolcall") ||
+    normalizedMethod.includes("tool/call") ||
+    isCodexToolType(normalizedItemType)
+  ) {
+    const toolName =
+      stringAt(payload, [
+        ["params", "name"],
+        ["params", "tool"],
+        ["params", "item", "type"],
+      ]) ?? (normalizedItemType === "commandexecution" ? "commandExecution" : itemType);
+    const toolInput = valueAtPaths(payload, [
+      ["params", "arguments"],
+      ["params", "input"],
+      ["params", "item", "arguments"],
+    ]);
+    const toolCommand = stringAt(payload, [
+      ["params", "command"],
+      ["params", "cmd"],
+      ["params", "item", "command"],
+    ]);
+    const toolOutput = stringAt(payload, [
+      ["params", "outputDelta"],
+      ["params", "delta"],
+      ["params", "output"],
+    ]);
+    const toolError = stringAt(payload, [
+      ["params", "error"],
+      ["params", "error", "message"],
+    ]);
+    return {
+      activity_type: "tool_call",
+      activity_status: phase === "complete" ? "completed" : "streaming",
+      presentation_role: "working",
+      ...(activityId !== null ? { activity_id: activityId } : {}),
+      ...(toolName !== null ? { tool_name: toolName } : {}),
+      ...(toolInput !== undefined ? { tool_input: toolInput } : {}),
+      ...(toolCommand !== null ? { tool_command: toolCommand } : {}),
+      ...(toolOutput !== null ? { tool_output_delta: toolOutput } : {}),
+      ...(toolError !== null ? { tool_error: toolError } : {}),
+      ...(parentMessageId !== null ? { parent_message_id: parentMessageId } : {}),
+    };
+  }
+
+  return {};
+}
+
+function itemPhase(method: string): "start" | "delta" | "complete" | null {
+  if (method === "item/started" || method.endsWith("item_started")) {
+    return "start";
+  }
+  if (method === "item/completed" || method.endsWith("item_completed")) {
+    return "complete";
+  }
+  if (method.includes("/delta") || method.endsWith("_delta")) {
+    return "delta";
+  }
+  return null;
+}
+
+function isCodexToolType(value: string): boolean {
+  return ["commandexecution", "filechange", "mcptoolcall", "mcpcall", "toolcall"].includes(value);
+}
+
+function normalizedTypeIs(value: string, expected: string): boolean {
+  return value === expected || value === `${expected}item`;
+}
+
+function finalAgentMessage(value: unknown, depth = 0): { id: string | null; text: string } | null {
+  if (depth > 8) {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = finalAgentMessage(item, depth + 1);
+      if (found !== null) {
+        return found;
+      }
+    }
+    return null;
+  }
+  if (!isObject(value)) {
+    return null;
+  }
+  if (normalizeType(value.type as unknown) === "agentmessage" && typeof value.text === "string") {
+    return {
+      id: typeof value.id === "string" ? value.id : null,
+      text: value.text,
+    };
+  }
+  const preferred = ["turn", "items", "item", "finalAgentMessage", "params", "payload"];
+  for (const key of preferred) {
+    if (!(key in value)) {
+      continue;
+    }
+    const found = finalAgentMessage(value[key], depth + 1);
+    if (found !== null) {
+      return found;
+    }
+  }
+  for (const child of Object.values(value)) {
+    const found = finalAgentMessage(child, depth + 1);
+    if (found !== null) {
+      return found;
+    }
+  }
+  return null;
+}
+
+function normalizeType(value: unknown): string {
+  return typeof value === "string" ? value.replace(/[^a-z]/gi, "").toLowerCase() : "";
+}
+
+function stringAt(value: unknown, paths: string[][]): string | null {
+  for (const path of paths) {
+    const candidate = valueAt(value, path);
+    if (typeof candidate === "string" && candidate.trim() !== "") {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function valueAt(value: unknown, path: string[]): unknown {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!isObject(current) || !(key in current)) {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return current;
+}
+
+function valueAtPaths(value: unknown, paths: string[][]): unknown {
+  for (const path of paths) {
+    const candidate = valueAt(value, path);
+    if (candidate !== undefined) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 // Focused copy of the orchestrator's rate-limit sniffing: finds a

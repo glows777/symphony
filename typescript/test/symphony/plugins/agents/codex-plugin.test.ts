@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import "../../../../src/symphony/plugins/agents/index.ts";
 import { CodexPlugin } from "../../../../src/symphony/plugins/agents/codex/plugin.ts";
 import type {
   AgentMessage,
@@ -363,5 +364,58 @@ describe("Plugins.Agents.CodexPlugin", () => {
     // The token_count payload's rate limits are lifted onto the envelope.
     const lifted = messages.find((m) => m.rate_limits !== undefined);
     expect(lifted?.rate_limits).toEqual(rateLimits);
+  });
+
+  test("marks Codex work items as working and the completed turn as response", async () => {
+    const workspace = workspaceFor("MT-OUTPUT");
+    const cases = `  1)
+    printf '%s\\n' '{"id":1,"result":{}}'
+    ;;
+  2)
+    printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-output"}}}'
+    ;;
+  3)
+    printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-output"}}}'
+    ;;
+  4)
+    printf '%s\\n' '{"method":"item/started","params":{"item":{"id":"msg-output","type":"agentMessage"}}}'
+    printf '%s\\n' '{"method":"item/agentMessage/delta","params":{"itemId":"msg-output","delta":"Working text"}}'
+    printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"msg-output","type":"agentMessage","text":"Working text"}}}'
+    printf '%s\\n' '{"method":"turn/completed","params":{"turn":{"id":"turn-output","status":"completed","items":[{"id":"msg-output","type":"agentMessage","text":"Final Codex response"}]}}}'
+    exit 0
+    ;;`;
+    installCodex(codexScript(null, cases));
+
+    const messages: AgentMessage[] = [];
+    const started = await CodexPlugin.sessions.startSession(workspace, {
+      onMessage: (message) => messages.push(message),
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) {
+      return;
+    }
+    const turn = await CodexPlugin.sessions.runTurn(
+      started.value,
+      "inspect the issue",
+      turnContext("MT-OUTPUT"),
+    );
+    CodexPlugin.sessions.stopSession(started.value);
+
+    expect(turn.ok).toBe(true);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          activity_type: "assistant_message",
+          activity_id: "msg-output",
+          presentation_role: "working",
+          chat_delta: "Working text",
+        }),
+        expect.objectContaining({
+          event: "turn_completed",
+          final_activity_id: "msg-output",
+          final_content: "Final Codex response",
+        }),
+      ]),
+    );
   });
 });

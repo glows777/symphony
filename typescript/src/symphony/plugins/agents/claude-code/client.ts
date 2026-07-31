@@ -48,6 +48,8 @@ type ClaudeHandle = {
   // Per-turn usage is accumulated here into cumulative absolute totals.
   cumulativeInput: number;
   cumulativeOutput: number;
+  lastAssistantActivityId: string | null;
+  activitySequence: number;
 };
 
 export async function startSession(
@@ -87,6 +89,8 @@ export async function startSession(
     rawSessionId: null,
     cumulativeInput: 0,
     cumulativeOutput: 0,
+    lastAssistantActivityId: null,
+    activitySequence: 0,
   };
   const session: AgentSession = {
     backendId: "claude_code",
@@ -109,6 +113,8 @@ export async function runTurn(
   const handle = session.handle as ClaudeHandle;
   const { turnNumber } = context;
   let sessionStarted = false;
+  handle.lastAssistantActivityId = null;
+  handle.activitySequence = 0;
 
   if (handle.stderrListenerCleanup === undefined) {
     handle.stderrListenerCleanup = handle.transport.subscribeStderr((line) => {
@@ -188,9 +194,22 @@ export async function runTurn(
       return finishTurn(handle, msg, line, turnNumber, event.stream);
     }
 
-    // assistant / user / rate_limit_event / other system events: raw passthrough
-    // (MUST NOT drop — the dashboard renders it).
-    emit(handle, "notification", { payload: msg, raw: line, stream: event.stream });
+    // Preserve the raw protocol payload while also projecting each transcript
+    // block into the backend-neutral activity contract. Unknown message types
+    // remain raw notifications for forward compatibility.
+    const activities = claudeActivities(msg, turnNumber, handle);
+    if (activities.length === 0) {
+      emit(handle, "notification", { payload: msg, raw: line, stream: event.stream });
+    } else {
+      for (const activity of activities) {
+        emit(handle, "notification", {
+          payload: msg,
+          raw: line,
+          stream: event.stream,
+          ...activity,
+        });
+      }
+    }
   }
 }
 
@@ -250,8 +269,220 @@ function finishTurn(
     return err({ tag: "approval_required", payload: msg });
   }
 
-  emit(handle, "turn_completed", { sessionId, usage, payload: msg, raw: line, stream });
+  const finalContent = resultContent(msg);
+  emit(handle, "turn_completed", {
+    sessionId,
+    usage,
+    payload: msg,
+    raw: line,
+    stream,
+    ...(finalContent.trim() !== ""
+      ? {
+          final_activity_id:
+            handle.lastAssistantActivityId ?? `claude:result:${sessionId}:${turnNumber}`,
+          final_content: finalContent,
+        }
+      : {}),
+  });
   return ok({ sessionId });
+}
+
+type ClaudeActivity = Pick<
+  AgentMessage,
+  | "activity_type"
+  | "activity_status"
+  | "activity_id"
+  | "presentation_role"
+  | "parent_tool_use_id"
+  | "chat_id"
+  | "chat_phase"
+  | "chat_delta"
+  | "thinking_summary_delta"
+  | "tool_name"
+  | "tool_input"
+  | "tool_output_delta"
+  | "tool_error"
+>;
+
+function claudeActivities(
+  message: Record<string, unknown>,
+  turnNumber: number,
+  handle: ClaudeHandle,
+): ClaudeActivity[] {
+  const parentToolUseId = stringOrNull(message.parent_tool_use_id);
+  if (message.type === "assistant") {
+    const blocks = contentBlocks(message);
+    const baseId =
+      stringAt(message, ["uuid", "message.id"]) ??
+      `claude:assistant:${handle.rawSessionId ?? "session"}:${turnNumber}:${++handle.activitySequence}`;
+    const hasToolUse = blocks.some((block) => block.type === "tool_use");
+    return blocks.flatMap((block, index): ClaudeActivity[] => {
+      if (block.type === "thinking") {
+        const text = blockText(block, ["thinking", "text"]);
+        if (text === "") {
+          return [];
+        }
+        return [
+          {
+            activity_type: "thinking",
+            activity_status: "completed",
+            activity_id: `${baseId}:thinking:${index}`,
+            presentation_role: "working",
+            ...(parentToolUseId !== null ? { parent_tool_use_id: parentToolUseId } : {}),
+            thinking_summary_delta: text,
+          },
+        ];
+      }
+      if (block.type === "tool_use") {
+        const id = stringOrNull(block.id) ?? `${baseId}:tool:${index}`;
+        return [
+          {
+            activity_type: "tool_call",
+            activity_status: "streaming",
+            activity_id: id,
+            presentation_role: "working",
+            ...(parentToolUseId !== null ? { parent_tool_use_id: parentToolUseId } : {}),
+            ...(typeof block.name === "string" ? { tool_name: block.name } : {}),
+            ...(block.input !== undefined ? { tool_input: block.input } : {}),
+          },
+        ];
+      }
+      const text = blockText(block, ["text"]);
+      if (text === "") {
+        return [];
+      }
+      const id = blocks.length === 1 ? baseId : `${baseId}:text:${index}`;
+      if (!hasToolUse && parentToolUseId === null) {
+        handle.lastAssistantActivityId = id;
+      }
+      return [
+        {
+          activity_type: "assistant_message",
+          activity_status: "completed",
+          activity_id: id,
+          presentation_role: "working",
+          ...(parentToolUseId !== null ? { parent_tool_use_id: parentToolUseId } : {}),
+          chat_id: id,
+          chat_phase: "complete",
+          chat_delta: text,
+        },
+      ];
+    });
+  }
+
+  if (message.type === "user") {
+    return contentBlocks(message).flatMap((block) => {
+      if (block.type !== "tool_result") {
+        return [];
+      }
+      const id = stringOrNull(block.tool_use_id);
+      if (id === null) {
+        return [];
+      }
+      const output = contentValue(block.content);
+      return [
+        {
+          activity_type: "tool_call",
+          activity_status: block.is_error === true ? "failed" : "completed",
+          activity_id: id,
+          presentation_role: "working",
+          tool_output_delta: output,
+          ...(block.is_error === true ? { tool_error: output } : {}),
+        },
+      ];
+    });
+  }
+
+  if (message.type === "stream_event" && isObject(message.event)) {
+    const event = message.event;
+    if (event.type === "content_block_delta" && isObject(event.delta)) {
+      const text = event.delta.type === "text_delta" ? stringOrNull(event.delta.text) : null;
+      if (text !== null) {
+        const id =
+          stringOrNull(message.uuid) ??
+          `claude:partial:${handle.rawSessionId ?? "session"}:${turnNumber}`;
+        if (parentToolUseId === null) {
+          handle.lastAssistantActivityId = id;
+        }
+        return [
+          {
+            activity_type: "assistant_message",
+            activity_status: "streaming",
+            activity_id: id,
+            presentation_role: "working",
+            ...(parentToolUseId !== null ? { parent_tool_use_id: parentToolUseId } : {}),
+            chat_id: id,
+            chat_phase: "delta",
+            chat_delta: text,
+          },
+        ];
+      }
+    }
+  }
+
+  return [];
+}
+
+type ClaudeContentBlock = Record<string, unknown> & { type: string };
+
+function contentBlocks(message: Record<string, unknown>): ClaudeContentBlock[] {
+  const candidate = isObject(message.message) ? message.message.content : message.content;
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+  return candidate.filter(
+    (value): value is ClaudeContentBlock => isObject(value) && typeof value.type === "string",
+  );
+}
+
+function blockText(block: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    if (typeof block[key] === "string") {
+      return block[key] as string;
+    }
+  }
+  return "";
+}
+
+function contentValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (isObject(item) && typeof item.text === "string" ? item.text : inspect(item)))
+      .join("");
+  }
+  return value === undefined || value === null ? "" : inspect(value);
+}
+
+function resultContent(message: Record<string, unknown>): string {
+  return typeof message.result === "string" ? message.result : contentValue(message.result);
+}
+
+function stringAt(value: Record<string, unknown>, paths: string[]): string | null {
+  for (const path of paths) {
+    const candidate = path.split(".").reduce<unknown>((current, key) => {
+      return isObject(current) ? current[key] : undefined;
+    }, value);
+    const normalized = stringOrNull(candidate);
+    if (normalized !== null) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function inspect(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function accumulateUsage(handle: ClaudeHandle, rawUsage: unknown): AgentMessage["usage"] {

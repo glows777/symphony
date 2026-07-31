@@ -28,7 +28,7 @@ export function RunTimeline({
   const transcript = useMemo(() => splitTranscriptMessages(messages), [messages]);
   const visibleMessageItems = transcript.visible;
   const processItems = transcript.process;
-  const finalReply = transcript.finalReply;
+  const responseItems = transcript.response;
   const eventItems = useMemo(() => sortEvents(events), [events]);
   const latestKey = latestItemKey(eventItems, visibleMessageItems);
   const streaming = messages.some((message) => activityStatus(message) === "streaming");
@@ -120,14 +120,17 @@ export function RunTimeline({
               </div>
             </details>
           ) : null}
-          {finalReply !== null ? (
+          {responseItems.length > 0 ? (
             <div className="final-reply">
               <span className="final-reply-label">Response</span>
-              <ActivityRow
-                events={eventItems}
-                message={finalReply}
-                fresh={fresh.has(messageKey(finalReply))}
-              />
+              {responseItems.map((message) => (
+                <ActivityRow
+                  events={eventItems}
+                  message={message}
+                  key={messageKey(message)}
+                  fresh={fresh.has(messageKey(message))}
+                />
+              ))}
             </div>
           ) : null}
         </div>
@@ -151,9 +154,23 @@ export function RunTimeline({
 export function splitTranscriptMessages(messages: AgentOutputMessage[]): {
   visible: AgentOutputMessage[];
   process: AgentOutputMessage[];
+  response: AgentOutputMessage[];
   finalReply: AgentOutputMessage | null;
 } {
   const visible = sortMessages(messages).filter(isVisibleActivity);
+  const hasExplicitRoles = visible.some((message) => message.presentation_role !== undefined);
+  if (hasExplicitRoles) {
+    const response = visible.filter((message) => message.presentation_role === "response");
+    return {
+      visible,
+      process: visible.filter((message) => message.presentation_role !== "response"),
+      response,
+      finalReply: response.at(-1) ?? null,
+    };
+  }
+
+  // Historical runs predate presentation_role. Keep their old projection
+  // readable, but never use this fallback for a new explicitly marked run.
   let finalReplyIndex = -1;
   for (let index = visible.length - 1; index >= 0; index -= 1) {
     if (activityType(visible[index] as AgentOutputMessage) === "assistant_message") {
@@ -161,10 +178,12 @@ export function splitTranscriptMessages(messages: AgentOutputMessage[]): {
       break;
     }
   }
+  const finalReply = finalReplyIndex === -1 ? null : (visible[finalReplyIndex] ?? null);
   return {
     visible,
     process: visible.filter((_message, index) => index !== finalReplyIndex),
-    finalReply: finalReplyIndex === -1 ? null : (visible[finalReplyIndex] ?? null),
+    response: finalReply === null ? [] : [finalReply],
+    finalReply,
   };
 }
 

@@ -306,6 +306,36 @@ describe("frontend transcript merge", () => {
     expect(transcript.finalReply?.message_id).toBe("final");
   });
 
+  test("uses explicit presentation roles instead of the last assistant message", () => {
+    const transcript = splitTranscriptMessages([
+      message({
+        message_id: "final-first",
+        activity_id: "final-first",
+        content: "A previous response.",
+        presentation_role: "response",
+      }),
+      message({
+        message_id: "working-last",
+        activity_id: "working-last",
+        content: "Checking one more file.",
+        presentation_role: "working",
+      }),
+      message({
+        message_id: "final-last",
+        activity_id: "final-last",
+        content: "The final response.",
+        presentation_role: "response",
+      }),
+    ]);
+
+    expect(transcript.process.map((item) => item.message_id)).toEqual(["working-last"]);
+    expect(transcript.response.map((item) => item.message_id)).toEqual([
+      "final-first",
+      "final-last",
+    ]);
+    expect(transcript.finalReply?.message_id).toBe("final-last");
+  });
+
   test("recovers a tool command from a related raw event", () => {
     const tool = message({
       message_id: "cmd-2",

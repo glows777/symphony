@@ -55,10 +55,33 @@ export type AgentMessage = {
   usage?: JsonMap;
   // Dashboard-shaped rate limits: { limit_id, primary?, secondary?, credits? }.
   rate_limits?: JsonMap;
+  // Transcript fields are emitted by each backend adapter from its native
+  // protocol. `activity_status` describes the activity lifecycle; the
+  // presentation role separately identifies work-process output from the
+  // final response.
+  activity_type?: "assistant_message" | "thinking" | "tool_call" | "system" | "unknown";
+  activity_status?: "streaming" | "completed" | "failed";
+  activity_id?: string;
+  presentation_role?: "working" | "response";
+  final_activity_id?: string;
+  final_content?: string;
+  parent_message_id?: string;
+  parent_tool_use_id?: string;
+  chat_id?: string;
+  chat_phase?: "start" | "delta" | "complete";
+  chat_delta?: string;
+  thinking_summary_delta?: string;
+  tool_name?: string;
+  tool_input?: unknown;
+  tool_command?: string;
+  tool_output_delta?: string;
+  tool_error?: string;
   payload?: unknown; // raw backend payload, passed through untouched
   raw?: string; // raw wire line when applicable
   [key: string]: unknown; // backend extras (decision, answer, threadId, ...)
 };
+
+export type AgentPresentationRole = "working" | "response";
 
 export type OnAgentMessage = (message: AgentMessage) => void;
 

@@ -404,7 +404,10 @@ function mergeLiveActivities(
 ): AgentOutputMessage[] {
   const activity = liveActivityFromEvent(event);
   if (activity === null) {
-    return isTerminalEvent(event) ? closeLiveActivities(messages, event) : messages;
+    if (!isTerminalEvent(event)) {
+      return messages;
+    }
+    return closeLiveActivities(promoteLiveFinalActivity(messages, event), event);
   }
 
   const index = messages.findIndex((message) => messageMatchesActivity(message, event, activity));
@@ -448,6 +451,12 @@ function liveMessageFromEvent(event: AgentOutputEvent, activity: LiveActivity): 
     ...(typeof event.parent_message_id === "string"
       ? { parent_message_id: event.parent_message_id }
       : {}),
+    ...(typeof event.parent_tool_use_id === "string"
+      ? { parent_tool_use_id: event.parent_tool_use_id }
+      : {}),
+    ...(event.presentation_role !== undefined
+      ? { presentation_role: event.presentation_role }
+      : {}),
     ...(activity.type === "assistant_message" ? { role: "assistant" as const } : {}),
     content: "",
     status: activity.status,
@@ -475,6 +484,12 @@ function applyLiveActivity(
   };
   if (typeof event.parent_message_id === "string") {
     next.parent_message_id = event.parent_message_id;
+  }
+  if (typeof event.parent_tool_use_id === "string") {
+    next.parent_tool_use_id = event.parent_tool_use_id;
+  }
+  if (event.presentation_role !== undefined) {
+    next.presentation_role = event.presentation_role;
   }
   if (activity.type === "assistant_message" || activity.type === "thinking") {
     next.content = previous.content + (activity.contentDelta ?? "");
@@ -584,6 +599,59 @@ function closeLiveActivities(
       updated_at: event.at,
     };
   });
+}
+
+function promoteLiveFinalActivity(
+  messages: AgentOutputMessage[],
+  event: AgentOutputEvent,
+): AgentOutputMessage[] {
+  const finalId = typeof event.final_activity_id === "string" ? event.final_activity_id : null;
+  if (finalId === null) {
+    return messages;
+  }
+  const index = messages.findIndex(
+    (message) =>
+      message.run_id === event.run_id &&
+      message.turn === event.turn &&
+      (message.activity_id === finalId || message.message_id === finalId),
+  );
+  if (index === -1) {
+    const content = typeof event.final_content === "string" ? event.final_content : "";
+    return sortMessages([
+      ...messages,
+      {
+        message_id: finalId,
+        activity_id: finalId,
+        activity_type: "assistant_message",
+        activity_status: "completed",
+        presentation_role: "response",
+        issue_identifier: event.issue_identifier,
+        backend: event.backend,
+        run_id: event.run_id,
+        ...(event.session_id !== undefined ? { session_id: event.session_id } : {}),
+        ...(event.turn !== undefined ? { turn: event.turn } : {}),
+        role: "assistant" as const,
+        content,
+        status: "completed",
+        seq_start: event.seq,
+        seq_end: event.seq,
+        at: event.at,
+        updated_at: event.at,
+      },
+    ]);
+  }
+  const next = [...messages];
+  const previous = next[index] as AgentOutputMessage;
+  next[index] = {
+    ...previous,
+    presentation_role: "response",
+    activity_status: "completed",
+    status: "completed",
+    seq_end: Math.max(previous.seq_end, event.seq),
+    updated_at: event.at,
+    ...(typeof event.final_content === "string" ? { content: event.final_content } : {}),
+  };
+  return sortMessages(next);
 }
 
 function messageMatchesActivity(
