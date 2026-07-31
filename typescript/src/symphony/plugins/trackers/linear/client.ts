@@ -14,6 +14,9 @@ import { linearSettings } from "./settings.ts";
 
 const ISSUE_PAGE_SIZE = 50;
 const MAX_ERROR_BODY_LOG_BYTES = 1_000;
+const MAX_DIAGNOSTIC_DEPTH = 4;
+const MAX_DIAGNOSTIC_ARRAY_ITEMS = 10;
+const MAX_DIAGNOSTIC_OBJECT_KEYS = 20;
 
 const QUERY = `query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
   issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
@@ -65,6 +68,15 @@ export type GraphqlFun = (
 ) => Result<unknown, TrackerError> | Promise<Result<unknown, TrackerError>>;
 
 type JsonObject = Record<string, unknown>;
+type JsonDiagnostic =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonDiagnostic[]
+  | { [key: string]: JsonDiagnostic };
+type DiagnosticObject = { [key: string]: JsonDiagnostic };
+type DiagnosticContext = { depth: number; seen: WeakSet<object> };
 
 export async function fetchCandidateIssues(): Promise<Result<Issue[], TrackerError>> {
   const settings = settingsBang();
@@ -144,12 +156,13 @@ export async function graphql(
       status: response.value.status,
     });
   }
-  logger.error(`Linear GraphQL request failed: ${inspect(response.error)}`);
+  const reason = transportFailureReason(payload, response.error);
+  logger.error(`Linear GraphQL request failed: ${inspect(reason)}`);
   return err({
     tag: "linear_api_request",
     code: "transport_failed",
     message: "Linear GraphQL request failed before receiving a response",
-    reason: response.error,
+    reason,
   });
 }
 
@@ -305,6 +318,250 @@ function linearErrorContext(payload: JsonObject, response: RequestResponse): str
   const name = payload.operationName;
   const operation = typeof name === "string" && name !== "" ? ` operation=${name}` : "";
   return `${operation} body=${summarizeErrorBody(response.body)}`;
+}
+
+function transportFailureReason(payload: JsonObject, error: unknown): JsonObject {
+  return {
+    phase: "request",
+    request: {
+      endpoint: safeLinearEndpoint(),
+      operationName: operationNameForContext(payload),
+    },
+    error: diagnosticError(error),
+  };
+}
+
+function operationNameForContext(payload: JsonObject): string | null {
+  const explicit = payload.operationName;
+  if (typeof explicit === "string" && explicit.trim() !== "") {
+    return explicit.trim();
+  }
+  const query = payload.query;
+  if (typeof query !== "string") {
+    return null;
+  }
+  const match = /\b(?:query|mutation)\s+([_A-Za-z][_0-9A-Za-z]*)/.exec(query);
+  return match?.[1] ?? null;
+}
+
+function safeLinearEndpoint(): string {
+  return safeEndpoint(linearSettings(settingsBang()).endpoint);
+}
+
+function safeEndpoint(endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return "<invalid endpoint>";
+  }
+}
+
+function diagnosticError(error: unknown): DiagnosticObject {
+  return diagnosticErrorValue(error, { depth: 0, seen: new WeakSet<object>() });
+}
+
+function diagnosticErrorValue(error: unknown, context: DiagnosticContext): DiagnosticObject {
+  if (context.depth > MAX_DIAGNOSTIC_DEPTH) {
+    return { type: "Truncated" };
+  }
+  if (error instanceof Error) {
+    return diagnosticErrorObject(error, context);
+  }
+  if (Array.isArray(error)) {
+    return { type: "Array", value: sanitizeDiagnosticArray(error, context) };
+  }
+  if (isObject(error)) {
+    return {
+      type: diagnosticObjectType(error),
+      value: sanitizeDiagnosticObject(error, context),
+    };
+  }
+  return {
+    type: diagnosticPrimitiveType(error),
+    value: sanitizeDiagnosticPrimitive(error),
+  };
+}
+
+function diagnosticErrorObject(error: Error, context: DiagnosticContext): DiagnosticObject {
+  if (context.seen.has(error)) {
+    return { type: "Circular" };
+  }
+  context.seen.add(error);
+
+  const diagnostic: DiagnosticObject = {
+    type: error.name || error.constructor.name || "Error",
+  };
+  if (error.message !== "") {
+    diagnostic.message = redactDiagnosticString(error.message);
+  }
+  addKnownErrorFields(diagnostic, error);
+  addEnumerableErrorFields(diagnostic, error, context);
+
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause !== undefined) {
+    diagnostic.cause = diagnosticErrorValue(cause, nextDiagnosticContext(context));
+  }
+  if (error instanceof AggregateError && error.errors.length > 0) {
+    diagnostic.errors = sanitizeDiagnosticArray(error.errors, nextDiagnosticContext(context));
+  }
+  return diagnostic;
+}
+
+function addKnownErrorFields(diagnostic: DiagnosticObject, error: Error): void {
+  const fields = error as unknown as Record<string, unknown>;
+  for (const key of ["code", "errno", "syscall", "hostname", "address", "port"]) {
+    const value = fields[key];
+    if (isDiagnosticScalar(value)) {
+      diagnostic[key] = diagnosticScalar(value);
+    }
+  }
+}
+
+function addEnumerableErrorFields(
+  diagnostic: DiagnosticObject,
+  error: Error,
+  context: DiagnosticContext,
+): void {
+  for (const [key, value] of Object.entries(error as unknown as Record<string, unknown>)) {
+    if (key === "cause" || key === "errors" || key in diagnostic) {
+      continue;
+    }
+    diagnostic[key] = sanitizeDiagnosticField(key, value, nextDiagnosticContext(context));
+  }
+}
+
+function sanitizeDiagnosticObject(value: JsonObject, context: DiagnosticContext): DiagnosticObject {
+  if (context.seen.has(value)) {
+    return { type: "Circular" };
+  }
+  if (context.depth > MAX_DIAGNOSTIC_DEPTH) {
+    return { type: "Truncated" };
+  }
+  context.seen.add(value);
+
+  const sanitized: DiagnosticObject = {};
+  let count = 0;
+  for (const [key, field] of Object.entries(value)) {
+    if (count >= MAX_DIAGNOSTIC_OBJECT_KEYS) {
+      sanitized.truncated = true;
+      break;
+    }
+    sanitized[key] = sanitizeDiagnosticField(key, field, nextDiagnosticContext(context));
+    count += 1;
+  }
+  return sanitized;
+}
+
+function sanitizeDiagnosticArray(value: unknown[], context: DiagnosticContext): JsonDiagnostic[] {
+  if (context.seen.has(value)) {
+    return [{ type: "Circular" }];
+  }
+  if (context.depth > MAX_DIAGNOSTIC_DEPTH) {
+    return [{ type: "Truncated" }];
+  }
+  context.seen.add(value);
+
+  const sanitized = value
+    .slice(0, MAX_DIAGNOSTIC_ARRAY_ITEMS)
+    .map((item) => sanitizeDiagnosticValue(item, nextDiagnosticContext(context)));
+  if (value.length > MAX_DIAGNOSTIC_ARRAY_ITEMS) {
+    sanitized.push({ truncated: true });
+  }
+  return sanitized;
+}
+
+function sanitizeDiagnosticField(
+  key: string,
+  value: unknown,
+  context: DiagnosticContext,
+): JsonDiagnostic {
+  if (isSensitiveKey(key)) {
+    return "<redacted>";
+  }
+  return sanitizeDiagnosticValue(value, context);
+}
+
+function sanitizeDiagnosticValue(value: unknown, context: DiagnosticContext): JsonDiagnostic {
+  if (value instanceof Error) {
+    return diagnosticErrorValue(value, context);
+  }
+  if (Array.isArray(value)) {
+    return sanitizeDiagnosticArray(value, context);
+  }
+  if (isObject(value)) {
+    return sanitizeDiagnosticObject(value, context);
+  }
+  return sanitizeDiagnosticPrimitive(value);
+}
+
+function sanitizeDiagnosticPrimitive(value: unknown): JsonDiagnostic {
+  switch (typeof value) {
+    case "string":
+      return redactDiagnosticString(value);
+    case "number":
+      return Number.isFinite(value) ? value : String(value);
+    case "boolean":
+      return value;
+    case "bigint":
+      return value.toString();
+    case "symbol":
+      return redactDiagnosticString(String(value));
+    case "function":
+      return value.name === "" ? "[Function]" : `[Function ${redactDiagnosticString(value.name)}]`;
+    case "undefined":
+      return "undefined";
+    case "object":
+      return null;
+  }
+}
+
+function diagnosticPrimitiveType(value: unknown): string {
+  return value === null ? "null" : typeof value;
+}
+
+function diagnosticObjectType(value: JsonObject): string {
+  const name = (value as { constructor?: { name?: unknown } }).constructor?.name;
+  return typeof name === "string" && name !== "" ? name : "Object";
+}
+
+function nextDiagnosticContext(context: DiagnosticContext): DiagnosticContext {
+  return { depth: context.depth + 1, seen: context.seen };
+}
+
+function isDiagnosticScalar(value: unknown): value is string | number | boolean {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+}
+
+function diagnosticScalar(value: string | number | boolean): string | number | boolean {
+  return typeof value === "string" ? redactDiagnosticString(value) : value;
+}
+
+function redactDiagnosticString(value: string): string {
+  const linear = linearSettings(settingsBang());
+  let redacted = value;
+  if (linear.apiKey !== null && linear.apiKey !== "") {
+    redacted = redacted.split(linear.apiKey).join("<redacted>");
+  }
+  const safe = safeEndpoint(linear.endpoint);
+  if (linear.endpoint !== safe) {
+    redacted = redacted.split(linear.endpoint).join(safe);
+  }
+  return redacted
+    .replace(
+      /\b(authorization)(\s*[:=]\s*)(bearer\s+)?("[^"]*"|'[^']*'|[^\s,;}]+)/gi,
+      (_match, key: string, separator: string, bearer: string | undefined) =>
+        `${key}${separator}${bearer ?? ""}<redacted>`,
+    )
+    .replace(
+      /\b(api[_-]?key|token|secret|password|credential|cookie)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}]+)/gi,
+      "$1$2<redacted>",
+    )
+    .replace(/\b(bearer)\s+[A-Za-z0-9._~+/-]+=*/gi, "$1 <redacted>");
+}
+
+function isSensitiveKey(key: string): boolean {
+  return /authorization|api[_-]?key|token|secret|password|credential|cookie/i.test(key);
 }
 
 function summarizeErrorBody(body: unknown): string {
