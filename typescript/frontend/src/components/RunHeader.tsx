@@ -1,4 +1,4 @@
-import { ChevronDown, Circle, Folder, MoreHorizontal } from "lucide-react";
+import { ChevronDown, Circle } from "lucide-react";
 import type { IssueDetail, RunItem, RunKind, RunMetadata } from "../lib/api";
 
 type RunHeaderProps = {
@@ -7,17 +7,9 @@ type RunHeaderProps = {
   run: RunItem | RunMetadata | null;
   onRerunBlocked: (identifier: string) => void;
   rerunning: boolean;
-  loading: boolean;
 };
 
-export function RunHeader({
-  identifier,
-  detail,
-  run,
-  onRerunBlocked,
-  rerunning,
-  loading,
-}: RunHeaderProps) {
+export function RunHeader({ identifier, detail, run, onRerunBlocked, rerunning }: RunHeaderProps) {
   const metadataRun = run !== null && "event_count" in run;
   const snapshotRun = metadataRun
     ? null
@@ -27,7 +19,6 @@ export function RunHeader({
     run?.run_kind ?? snapshotRun?.run_kind ?? detail?.logs?.latest_run?.run_kind,
   );
   const status = run?.status ?? detail?.status ?? "waiting";
-  const title = detail?.title ?? run?.title ?? identifier ?? "Select a run";
   const workspace =
     detail?.workspace?.path ??
     snapshotRun?.workspace_path ??
@@ -49,16 +40,14 @@ export function RunHeader({
     identifier !== null && detail?.status === "blocked" && recovery?.rerun_supported !== false;
   const blockedReason = blocked?.blocked_reason ?? blocked?.error ?? detail?.last_error ?? null;
   const operatorPrompt = blocked?.operator_prompt ?? recovery?.prompt ?? null;
+  const hasVisibleRecovery = canRerun || (detail?.status === "blocked" && blockedReason !== null);
+
+  if (!hasVisibleRecovery) {
+    return null;
+  }
 
   return (
     <header className="run-header">
-      <div className="workspace-topbar">
-        <Folder className="workspace-folder" size={22} strokeWidth={1.7} aria-hidden="true" />
-        <h1 title={title}>{loading ? "Loading run details" : title}</h1>
-        <button className="workspace-more" type="button" aria-label="Run options">
-          <MoreHorizontal size={21} strokeWidth={1.7} aria-hidden="true" />
-        </button>
-      </div>
       <div className="run-context" aria-label="Selected run status">
         <span className={`run-context-status run-context-status-${statusTone(status)}`}>
           <Circle

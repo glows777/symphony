@@ -113,6 +113,7 @@ export type RunMetadata = {
   issue_identifier: string;
   title: string | null;
   display_name?: string | null;
+  prompt?: string | null;
   run_kind?: RunKind;
   backend: Backend;
   worker_host: string;

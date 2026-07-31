@@ -5,7 +5,7 @@ import type { AgentOutputEvent, AgentOutputMessage } from "../lib/api";
 type RunTimelineProps = {
   events: AgentOutputEvent[];
   messages: AgentOutputMessage[];
-  title: string | null;
+  prompt: string | null;
   loading: boolean;
   error: string | null;
   hasLater: boolean;
@@ -16,7 +16,7 @@ type RunTimelineProps = {
 export function RunTimeline({
   events,
   messages,
-  title,
+  prompt,
   loading,
   error,
   hasLater,
@@ -25,8 +25,10 @@ export function RunTimeline({
 }: RunTimelineProps) {
   const [fresh, setFresh] = useState<Set<string>>(new Set());
   const laterSentinelRef = useRef<HTMLDivElement | null>(null);
-  const messageItems = useMemo(() => sortMessages(messages), [messages]);
-  const visibleMessageItems = useMemo(() => messageItems.filter(isVisibleActivity), [messageItems]);
+  const transcript = useMemo(() => splitTranscriptMessages(messages), [messages]);
+  const visibleMessageItems = transcript.visible;
+  const processItems = transcript.process;
+  const finalReply = transcript.finalReply;
   const eventItems = useMemo(() => sortEvents(events), [events]);
   const latestKey = latestItemKey(eventItems, visibleMessageItems);
   const streaming = messages.some((message) => activityStatus(message) === "streaming");
@@ -84,29 +86,50 @@ export function RunTimeline({
       ) : visibleMessageItems.length === 0 ? (
         <div className="transcript-empty">
           <Sparkles className="empty-glyph" size={26} strokeWidth={1.6} aria-hidden="true" />
-          <p>{title ?? "No conversation yet"}</p>
+          <p>No conversation yet</p>
           <span>Output will appear here when the run starts.</span>
         </div>
       ) : (
         <div className="transcript-list">
-          {title ? <div className="user-message">{title}</div> : null}
-          <div className="worked-divider">
-            <span>Worked for {workedFor}</span>
-            <ChevronRight
-              className="worked-divider-chevron"
-              size={18}
-              strokeWidth={1.7}
-              aria-hidden="true"
-            />
-          </div>
-          {visibleMessageItems.map((message) => (
-            <ActivityRow
-              events={eventItems}
-              message={message}
-              key={messageKey(message)}
-              fresh={fresh.has(messageKey(message))}
-            />
-          ))}
+          {prompt?.trim() ? (
+            <div className="user-message" aria-label="Prompt sent to agent">
+              {prompt}
+            </div>
+          ) : null}
+          {processItems.length > 0 ? (
+            <details className="work-process">
+              <summary className="work-process-summary">
+                <span className="work-process-label">Work process</span>
+                <span className="work-process-duration">Worked for {workedFor}</span>
+                <ChevronRight
+                  className="worked-divider-chevron"
+                  size={18}
+                  strokeWidth={1.7}
+                  aria-hidden="true"
+                />
+              </summary>
+              <div className="work-process-body">
+                {processItems.map((message) => (
+                  <ActivityRow
+                    events={eventItems}
+                    message={message}
+                    key={messageKey(message)}
+                    fresh={fresh.has(messageKey(message))}
+                  />
+                ))}
+              </div>
+            </details>
+          ) : null}
+          {finalReply !== null ? (
+            <div className="final-reply">
+              <span className="final-reply-label">Response</span>
+              <ActivityRow
+                events={eventItems}
+                message={finalReply}
+                fresh={fresh.has(messageKey(finalReply))}
+              />
+            </div>
+          ) : null}
         </div>
       )}
       <div className="timeline-history-loader" ref={laterSentinelRef}>
@@ -123,6 +146,26 @@ export function RunTimeline({
       </div>
     </section>
   );
+}
+
+export function splitTranscriptMessages(messages: AgentOutputMessage[]): {
+  visible: AgentOutputMessage[];
+  process: AgentOutputMessage[];
+  finalReply: AgentOutputMessage | null;
+} {
+  const visible = sortMessages(messages).filter(isVisibleActivity);
+  let finalReplyIndex = -1;
+  for (let index = visible.length - 1; index >= 0; index -= 1) {
+    if (activityType(visible[index] as AgentOutputMessage) === "assistant_message") {
+      finalReplyIndex = index;
+      break;
+    }
+  }
+  return {
+    visible,
+    process: visible.filter((_message, index) => index !== finalReplyIndex),
+    finalReply: finalReplyIndex === -1 ? null : (visible[finalReplyIndex] ?? null),
+  };
 }
 
 function ActivityRow({

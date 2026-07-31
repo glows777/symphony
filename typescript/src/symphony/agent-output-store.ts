@@ -91,6 +91,7 @@ export type AgentOutputRunMetadata = {
   issue_identifier: string;
   title: string | null;
   display_name: string | null;
+  prompt?: string | null;
   run_kind?: "normal" | "review";
   backend: string;
   worker_host: string;
@@ -129,6 +130,7 @@ export type StartAgentOutputRun = {
   issueIdentifier: string;
   title?: string | null;
   displayName?: string | null;
+  prompt?: string | null;
   runKind?: "normal" | "review";
   backend: string;
   workerHost: string | null;
@@ -186,6 +188,10 @@ export class AgentOutputRun {
     this.store.recordMessage(this.state, message, turn, summary);
   }
 
+  setPrompt(prompt: string | null): void {
+    this.store.setPrompt(this.state, prompt);
+  }
+
   finish(status: "completed" | "failed" | "cancelled", reason: unknown = null): Promise<void> {
     return this.store.finishRun(this.state, status, reason);
   }
@@ -231,6 +237,7 @@ export class AgentOutputStore {
       issue_identifier: issueIdentifier,
       title: context.title ?? null,
       display_name: sessionDisplayName(context.displayName ?? context.title),
+      prompt: context.prompt ?? null,
       run_kind: context.runKind ?? "normal",
       backend: context.backend,
       worker_host: context.workerHost ?? "local",
@@ -274,6 +281,14 @@ export class AgentOutputStore {
       this.pruneCachedRuns();
     }
     return new AgentOutputRun(this, state);
+  }
+
+  setPrompt(state: PersistedRun, prompt: string | null): void {
+    if (state.closed) {
+      return;
+    }
+    state.metadata.prompt = prompt === null || prompt.trim() === "" ? null : prompt;
+    this.persistMetadata(state);
   }
 
   private nextStartedAt(): string {

@@ -1,4 +1,4 @@
-import { ArrowDown, ChevronDown, LoaderCircle, Mic, Plus, Settings2, Zap } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RunHeader } from "./components/RunHeader";
 import { RunSidebar } from "./components/RunSidebar";
@@ -244,67 +244,23 @@ export function App() {
           run={output?.run ?? selectedRun}
           onRerunBlocked={(identifier) => void handleRerunBlocked(identifier)}
           rerunning={rerunning}
-          loading={loading || timelineLoading}
         />
         <RunTimeline
           events={events}
           messages={output?.messages ?? []}
-          title={detail?.title ?? output?.run?.title ?? selectedRun?.title ?? null}
+          prompt={output?.run?.prompt ?? null}
           loading={timelineLoading}
           error={output?.error?.message ?? laterError ?? (selected ? null : error)}
           hasLater={hasLater}
           loadingLater={loadingLater}
           onLoadLater={() => void loadLater()}
         />
-        <footer className="composer-shell" aria-label="Output composer">
-          <div className="composer" aria-label="Read-only output composer">
-            <div className="composer-placeholder">Do anything</div>
-            <div className="composer-toolbar">
-              <Plus className="composer-plus" size={22} strokeWidth={1.7} aria-hidden="true" />
-              <span className="composer-context">
-                <Settings2
-                  className="composer-context-icon"
-                  size={18}
-                  strokeWidth={1.7}
-                  aria-hidden="true"
-                />
-                symphony_git
-              </span>
-              <span className="composer-grow" />
-              <span className={`composer-live composer-live-${streamState}`}>
-                <LoaderCircle
-                  className="composer-live-dot"
-                  size={15}
-                  strokeWidth={1.8}
-                  aria-hidden="true"
-                />
-              </span>
-              <span className="composer-model">
-                <Zap
-                  className="composer-spark"
-                  size={17}
-                  strokeWidth={1.8}
-                  fill="currentColor"
-                  aria-hidden="true"
-                />
-                5.6 Luna Max
-              </span>
-              <ChevronDown
-                className="composer-chevron"
-                size={17}
-                strokeWidth={1.7}
-                aria-hidden="true"
-              />
-              <Mic className="composer-mic" size={20} strokeWidth={1.7} aria-hidden="true" />
-              <span className="composer-send" aria-hidden="true">
-                <ArrowDown size={22} strokeWidth={1.7} />
-              </span>
-            </div>
-          </div>
-          <div className="composer-note">
-            {streamState === "connected" ? "Live output" : "Waiting for output"}
-            <span>Read-only observability view · polls every 5s</span>
-          </div>
+        <footer className="stream-status" aria-label="Output stream status">
+          <span className={`stream-status-indicator stream-status-${streamState}`}>
+            <LoaderCircle size={15} strokeWidth={1.8} aria-hidden="true" />
+          </span>
+          <span>{streamState === "connected" ? "Live output" : "Waiting for output"}</span>
+          <span className="stream-status-note">Read-only observability · polls every 5s</span>
         </footer>
       </main>
     </div>
@@ -319,7 +275,6 @@ function allRuns(state: StatePayload | null): RunItem[] {
     ...(state.running ?? []),
     ...(state.retrying ?? []).map((item) => ({
       ...item,
-      title: item.title ?? "Retry scheduled",
       status: "retrying",
     })),
     ...(state.blocked ?? []),

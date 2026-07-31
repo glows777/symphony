@@ -4,6 +4,7 @@ import { groupRunsByIssue } from "../../frontend/src/components/RunSidebar.tsx";
 import {
   hasThinkingSummary,
   isVisibleActivity,
+  splitTranscriptMessages,
   toolActivityLabel,
 } from "../../frontend/src/components/RunTimeline.tsx";
 import type {
@@ -285,6 +286,24 @@ describe("frontend transcript merge", () => {
     expect(
       isVisibleActivity(message({ activity_type: "thinking", content: "Checked the run state." })),
     ).toBe(true);
+  });
+
+  test("keeps the final assistant reply outside the collapsed work process", () => {
+    const transcript = splitTranscriptMessages([
+      message({ message_id: "progress", activity_id: "progress", content: "Starting review." }),
+      message({
+        message_id: "tool",
+        activity_id: "tool",
+        activity_type: "tool_call",
+        content: "",
+        status: "completed",
+        activity_status: "completed",
+      }),
+      message({ message_id: "final", activity_id: "final", content: "Review complete." }),
+    ]);
+
+    expect(transcript.process.map((item) => item.message_id)).toEqual(["progress", "tool"]);
+    expect(transcript.finalReply?.message_id).toBe("final");
   });
 
   test("recovers a tool command from a related raw event", () => {

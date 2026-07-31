@@ -436,6 +436,10 @@ async function doRunMultiTurn(
 ): Promise<Result<undefined, unknown>> {
   const prompt = buildContinuationTurnPrompt(issue, opts, turnNumber, maxTurns);
 
+  if (turnNumber === 1) {
+    output.setPrompt(prompt);
+  }
+
   currentTurn.value = turnNumber;
   const turn = await backend.sessions.runTurn(session, prompt, { issue, turnNumber, maxTurns });
   if (!turn.ok) {
@@ -521,6 +525,7 @@ async function runFreshSessionTurns(
     return err(session.error);
   }
   output.bindRunId(session.value.runId);
+  output.setPrompt(prompt);
   const detach = onAbort(signal, () => backend.sessions.stopSession(session.value));
   const turn = await runSingleFreshTurn(
     backend,

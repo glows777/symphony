@@ -55,6 +55,35 @@ describe("AgentOutputStore", () => {
     expect(restarted.latestRun("SYM-NAME")?.run_kind).toBe("review");
   });
 
+  test("persists the prompt sent to the agent in run metadata", async () => {
+    const root = tempRoot();
+    const store = new AgentOutputStore({ root, mode: "summary" });
+    const run = store.startRun({
+      issueId: "issue-prompt",
+      issueIdentifier: "SYM-PROMPT",
+      title: "Prompt issue",
+      backend: "codex",
+      workerHost: null,
+      runId: "prompt-run",
+    });
+
+    run.bindRunId("prompt-session");
+    run.setPrompt("Review the issue and report actionable findings.");
+    await run.finish("completed");
+
+    expect(store.latestRun("SYM-PROMPT")?.prompt).toBe(
+      "Review the issue and report actionable findings.",
+    );
+    expect(store.readIssueOutput("SYM-PROMPT").run?.prompt).toBe(
+      "Review the issue and report actionable findings.",
+    );
+
+    const restarted = new AgentOutputStore({ root, mode: "summary" });
+    expect(restarted.latestRun("SYM-PROMPT")?.prompt).toBe(
+      "Review the issue and report actionable findings.",
+    );
+  });
+
   test("writes independently parseable raw JSONL with cursor reads and stream metadata", async () => {
     const store = new AgentOutputStore({ root: tempRoot(), mode: "raw" });
     const run = store.startRun({
