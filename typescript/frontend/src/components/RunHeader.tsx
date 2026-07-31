@@ -1,3 +1,4 @@
+import { ChevronDown, Circle, Folder, MoreHorizontal } from "lucide-react";
 import type { IssueDetail, RunItem, RunKind, RunMetadata } from "../lib/api";
 
 type RunHeaderProps = {
@@ -51,30 +52,27 @@ export function RunHeader({
 
   return (
     <header className="run-header">
-      <div className="run-header-topline">
-        <div className="run-breadcrumb">
-          <span>Observability</span>
-          <span className="breadcrumb-slash">/</span>
-          <span>{identifier ?? "Run workspace"}</span>
-        </div>
-        <span className={`state-pill state-pill-${statusTone(status)}`}>
-          <span className="state-pill-dot" />
+      <div className="workspace-topbar">
+        <Folder className="workspace-folder" size={22} strokeWidth={1.7} aria-hidden="true" />
+        <h1 title={title}>{loading ? "Loading run details" : title}</h1>
+        <button className="workspace-more" type="button" aria-label="Run options">
+          <MoreHorizontal size={21} strokeWidth={1.7} aria-hidden="true" />
+        </button>
+      </div>
+      <div className="run-context" aria-label="Selected run status">
+        <span className={`run-context-status run-context-status-${statusTone(status)}`}>
+          <Circle
+            className="run-context-dot"
+            size={6}
+            strokeWidth={0}
+            fill="currentColor"
+            aria-hidden="true"
+          />
           {statusLabel(status)}
         </span>
-      </div>
-      <div className="run-title-row">
-        <div>
-          <p className="run-eyebrow">Selected issue</p>
-          <h1>{loading ? "Loading run details" : title}</h1>
-          <p className="run-subtitle">
-            {identifier ?? "Choose a run from the sidebar"}
-            <span className="subtitle-divider">·</span>
-            <span className="backend-badge">{backendLabel(backend)}</span>
-            <span className={`run-kind-badge run-kind-badge-${runKind}`}>
-              {runKindLabel(runKind)}
-            </span>
-          </p>
-        </div>
+        <span className="run-context-id">{identifier ?? "Choose a run from the sidebar"}</span>
+        <span className="run-context-backend">{backendLabel(backend)}</span>
+        <span className="run-context-kind">{runKindLabel(runKind)}</span>
         {canRerun ? (
           <button
             type="button"
@@ -93,12 +91,7 @@ export function RunHeader({
           >
             {rerunning ? "Rerunning" : "Rerun"}
           </button>
-        ) : (
-          <div className="read-only-stamp">
-            <span className="read-only-icon">⊙</span>
-            <span>Read only</span>
-          </div>
-        )}
+        ) : null}
       </div>
       {detail?.status === "blocked" && blockedReason !== null ? (
         <div className="blocked-callout">
@@ -107,19 +100,30 @@ export function RunHeader({
           {operatorPrompt ? <span className="blocked-callout-prompt">{operatorPrompt}</span> : null}
         </div>
       ) : null}
-      <div className="run-facts" aria-label="Run summary">
-        <Fact label="Workspace" value={workspace} mono />
-        <Fact label="Run" value={compactId(runId)} mono />
-        <Fact label="Session" value={compactId(session)} mono />
-        <Fact label="Turn" value={String(turn)} numeric />
-        <Fact label="Runtime" value={formatRuntime(startedAt, endedAt)} numeric />
-        <Fact
-          label="Tokens"
-          value={tokens === null || tokens === undefined ? "n/a" : formatInt(tokens)}
-          numeric
-        />
-        <Fact label="Worker" value={snapshotRun?.worker_host ?? run?.worker_host ?? "local"} />
-      </div>
+      <details className="run-details">
+        <summary>
+          <span>Run details</span>
+          <ChevronDown
+            className="run-details-chevron"
+            size={14}
+            strokeWidth={1.7}
+            aria-hidden="true"
+          />
+        </summary>
+        <div className="run-facts" aria-label="Run summary">
+          <Fact label="Workspace" value={workspace} mono />
+          <Fact label="Run" value={compactId(runId)} mono />
+          <Fact label="Session" value={compactId(session)} mono />
+          <Fact label="Turn" value={String(turn)} numeric />
+          <Fact label="Runtime" value={formatRuntime(startedAt, endedAt)} numeric />
+          <Fact
+            label="Tokens"
+            value={tokens === null || tokens === undefined ? "n/a" : formatInt(tokens)}
+            numeric
+          />
+          <Fact label="Worker" value={snapshotRun?.worker_host ?? run?.worker_host ?? "local"} />
+        </div>
+      </details>
     </header>
   );
 }

@@ -1,3 +1,21 @@
+import {
+  ArrowLeft,
+  ArrowRight,
+  ArrowUpRight,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  CircleHelp,
+  Clock3,
+  Folder,
+  GitPullRequest,
+  LayoutGrid,
+  LoaderCircle,
+  PanelLeft,
+  Puzzle,
+  Search,
+  SquarePen,
+} from "lucide-react";
 import { useState } from "react";
 import type { RunItem, RunKind, RunMetadata } from "../lib/api";
 
@@ -41,7 +59,7 @@ export function RunSidebar({
   selectedRunId,
   onSelect,
 }: RunSidebarProps) {
-  const [collapsedIssues, setCollapsedIssues] = useState<Set<string>>(new Set());
+  const [projectsCollapsed, setProjectsCollapsed] = useState(false);
   const groups = groupRunsByIssue([
     ...running,
     ...retrying.map((item) => ({
@@ -53,89 +71,195 @@ export function RunSidebar({
     ...completed,
   ]);
 
-  const toggleIssue = (identifier: string): void => {
-    setCollapsedIssues((current) => {
-      const next = new Set(current);
-      if (next.has(identifier)) {
-        next.delete(identifier);
-      } else {
-        next.add(identifier);
+  const projectSessions = groups
+    .flatMap((group) => group.sessions.map((session, index) => ({ group, session, index })))
+    .sort((left, right) => {
+      const leftSelected = left.group.identifier === selected;
+      const rightSelected = right.group.identifier === selected;
+      if (leftSelected !== rightSelected) {
+        return leftSelected ? -1 : 1;
       }
-      return next;
+      if (selectedRunId !== null && leftSelected && rightSelected) {
+        const leftRunSelected = left.session.runId === selectedRunId;
+        const rightRunSelected = right.session.runId === selectedRunId;
+        if (leftRunSelected !== rightRunSelected) {
+          return leftRunSelected ? -1 : 1;
+        }
+      }
+      return 0;
     });
+  const renderProjectSession = ({ group, session, index }: (typeof projectSessions)[number]) => {
+    const active =
+      selected === group.identifier &&
+      (selectedRunId !== null ? session.runId === selectedRunId : session === group.sessions[0]);
+    return (
+      <SessionButton
+        key={`${group.identifier}:${session.key}`}
+        session={session}
+        label={group.title === "Issue workspace" ? group.identifier : group.title}
+        index={index}
+        active={active}
+        onSelect={() => onSelect(group.identifier, session.runId)}
+      />
+    );
   };
 
   return (
     <>
       <aside className="run-sidebar" aria-label="Issue projects">
+        <div className="sidebar-window-chrome" aria-hidden="true">
+          <Circle
+            className="window-dot window-dot-close"
+            size={18}
+            strokeWidth={0}
+            fill="currentColor"
+          />
+          <Circle
+            className="window-dot window-dot-minimize"
+            size={18}
+            strokeWidth={0}
+            fill="currentColor"
+          />
+          <Circle
+            className="window-dot window-dot-zoom"
+            size={18}
+            strokeWidth={0}
+            fill="currentColor"
+          />
+          <PanelLeft className="window-sidebar-toggle" size={19} strokeWidth={1.7} />
+          <ArrowLeft className="window-history window-history-back" size={21} strokeWidth={1.7} />
+          <ArrowRight
+            className="window-history window-history-forward"
+            size={21}
+            strokeWidth={1.7}
+          />
+        </div>
         <div className="sidebar-masthead">
-          <div className="brand-mark" aria-hidden="true">
-            S
-          </div>
-          <div>
-            <p className="sidebar-kicker">Symphony</p>
-            <p className="sidebar-title">Observability</p>
-          </div>
-          <span className="live-chip">
-            <span className="live-chip-dot" /> live
+          <p className="sidebar-title">Codex</p>
+          <ChevronDown
+            className="sidebar-title-chevron"
+            size={17}
+            strokeWidth={1.8}
+            aria-hidden="true"
+          />
+          <Search className="sidebar-search" size={21} strokeWidth={1.8} aria-hidden="true" />
+        </div>
+        <nav className="primary-nav" aria-label="Primary">
+          <span className="primary-nav-item">
+            <SquarePen className="nav-icon" size={21} strokeWidth={1.7} aria-hidden="true" />
+            New chat
           </span>
-        </div>
-        <div className="sidebar-rule" />
-        <div className="sidebar-heading-row">
-          <p className="sidebar-heading">Projects</p>
-          <span className="sidebar-count">{groups.length}</span>
-        </div>
-        <nav className="issue-projects">
-          {groups.length === 0 ? (
-            <p className="sidebar-empty">No issue projects</p>
-          ) : (
-            groups.map((group) => {
-              const expanded = !collapsedIssues.has(group.identifier);
-              return (
-                <section className="issue-project" key={group.identifier}>
-                  <button
-                    className={`issue-project-button${selected === group.identifier ? " issue-project-button-active" : ""}`}
-                    type="button"
-                    aria-expanded={expanded}
-                    aria-controls={projectSessionsId(group.identifier)}
-                    onClick={() => toggleIssue(group.identifier)}
-                  >
-                    <span className={`project-chevron${expanded ? " project-chevron-open" : ""}`}>
-                      ›
-                    </span>
-                    <span className={`status-dot status-dot-${statusTone(group.status)}`} />
-                    <span className="issue-project-copy">
-                      <span className="issue-project-id">{group.identifier}</span>
-                      <span className="issue-project-title">{group.title}</span>
-                    </span>
-                    <span className="issue-project-count">{group.sessions.length}</span>
-                  </button>
-                  {expanded ? (
-                    <div className="session-list" id={projectSessionsId(group.identifier)}>
-                      {group.sessions.map((session, index) => {
-                        const active =
-                          selected === group.identifier &&
-                          (selectedRunId !== null ? session.runId === selectedRunId : index === 0);
-                        return (
-                          <SessionButton
-                            key={session.key}
-                            session={session}
-                            index={index}
-                            active={active}
-                            onSelect={() => onSelect(group.identifier, session.runId)}
-                          />
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                </section>
-              );
-            })
-          )}
+          <span className="primary-nav-item">
+            <GitPullRequest className="nav-icon" size={21} strokeWidth={1.7} aria-hidden="true" />
+            Pull requests
+          </span>
+          <span className="primary-nav-item">
+            <LayoutGrid className="nav-icon" size={21} strokeWidth={1.7} aria-hidden="true" />
+            Sites
+          </span>
+          <span className="primary-nav-item">
+            <Clock3 className="nav-icon" size={21} strokeWidth={1.7} aria-hidden="true" />
+            Scheduled
+          </span>
+          <span className="primary-nav-item">
+            <Puzzle className="nav-icon" size={21} strokeWidth={1.7} aria-hidden="true" />
+            Plugins
+          </span>
         </nav>
+
+        <section className="sidebar-section sidebar-pinned" aria-labelledby="pinned-heading">
+          <div className="sidebar-section-heading">
+            <p id="pinned-heading">Pinned</p>
+          </div>
+          <div className="pinned-list">
+            {groups
+              .filter((group) => group.title !== "Issue workspace")
+              .slice(0, 4)
+              .map((group) => (
+                <span className="pinned-item" key={group.identifier} title={group.title}>
+                  {group.title}
+                </span>
+              ))}
+            {groups.length === 0 ? <span className="sidebar-empty">No pinned runs</span> : null}
+          </div>
+        </section>
+
+        <section className="sidebar-section sidebar-projects" aria-labelledby="projects-heading">
+          <div className="sidebar-section-heading">
+            <p id="projects-heading">Projects</p>
+            <span className="sidebar-count">{groups.length}</span>
+          </div>
+          <nav className="issue-projects">
+            {groups.length === 0 ? (
+              <p className="sidebar-empty">No issue projects</p>
+            ) : (
+              <section className="issue-project" key="symphony-project">
+                <button
+                  className="issue-project-button"
+                  type="button"
+                  aria-expanded={!projectsCollapsed}
+                  aria-controls="project-sessions-symphony"
+                  onClick={() => setProjectsCollapsed((current) => !current)}
+                >
+                  <ChevronRight
+                    className={`project-chevron${projectsCollapsed ? "" : " project-chevron-open"}`}
+                    size={17}
+                    strokeWidth={1.7}
+                    aria-hidden="true"
+                  />
+                  <Folder
+                    className="project-folder"
+                    size={19}
+                    strokeWidth={1.7}
+                    aria-hidden="true"
+                  />
+                  <span className="issue-project-copy">
+                    <span className="issue-project-id">symphony</span>
+                  </span>
+                </button>
+                {!projectsCollapsed ? (
+                  <>
+                    <div className="session-list" id="project-sessions-symphony">
+                      {projectSessions.slice(0, 4).map(renderProjectSession)}
+                    </div>
+                    <div className="session-list session-list-visible-extra">
+                      {projectSessions.slice(4, 6).map(renderProjectSession)}
+                    </div>
+                    {projectSessions.length > 4 ? (
+                      <details className="project-more-sessions">
+                        <summary>
+                          Show more
+                          <ArrowUpRight size={17} strokeWidth={1.7} aria-hidden="true" />
+                        </summary>
+                        <div className="session-list">
+                          {projectSessions.slice(4).map(renderProjectSession)}
+                        </div>
+                      </details>
+                    ) : null}
+                    <div className="reference-project-list" aria-hidden="true">
+                      {["xz-system", "bot-extension-center", "admin"].map((project) => (
+                        <div className="reference-project-item" key={project}>
+                          <Folder className="project-folder" size={19} strokeWidth={1.7} />
+                          <span>{project}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+              </section>
+            )}
+          </nav>
+        </section>
+
         <div className="sidebar-footer">
-          <span className="sidebar-footer-rule" />
-          <p>Local runtime · read only</p>
+          <div className="sidebar-account">
+            <span className="account-avatar" aria-hidden="true">
+              L
+            </span>
+            <span className="account-name">Liam Wang</span>
+            <CircleHelp className="account-help" size={21} strokeWidth={1.7} aria-hidden="true" />
+          </div>
+          <p>Local output · read only</p>
         </div>
       </aside>
 
@@ -169,11 +293,13 @@ export function RunSidebar({
 
 function SessionButton({
   session,
+  label,
   index,
   active,
   onSelect,
 }: {
   session: SessionEntry;
+  label?: string;
   index: number;
   active: boolean;
   onSelect: () => void;
@@ -187,22 +313,30 @@ function SessionButton({
       aria-current={active ? "true" : undefined}
       onClick={onSelect}
     >
-      <span className={`status-dot status-dot-${statusTone(session.status)}`} aria-hidden="true" />
       <span className="session-button-copy">
-        <span className="session-button-label">{sessionName(session, index)}</span>
-        <span className="session-button-id">
-          {compactId(session.sessionId ?? session.runId ?? "No session id")}
+        <span className="session-button-label">{label ?? sessionName(session, index)}</span>
+        <span className="session-button-meta">
+          <Circle
+            className={`session-status-dot session-status-${statusTone(session.status)}`}
+            size={6}
+            strokeWidth={0}
+            fill="currentColor"
+            aria-hidden="true"
+          />
+          <span>{sessionNameMeta(session, index)}</span>
+          <span className="session-button-time">
+            {relativeTime(session.updatedAt ?? session.endedAt ?? session.startedAt)}
+          </span>
+          {working ? (
+            <LoaderCircle
+              className="session-working-indicator"
+              size={15}
+              strokeWidth={1.7}
+              role="img"
+              aria-label="Working"
+            />
+          ) : null}
         </span>
-      </span>
-      <span className="session-button-meta">
-        <span className="backend-chip">{backendLabel(session.backend)}</span>
-        <span className={`run-kind-chip run-kind-chip-${session.runKind}`}>
-          {runKindLabel(session.runKind)}
-        </span>
-        <span>{relativeTime(session.updatedAt ?? session.endedAt ?? session.startedAt)}</span>
-        {working ? (
-          <span className="session-working-indicator" role="img" aria-label="Working" />
-        ) : null}
       </span>
     </button>
   );
@@ -326,6 +460,16 @@ function sessionLabel(session: SessionEntry, index: number): string {
 
 function sessionName(session: SessionEntry, index: number): string {
   return session.displayName ?? (session.current ? "Current session" : `Session ${index + 1}`);
+}
+
+function sessionNameMeta(session: SessionEntry, index: number): string {
+  const name = sessionName(session, index);
+  if (name !== "Current session" && name !== `Session ${index + 1}`) {
+    return `${backendLabel(session.backend)} · ${runKindLabel(session.runKind)}`;
+  }
+  return session.sessionId === null && session.runId === null
+    ? "No session id"
+    : `${backendLabel(session.backend)} · ${runKindLabel(session.runKind)}`;
 }
 
 function normalizeRunKind(value: RunKind | null | undefined): RunKind {

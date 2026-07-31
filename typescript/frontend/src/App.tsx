@@ -1,3 +1,4 @@
+import { ArrowDown, ChevronDown, LoaderCircle, Mic, Plus, Settings2, Zap } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RunHeader } from "./components/RunHeader";
 import { RunSidebar } from "./components/RunSidebar";
@@ -248,21 +249,62 @@ export function App() {
         <RunTimeline
           events={events}
           messages={output?.messages ?? []}
+          title={detail?.title ?? output?.run?.title ?? selectedRun?.title ?? null}
           loading={timelineLoading}
           error={output?.error?.message ?? laterError ?? (selected ? null : error)}
           hasLater={hasLater}
           loadingLater={loadingLater}
           onLoadLater={() => void loadLater()}
         />
-        <footer className="runtime-bar">
-          <span className={`runtime-status runtime-status-${streamState}`}>
-            <span className="runtime-status-dot" />
+        <footer className="composer-shell" aria-label="Output composer">
+          <div className="composer" aria-label="Read-only output composer">
+            <div className="composer-placeholder">Do anything</div>
+            <div className="composer-toolbar">
+              <Plus className="composer-plus" size={22} strokeWidth={1.7} aria-hidden="true" />
+              <span className="composer-context">
+                <Settings2
+                  className="composer-context-icon"
+                  size={18}
+                  strokeWidth={1.7}
+                  aria-hidden="true"
+                />
+                symphony_git
+              </span>
+              <span className="composer-grow" />
+              <span className={`composer-live composer-live-${streamState}`}>
+                <LoaderCircle
+                  className="composer-live-dot"
+                  size={15}
+                  strokeWidth={1.8}
+                  aria-hidden="true"
+                />
+              </span>
+              <span className="composer-model">
+                <Zap
+                  className="composer-spark"
+                  size={17}
+                  strokeWidth={1.8}
+                  fill="currentColor"
+                  aria-hidden="true"
+                />
+                5.6 Luna Max
+              </span>
+              <ChevronDown
+                className="composer-chevron"
+                size={17}
+                strokeWidth={1.7}
+                aria-hidden="true"
+              />
+              <Mic className="composer-mic" size={20} strokeWidth={1.7} aria-hidden="true" />
+              <span className="composer-send" aria-hidden="true">
+                <ArrowDown size={22} strokeWidth={1.7} />
+              </span>
+            </div>
+          </div>
+          <div className="composer-note">
             {streamState === "connected" ? "Live output" : "Waiting for output"}
-          </span>
-          <span className="runtime-separator" />
-          <span>Manual actions require explicit confirmation</span>
-          <span className="runtime-grow" />
-          <span className="runtime-updated">Polls every 5s · SSE when available</span>
+            <span>Read-only observability view · polls every 5s</span>
+          </div>
         </footer>
       </main>
     </div>

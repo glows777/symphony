@@ -1,9 +1,11 @@
+import { Brain, ChevronRight, Sparkles, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentOutputEvent, AgentOutputMessage } from "../lib/api";
 
 type RunTimelineProps = {
   events: AgentOutputEvent[];
   messages: AgentOutputMessage[];
+  title: string | null;
   loading: boolean;
   error: string | null;
   hasLater: boolean;
@@ -14,6 +16,7 @@ type RunTimelineProps = {
 export function RunTimeline({
   events,
   messages,
+  title,
   loading,
   error,
   hasLater,
@@ -27,6 +30,7 @@ export function RunTimeline({
   const eventItems = useMemo(() => sortEvents(events), [events]);
   const latestKey = latestItemKey(eventItems, visibleMessageItems);
   const streaming = messages.some((message) => activityStatus(message) === "streaming");
+  const workedFor = formatWorkedFor(visibleMessageItems);
 
   useEffect(() => {
     if (latestKey === null) {
@@ -68,29 +72,33 @@ export function RunTimeline({
 
   return (
     <section className="transcript-panel" aria-labelledby="transcript-heading">
-      <div className="transcript-heading-row">
-        <div>
-          <p className="section-kicker">Agent output</p>
-          <h2 id="transcript-heading">Conversation</h2>
-        </div>
-        <div className="transcript-heading-meta">
-          <span className="transcript-count numeric">{visibleMessageItems.length} activities</span>
-          <span className="transcript-mode">{streaming ? "Streaming" : "Complete"}</span>
-        </div>
-      </div>
+      <h2 className="visually-hidden" id="transcript-heading">
+        Conversation
+      </h2>
       {error ? <div className="inline-warning">{error}</div> : null}
       {loading && visibleMessageItems.length === 0 ? (
         <div className="transcript-empty transcript-pending">
           <span className="pending-line" />
-          <span>Reading the latest agent output…</span>
+          <span>Reading the latest output…</span>
         </div>
       ) : visibleMessageItems.length === 0 ? (
         <div className="transcript-empty">
-          <span className="empty-glyph">⌁</span>
-          <p>No conversation yet</p>
+          <Sparkles className="empty-glyph" size={26} strokeWidth={1.6} aria-hidden="true" />
+          <p>{title ?? "No conversation yet"}</p>
+          <span>Output will appear here when the run starts.</span>
         </div>
       ) : (
         <div className="transcript-list">
+          {title ? <div className="user-message">{title}</div> : null}
+          <div className="worked-divider">
+            <span>Worked for {workedFor}</span>
+            <ChevronRight
+              className="worked-divider-chevron"
+              size={18}
+              strokeWidth={1.7}
+              aria-hidden="true"
+            />
+          </div>
           {visibleMessageItems.map((message) => (
             <ActivityRow
               events={eventItems}
@@ -174,7 +182,12 @@ function ThinkingRow({
       aria-label={`${statusLabel(message)} reasoning summary`}
     >
       <summary>
-        <span className="activity-icon activity-icon-thinking" aria-hidden="true" />
+        <Brain
+          className="activity-icon activity-icon-thinking"
+          size={17}
+          strokeWidth={1.7}
+          aria-hidden="true"
+        />
         <span className="activity-label">Thinking</span>
       </summary>
       <div
@@ -217,12 +230,25 @@ function ToolCallRow({
       aria-label={`${statusLabel(message)} tool call: ${label}`}
     >
       <div className="activity-header">
-        <span className="activity-icon activity-icon-tool" aria-hidden="true" />
+        <Wrench
+          className="activity-icon activity-icon-tool"
+          size={17}
+          strokeWidth={1.7}
+          aria-hidden="true"
+        />
         <span className="activity-label">{label}</span>
       </div>
       {hasDetails ? (
         <details className="tool-details">
-          <summary>Details</summary>
+          <summary>
+            <ChevronRight
+              className="tool-details-chevron"
+              size={15}
+              strokeWidth={1.7}
+              aria-hidden="true"
+            />
+            <span>Details</span>
+          </summary>
           {message.tool_error ? <p className="tool-error">{message.tool_error}</p> : null}
           {command !== undefined ? (
             <pre className="tool-input" aria-label="Tool command">
@@ -277,6 +303,24 @@ function sortEvents(events: AgentOutputEvent[]): AgentOutputEvent[] {
     }
     return left.at.localeCompare(right.at);
   });
+}
+
+function formatWorkedFor(messages: AgentOutputMessage[]): string {
+  const first = messages[0];
+  const last = messages.at(-1);
+  if (first === undefined || last === undefined) {
+    return "0s";
+  }
+  const start = Date.parse(first.at);
+  const end = Date.parse(last.updated_at || last.at);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    return "0s";
+  }
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 function activityType(
